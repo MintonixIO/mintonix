@@ -31,7 +31,7 @@ export async function POST(request: NextRequest) {
 
     if (existingShare) {
       // Return existing share token
-      const shareUrl = `${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/share/${existingShare.share_token}`;
+      const shareUrl = `${process.env.NEXT_PUBLIC_BASE_URL}/share/${existingShare.share_token}`;
       return NextResponse.json({
         shareToken: existingShare.share_token,
         shareUrl,
@@ -55,7 +55,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Failed to create share link' }, { status: 500 });
     }
 
-    const shareUrl = `${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/share/${newShare.share_token}`;
+    const shareUrl = `${process.env.NEXT_PUBLIC_BASE_URL}/share/${newShare.share_token}`;
 
     return NextResponse.json({
       shareToken: newShare.share_token,
@@ -96,7 +96,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ shared: false });
     }
 
-    const shareUrl = `${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/share/${share.share_token}`;
+    const shareUrl = `${process.env.NEXT_PUBLIC_BASE_URL}/share/${share.share_token}`;
 
     return NextResponse.json({
       shared: true,
