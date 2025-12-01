@@ -12,8 +12,42 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { useRouter } from "next/navigation";
 import { useState } from "react";
+
+// Map of known error codes to user-friendly messages
+function getUpdatePasswordErrorMessage(error: unknown): string {
+  if (!(error instanceof Error)) {
+    return "An unexpected error occurred. Please try again.";
+  }
+
+  const message = error.message.toLowerCase();
+
+  // Handle common password update errors
+  if (message.includes("password") && message.includes("weak")) {
+    return "Password is too weak. Please choose a stronger password.";
+  }
+  if (message.includes("password") && message.includes("short")) {
+    return "Password must be at least 6 characters long.";
+  }
+  if (message.includes("same password")) {
+    return "New password must be different from your current password.";
+  }
+  if (message.includes("different password")) {
+    return "Please choose a different password.";
+  }
+  if (message.includes("session") || message.includes("expired") || message.includes("not authenticated")) {
+    return "Your session has expired. Please request a new password reset link.";
+  }
+  if (message.includes("too many requests") || message.includes("rate limit")) {
+    return "Too many attempts. Please wait a moment and try again.";
+  }
+  if (message.includes("network") || message.includes("fetch")) {
+    return "Unable to connect. Please check your internet connection and try again.";
+  }
+
+  // Default generic message for any other errors
+  return "Unable to update password. Please try again later.";
+}
 
 export function UpdatePasswordForm({
   className,
@@ -22,7 +56,6 @@ export function UpdatePasswordForm({
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const router = useRouter();
 
   const handleForgotPassword = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -33,10 +66,12 @@ export function UpdatePasswordForm({
     try {
       const { error } = await supabase.auth.updateUser({ password });
       if (error) throw error;
-      router.push("/dashboard");
+      // Use hard redirect to ensure cookies are properly synced before navigation
+      // Loading state intentionally stays true until page reloads
+      window.location.href = "/dashboard";
+      return;
     } catch (error: unknown) {
-      setError(error instanceof Error ? error.message : "An error occurred");
-    } finally {
+      setError(getUpdatePasswordErrorMessage(error));
       setIsLoading(false);
     }
   };

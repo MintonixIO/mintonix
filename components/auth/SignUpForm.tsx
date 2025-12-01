@@ -17,6 +17,38 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { Mail, Lock, Loader2, Eye, EyeOff, User } from "lucide-react";
 
+// Map of known error codes to user-friendly messages
+function getSignUpErrorMessage(error: unknown): string {
+  if (!(error instanceof Error)) {
+    return "An unexpected error occurred. Please try again.";
+  }
+
+  const message = error.message.toLowerCase();
+
+  // Handle common sign-up errors
+  if (message.includes("already registered") || message.includes("already exists")) {
+    return "An account with this email already exists. Please sign in instead.";
+  }
+  if (message.includes("invalid email")) {
+    return "Please enter a valid email address.";
+  }
+  if (message.includes("password") && message.includes("weak")) {
+    return "Password is too weak. Please choose a stronger password.";
+  }
+  if (message.includes("password") && message.includes("short")) {
+    return "Password must be at least 6 characters long.";
+  }
+  if (message.includes("too many requests") || message.includes("rate limit")) {
+    return "Too many attempts. Please wait a moment and try again.";
+  }
+  if (message.includes("network") || message.includes("fetch")) {
+    return "Unable to connect. Please check your internet connection and try again.";
+  }
+
+  // Default generic message for any other errors
+  return "Unable to create account. Please try again later.";
+}
+
 export function SignUpForm({
   className,
   ...props
@@ -57,7 +89,7 @@ export function SignUpForm({
       if (error) throw error;
       router.push("/auth/sign-up-success");
     } catch (error: unknown) {
-      setError(error instanceof Error ? error.message : "An error occurred");
+      setError(getSignUpErrorMessage(error));
     } finally {
       setIsLoading(false);
     }

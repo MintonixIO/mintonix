@@ -13,9 +13,37 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { Mail, Lock, Loader2, Eye, EyeOff } from "lucide-react";
+
+// Map of known error codes to user-friendly messages
+function getLoginErrorMessage(error: unknown): string {
+  if (!(error instanceof Error)) {
+    return "An unexpected error occurred. Please try again.";
+  }
+
+  const message = error.message.toLowerCase();
+
+  // Handle common authentication errors
+  if (message.includes("invalid login credentials") || message.includes("invalid_credentials")) {
+    return "Invalid email or password. Please check your credentials and try again.";
+  }
+  if (message.includes("email not confirmed")) {
+    return "Please verify your email address before signing in.";
+  }
+  if (message.includes("too many requests") || message.includes("rate limit")) {
+    return "Too many login attempts. Please wait a moment and try again.";
+  }
+  if (message.includes("network") || message.includes("fetch")) {
+    return "Unable to connect. Please check your internet connection and try again.";
+  }
+  if (message.includes("user not found")) {
+    return "Invalid email or password. Please check your credentials and try again.";
+  }
+
+  // Default generic message for any other errors
+  return "Unable to sign in. Please try again later.";
+}
 
 export function LoginForm({
   className,
@@ -26,7 +54,6 @@ export function LoginForm({
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const router = useRouter();
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -40,11 +67,12 @@ export function LoginForm({
         password,
       });
       if (error) throw error;
-      // Redirect to dashboard after successful login
-      router.push("/dashboard");
+      // Use hard redirect to ensure cookies are properly synced before navigation
+      // Loading state intentionally stays true until page reloads
+      window.location.href = "/dashboard";
+      return;
     } catch (error: unknown) {
-      setError(error instanceof Error ? error.message : "An error occurred");
-    } finally {
+      setError(getLoginErrorMessage(error));
       setIsLoading(false);
     }
   };

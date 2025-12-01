@@ -15,6 +15,29 @@ import { Label } from "@/components/ui/label";
 import Link from "next/link";
 import { useState } from "react";
 
+// Map of known error codes to user-friendly messages
+function getPasswordResetErrorMessage(error: unknown): string {
+  if (!(error instanceof Error)) {
+    return "An unexpected error occurred. Please try again.";
+  }
+
+  const message = error.message.toLowerCase();
+
+  // Handle common password reset errors
+  if (message.includes("invalid email")) {
+    return "Please enter a valid email address.";
+  }
+  if (message.includes("too many requests") || message.includes("rate limit")) {
+    return "Too many attempts. Please wait a moment and try again.";
+  }
+  if (message.includes("network") || message.includes("fetch")) {
+    return "Unable to connect. Please check your internet connection and try again.";
+  }
+
+  // Default generic message for any other errors
+  return "Unable to send reset email. Please try again later.";
+}
+
 export function ForgotPasswordForm({
   className,
   ...props
@@ -41,7 +64,7 @@ export function ForgotPasswordForm({
       if (error) throw error;
       setSuccess(true);
     } catch (error: unknown) {
-      setError(error instanceof Error ? error.message : "An error occurred");
+      setError(getPasswordResetErrorMessage(error));
     } finally {
       setIsLoading(false);
     }
