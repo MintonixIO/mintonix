@@ -53,16 +53,9 @@ export async function POST(request: NextRequest) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 1200000); // 20 minutes timeout
 
-    // Construct webhook URL for real-time updates
-    const webhookUrl = process.env.NEXT_PUBLIC_APP_URL
-      ? `${process.env.NEXT_PUBLIC_APP_URL}/api/webhook`
-      : `${request.headers.get('origin') || 'http://localhost:3000'}/api/webhook`;
-
-    logDebug('Webhook configured', { webhookUrl });
-
     let response;
     try {
-      // Use async endpoint for better progress tracking with webhook support
+      // Use async endpoint - progress tracked via R2 file availability
       response = await fetch(`https://api.runpod.ai/v2/${runpodEndpoint}/run`, {
         method: 'POST',
         headers: {
@@ -74,7 +67,6 @@ export async function POST(request: NextRequest) {
             video_url: signedVideoUrl,
             user_id: userId,
             session_id: videoId,
-            webhook_url: webhookUrl,
             job_id: internalJobId  // Pass internal job ID to Python
           }
         })
@@ -132,7 +124,6 @@ export async function POST(request: NextRequest) {
       runpodJobId,
       status: status,
       message: 'Analysis job started. Python worker will create database record.',
-      webhookUrl,
     });
 
   } catch (error) {
