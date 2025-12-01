@@ -68,8 +68,9 @@ export function LoginForm({
       });
       if (error) throw error;
       // Use hard redirect to ensure cookies are properly synced before navigation
+      // Loading state intentionally stays true until page reloads
       window.location.href = "/dashboard";
-      return; // Exit early on success - don't reset loading state since we're redirecting
+      return;
     } catch (error: unknown) {
       setError(getLoginErrorMessage(error));
       setIsLoading(false);
