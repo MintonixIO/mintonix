@@ -1,8 +1,0 @@
-{
-  "crons": [
-    {
-      "path": "/api/trigger-pending-jobs",
-      "schedule": "* * * * *"
-    }
-  ]
-}
