@@ -15,6 +15,38 @@ import { Label } from "@/components/ui/label";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
+// Map of known error codes to user-friendly messages
+function getUpdatePasswordErrorMessage(error: unknown): string {
+  if (!(error instanceof Error)) {
+    return "An unexpected error occurred. Please try again.";
+  }
+
+  const message = error.message.toLowerCase();
+
+  // Handle common password update errors
+  if (message.includes("password") && message.includes("weak")) {
+    return "Password is too weak. Please choose a stronger password.";
+  }
+  if (message.includes("password") && message.includes("short")) {
+    return "Password must be at least 6 characters long.";
+  }
+  if (message.includes("same password") || message.includes("different password")) {
+    return "Please choose a different password from your current one.";
+  }
+  if (message.includes("session") || message.includes("expired") || message.includes("not authenticated")) {
+    return "Your session has expired. Please request a new password reset link.";
+  }
+  if (message.includes("too many requests") || message.includes("rate limit")) {
+    return "Too many attempts. Please wait a moment and try again.";
+  }
+  if (message.includes("network") || message.includes("fetch")) {
+    return "Unable to connect. Please check your internet connection and try again.";
+  }
+
+  // Default generic message for any other errors
+  return "Unable to update password. Please try again later.";
+}
+
 export function UpdatePasswordForm({
   className,
   ...props
@@ -33,9 +65,10 @@ export function UpdatePasswordForm({
     try {
       const { error } = await supabase.auth.updateUser({ password });
       if (error) throw error;
+      router.refresh();
       router.push("/dashboard");
     } catch (error: unknown) {
-      setError(error instanceof Error ? error.message : "An error occurred");
+      setError(getUpdatePasswordErrorMessage(error));
     } finally {
       setIsLoading(false);
     }
