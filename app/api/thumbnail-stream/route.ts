@@ -116,44 +116,63 @@ function createDefaultThumbnail() {
     <svg width="640" height="360" xmlns="http://www.w3.org/2000/svg">
       <defs>
         <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" style="stop-color:#1a1a1a"/>
-          <stop offset="100%" style="stop-color:#2d2d2d"/>
+          <stop offset="0%" style="stop-color:#1e1e1e"/>
+          <stop offset="100%" style="stop-color:#0a0a0a"/>
         </linearGradient>
-        <filter id="shadow">
-          <feDropShadow dx="0" dy="2" stdDeviation="3" flood-opacity="0.3"/>
+        <filter id="blur">
+          <feGaussianBlur in="SourceGraphic" stdDeviation="4"/>
+        </filter>
+        <filter id="innerGlow">
+          <feGaussianBlur stdDeviation="2" result="coloredBlur"/>
+          <feMerge>
+            <feMergeNode in="coloredBlur"/>
+            <feMergeNode in="SourceGraphic"/>
+          </feMerge>
         </filter>
       </defs>
+
+      <!-- Background gradient -->
       <rect width="100%" height="100%" fill="url(#bg)"/>
 
-      <!-- Grid pattern -->
-      <defs>
-        <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
-          <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#404040" stroke-width="0.5" opacity="0.3"/>
-        </pattern>
-      </defs>
-      <rect width="100%" height="100%" fill="url(#grid)"/>
+      <!-- Subtle noise texture -->
+      <rect width="100%" height="100%" fill="url(#bg)" opacity="0.05"/>
 
-      <!-- Center play icon -->
-      <g filter="url(#shadow)">
-        <circle cx="320" cy="180" r="50" fill="#2d2d2d" stroke="#505050" stroke-width="2"/>
-        <circle cx="320" cy="180" r="48" fill="none" stroke="#606060" stroke-width="1" opacity="0.5"/>
-        <polygon points="305,165 305,195 340,180" fill="#e5e5e5"/>
-      </g>
+      <!-- Large frosted glass rectangle (background blur) -->
+      <rect x="210" y="100" width="220" height="160" rx="16" fill="#2a2a2a" opacity="0.3" filter="url(#blur)"/>
 
-      <!-- Bottom text -->
-      <text x="320" y="280" text-anchor="middle" fill="#9ca3af" font-family="system-ui, -apple-system, sans-serif" font-size="16" font-weight="500" letter-spacing="0.5">
-        Video Analysis
-      </text>
-      <text x="320" y="305" text-anchor="middle" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="13" opacity="0.8">
-        Thumbnail unavailable
-      </text>
+      <!-- Medium frosted glass rectangle -->
+      <rect x="215" y="105" width="210" height="150" rx="14" fill="#252525" opacity="0.4" filter="url(#blur)"/>
+
+      <!-- Glass border -->
+      <rect x="215" y="105" width="210" height="150" rx="14" fill="none" stroke="#404040" stroke-width="1" opacity="0.6"/>
+
+      <!-- Inner glow effect -->
+      <rect x="220" y="110" width="200" height="140" rx="12" fill="none" stroke="#505050" stroke-width="0.5" opacity="0.3"/>
+
+      <!-- Center play button container -->
+      <rect x="255" y="135" width="130" height="90" rx="10" fill="#1a1a1a" opacity="0.7" filter="url(#innerGlow)"/>
+
+      <!-- Play button outer border -->
+      <rect x="255" y="135" width="130" height="90" rx="10" fill="none" stroke="#505050" stroke-width="2" opacity="0.5"/>
+
+      <!-- Play button inner border (highlight) -->
+      <rect x="258" y="138" width="124" height="84" rx="8" fill="none" stroke="#606060" stroke-width="1" opacity="0.3"/>
+
+      <!-- Play icon triangle -->
+      <path d="M 300 160 L 300 200 L 345 180 Z" fill="#e0e0e0" opacity="0.9"/>
+
+      <!-- Subtle highlight on play icon -->
+      <path d="M 303 165 L 303 195 L 335 180 Z" fill="#ffffff" opacity="0.15"/>
+
+      <!-- Subtle top-left light reflection -->
+      <ellipse cx="260" cy="130" rx="40" ry="25" fill="#ffffff" opacity="0.03" filter="url(#blur)"/>
     </svg>
   `;
 
   return new NextResponse(svg, {
     headers: {
       'Content-Type': 'image/svg+xml',
-      'Cache-Control': 'public, max-age=3600',
+      'Cache-Control': 'public, max-age=604800, immutable',
     },
   });
 }
