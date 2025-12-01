@@ -34,28 +34,73 @@ export function ThumbnailRegenerator({
     const regenerateToast = toast.loading("Regenerating thumbnail...");
 
     try {
-      // Generate new thumbnail from current video
-      const thumbnailDataUrl = await generateThumbnailFromVideo(videoElement, 0.2);
+      // Generate multi-resolution thumbnails from current video frame
+      const currentTime = videoElement.currentTime / videoElement.duration;
 
-      // Convert to base64 data
-      const base64Data = thumbnailDataUrl.replace(/^data:image\/jpeg;base64,/, '');
+      const [small, medium, large] = await Promise.all([
+        generateThumbnailFromVideo(videoElement, { timestamp: currentTime, width: 320, height: 180 }),
+        generateThumbnailFromVideo(videoElement, { timestamp: currentTime, width: 640, height: 360 }),
+        generateThumbnailFromVideo(videoElement, { timestamp: currentTime, width: 1280, height: 720 }),
+      ]);
 
-      // Upload new thumbnail
-      const response = await fetch('/api/regenerate-thumbnail', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          userId,
-          videoId,
-          thumbnailData: base64Data
-        })
-      });
+      // Upload all resolutions
+      const uploadPromises = [];
 
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to regenerate thumbnail');
+      if (small.dataUrl) {
+        const base64Small = small.dataUrl.replace(/^data:image\/(jpeg|webp);base64,/, '');
+        uploadPromises.push(
+          fetch('/api/regenerate-thumbnail', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              userId,
+              videoId,
+              thumbnailData: base64Small,
+              size: 'small',
+              format: small.format,
+            })
+          })
+        );
+      }
+
+      if (medium.dataUrl) {
+        const base64Medium = medium.dataUrl.replace(/^data:image\/(jpeg|webp);base64,/, '');
+        uploadPromises.push(
+          fetch('/api/regenerate-thumbnail', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              userId,
+              videoId,
+              thumbnailData: base64Medium,
+              format: medium.format,
+            })
+          })
+        );
+      }
+
+      if (large.dataUrl) {
+        const base64Large = large.dataUrl.replace(/^data:image\/(jpeg|webp);base64,/, '');
+        uploadPromises.push(
+          fetch('/api/regenerate-thumbnail', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              userId,
+              videoId,
+              thumbnailData: base64Large,
+              size: 'large',
+              format: large.format,
+            })
+          })
+        );
+      }
+
+      const responses = await Promise.all(uploadPromises);
+      const failedUploads = responses.filter(r => !r.ok);
+
+      if (failedUploads.length > 0) {
+        throw new Error(`Failed to upload ${failedUploads.length} thumbnail(s)`);
       }
 
       toast.success("Thumbnail regenerated successfully!", { id: regenerateToast });
