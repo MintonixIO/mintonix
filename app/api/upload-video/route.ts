@@ -296,8 +296,18 @@ export async function POST(request: NextRequest) {
       const runpodEndpoint = process.env.RUNPOD_ENDPOINT_ID;
       const runpodApiKey = process.env.RUNPOD_API_KEY;
 
+      logJobInfo({
+        'Auto-processing check': 'Starting',
+        hasRunpodEndpoint: !!runpodEndpoint,
+        hasRunpodApiKey: !!runpodApiKey,
+        videoId: result.videoId,
+        userId: userId
+      });
+
       if (runpodEndpoint && runpodApiKey) {
         const internalJobId = `unified-${result.videoId}-${Date.now()}`;
+
+        logJobInfo({ 'Creating job': internalJobId });
 
         // Create pending job record in database (fast, <100ms)
         const { createProcessingJob } = await import('@/lib/processing-jobs');
