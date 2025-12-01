@@ -82,12 +82,30 @@ export async function POST(request: NextRequest) {
 // }
 
 function createPlaceholderThumbnail(): string {
-  // Create a simple SVG placeholder thumbnail
-  const svg = `<svg width="320" height="180" xmlns="http://www.w3.org/2000/svg">
-<rect width="100%" height="100%" fill="#1f2937"/>
-<circle cx="160" cy="90" r="30" fill="#6b7280" stroke="#9ca3af" stroke-width="3"/>
-<polygon points="150,75 150,105 175,90" fill="#f3f4f6"/>
+  // Create a professional SVG placeholder thumbnail with gray/black/white palette
+  const svg = `<svg width="640" height="360" xmlns="http://www.w3.org/2000/svg">
+<defs>
+  <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+    <stop offset="0%" style="stop-color:#1a1a1a"/>
+    <stop offset="100%" style="stop-color:#2d2d2d"/>
+  </linearGradient>
+  <filter id="shadow">
+    <feDropShadow dx="0" dy="2" stdDeviation="3" flood-opacity="0.3"/>
+  </filter>
+  <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+    <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#404040" stroke-width="0.5" opacity="0.3"/>
+  </pattern>
+</defs>
+<rect width="100%" height="100%" fill="url(#bg)"/>
+<rect width="100%" height="100%" fill="url(#grid)"/>
+<g filter="url(#shadow)">
+  <circle cx="320" cy="180" r="50" fill="#2d2d2d" stroke="#505050" stroke-width="2"/>
+  <circle cx="320" cy="180" r="48" fill="none" stroke="#606060" stroke-width="1" opacity="0.5"/>
+  <polygon points="305,165 305,195 340,180" fill="#e5e5e5"/>
+</g>
+<text x="320" y="280" text-anchor="middle" fill="#9ca3af" font-family="system-ui, -apple-system, sans-serif" font-size="16" font-weight="500" letter-spacing="0.5">Video Analysis</text>
+<text x="320" y="305" text-anchor="middle" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="13" opacity="0.8">Thumbnail unavailable</text>
 </svg>`;
-  
+
   return svg;
 }

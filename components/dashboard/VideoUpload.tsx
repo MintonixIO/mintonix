@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Upload, FileVideo, Loader2 } from "lucide-react";
 import toast from "react-hot-toast";
-import { generateThumbnailFromFile } from "@/lib/thumbnail";
+import { generateMultiResolutionThumbnails, generateThumbnailWithRetry } from "@/lib/thumbnail";
 
 interface VideoUploadProps {
   userId: string;
@@ -32,25 +32,42 @@ export function VideoUpload({ userId, onVideoUploaded, userSubscription }: Video
     const uploadToast = toast.loading(`Uploading ${file.name}...`);
 
     try {
-      // Generate thumbnail with timeout and error handling
-      let thumbnailDataUrl = '';
+      // Generate multi-resolution thumbnails with timeout and error handling
+      let thumbnailData: { small?: string; medium?: string; large?: string } = {};
       try {
-        const thumbnailPromise = generateThumbnailFromFile(file);
-        const timeoutPromise = new Promise<string>((_, reject) =>
-          setTimeout(() => reject(new Error('Thumbnail generation timeout')), 10000)
+        const timeoutPromise = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Thumbnail generation timeout')), 15000)
         );
-        thumbnailDataUrl = await Promise.race([thumbnailPromise, timeoutPromise]);
-      } catch {
-        // Continue upload without thumbnail
+
+        const thumbnailPromise = generateMultiResolutionThumbnails(file);
+        const thumbnails = await Promise.race([thumbnailPromise, timeoutPromise]);
+
+        thumbnailData = {
+          small: thumbnails.small.dataUrl,
+          medium: thumbnails.medium.dataUrl,
+          large: thumbnails.large.dataUrl,
+        };
+      } catch (error) {
+        // If multi-resolution fails, try single thumbnail with retry
+        console.warn('Multi-resolution thumbnail generation failed, trying single resolution with retry:', error);
+        try {
+          const fallbackThumbnail = await generateThumbnailWithRetry(file, {}, 2);
+          thumbnailData.medium = fallbackThumbnail.dataUrl;
+        } catch {
+          // Continue upload without thumbnail
+          console.warn('All thumbnail generation attempts failed, continuing without thumbnail');
+        }
       }
 
       const formData = new FormData();
       formData.append('file', file);
       formData.append('userId', userId);
       formData.append('fileName', file.name);
-      if (thumbnailDataUrl) {
-        formData.append('thumbnail', thumbnailDataUrl);
-      }
+
+      // Attach thumbnails if available
+      if (thumbnailData.small) formData.append('thumbnailSmall', thumbnailData.small);
+      if (thumbnailData.medium) formData.append('thumbnailMedium', thumbnailData.medium);
+      if (thumbnailData.large) formData.append('thumbnailLarge', thumbnailData.large);
 
       const response = await fetch('/api/upload-video', {
         method: 'POST',

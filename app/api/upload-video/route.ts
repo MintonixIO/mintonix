@@ -16,6 +16,34 @@ function estimateVideoDuration(file: File): number {
   return Math.min(Math.max(estimatedMinutes, 0.5), 60); // Min 0.5 min, max 60 min
 }
 
+function createDefaultThumbnail(): string {
+  // Create a professional SVG placeholder thumbnail with gray/black/white palette
+  const svg = `<svg width="640" height="360" xmlns="http://www.w3.org/2000/svg">
+<defs>
+  <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+    <stop offset="0%" style="stop-color:#1a1a1a"/>
+    <stop offset="100%" style="stop-color:#2d2d2d"/>
+  </linearGradient>
+  <filter id="shadow">
+    <feDropShadow dx="0" dy="2" stdDeviation="3" flood-opacity="0.3"/>
+  </filter>
+  <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+    <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#404040" stroke-width="0.5" opacity="0.3"/>
+  </pattern>
+</defs>
+<rect width="100%" height="100%" fill="url(#bg)"/>
+<rect width="100%" height="100%" fill="url(#grid)"/>
+<g filter="url(#shadow)">
+  <circle cx="320" cy="180" r="50" fill="#2d2d2d" stroke="#505050" stroke-width="2"/>
+  <circle cx="320" cy="180" r="48" fill="none" stroke="#606060" stroke-width="1" opacity="0.5"/>
+  <polygon points="305,165 305,195 340,180" fill="#e5e5e5"/>
+</g>
+<text x="320" y="280" text-anchor="middle" fill="#9ca3af" font-family="system-ui, -apple-system, sans-serif" font-size="16" font-weight="500" letter-spacing="0.5">Video Analysis</text>
+<text x="320" y="305" text-anchor="middle" fill="#6b7280" font-family="system-ui, -apple-system, sans-serif" font-size="13" opacity="0.8">Thumbnail unavailable</text>
+</svg>`;
+  return svg;
+}
+
 
 export async function POST(request: NextRequest) {
   try {
@@ -23,7 +51,11 @@ export async function POST(request: NextRequest) {
     const file = formData.get('file') as File;
     const userId = formData.get('userId') as string;
     const fileName = formData.get('fileName') as string;
-    const thumbnail = formData.get('thumbnail') as string;
+    const thumbnailSmall = formData.get('thumbnailSmall') as string | null;
+    const thumbnailMedium = formData.get('thumbnailMedium') as string | null;
+    const thumbnailLarge = formData.get('thumbnailLarge') as string | null;
+    // Legacy support for old single thumbnail format
+    const thumbnail = formData.get('thumbnail') as string | null;
 
     if (!file || !userId || !fileName) {
       return NextResponse.json(
@@ -160,18 +192,83 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Save thumbnail if provided
-    if (thumbnail) {
-      try {
-        // Convert data URL to buffer
-        const base64Data = thumbnail.replace(/^data:image\/jpeg;base64,/, '');
-        const thumbnailBuffer = Buffer.from(base64Data, 'base64');
+    // Save thumbnails if provided
+    const { uploadAnalysisFile } = await import('@/lib/r2');
+    let thumbnailUploaded = false;
 
-        // Upload thumbnail
-        const { uploadAnalysisFile } = await import('@/lib/r2');
-        await uploadAnalysisFile(userId, result.videoId, 'thumbnail.jpg', thumbnailBuffer, 'image/jpeg');
+    // Helper function to extract format and data from data URL
+    const parseThumbnailData = (dataUrl: string) => {
+      const match = dataUrl.match(/^data:image\/(jpeg|jpg|webp);base64,(.+)$/);
+      if (!match) return null;
+      const format = match[1] === 'jpg' ? 'jpeg' : match[1];
+      const base64Data = match[2];
+      const buffer = Buffer.from(base64Data, 'base64');
+      const mimeType = `image/${format}`;
+      return { buffer, format, mimeType };
+    };
+
+    // Try to upload multi-resolution thumbnails
+    if (thumbnailSmall || thumbnailMedium || thumbnailLarge) {
+      try {
+        const uploadPromises: Promise<void>[] = [];
+
+        if (thumbnailSmall) {
+          const parsed = parseThumbnailData(thumbnailSmall);
+          if (parsed) {
+            uploadPromises.push(
+              uploadAnalysisFile(userId, result.videoId, `thumbnail-sm.${parsed.format}`, parsed.buffer, parsed.mimeType)
+            );
+          }
+        }
+
+        if (thumbnailMedium) {
+          const parsed = parseThumbnailData(thumbnailMedium);
+          if (parsed) {
+            uploadPromises.push(
+              uploadAnalysisFile(userId, result.videoId, `thumbnail.${parsed.format}`, parsed.buffer, parsed.mimeType)
+            );
+          }
+        }
+
+        if (thumbnailLarge) {
+          const parsed = parseThumbnailData(thumbnailLarge);
+          if (parsed) {
+            uploadPromises.push(
+              uploadAnalysisFile(userId, result.videoId, `thumbnail-lg.${parsed.format}`, parsed.buffer, parsed.mimeType)
+            );
+          }
+        }
+
+        await Promise.all(uploadPromises);
+        thumbnailUploaded = true;
+        logSuccess('Multi-resolution thumbnails uploaded successfully', { videoId: result.videoId, count: uploadPromises.length });
       } catch (thumbnailError) {
-        logWarn('Failed to save thumbnail (continuing anyway)', thumbnailError);
+        logWarn('Failed to save multi-resolution thumbnails', thumbnailError);
+      }
+    }
+
+    // Legacy single thumbnail support
+    if (!thumbnailUploaded && thumbnail) {
+      try {
+        const parsed = parseThumbnailData(thumbnail);
+        if (parsed) {
+          await uploadAnalysisFile(userId, result.videoId, `thumbnail.${parsed.format}`, parsed.buffer, parsed.mimeType);
+          thumbnailUploaded = true;
+          logSuccess('Legacy thumbnail uploaded successfully', { videoId: result.videoId });
+        }
+      } catch (thumbnailError) {
+        logWarn('Failed to save legacy thumbnail', thumbnailError);
+      }
+    }
+
+    // If no thumbnails were uploaded, use default SVG
+    if (!thumbnailUploaded) {
+      try {
+        const defaultThumbnail = createDefaultThumbnail();
+        await uploadAnalysisFile(userId, result.videoId, 'thumbnail.svg', defaultThumbnail, 'image/svg+xml');
+        logSuccess('Default SVG thumbnail uploaded');
+      } catch (fallbackError) {
+        logError('Failed to upload default thumbnail', fallbackError);
       }
     }
 
