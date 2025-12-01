@@ -92,11 +92,6 @@ export async function POST(request: NextRequest) {
       throw new Error('RunPod configuration missing. Please set RUNPOD_ENDPOINT_ID and RUNPOD_API_KEY environment variables.');
     }
 
-    // Construct webhook URL
-    const webhookUrl = process.env.NEXT_PUBLIC_APP_URL
-      ? `${process.env.NEXT_PUBLIC_APP_URL}/api/webhook`
-      : `${request.headers.get('origin') || 'http://localhost:3000'}/api/webhook`;
-
     // Generate new job ID for the retry
     const newJobId = `${originalJob.video_id}-retry-${originalJob.retry_count + 1}-${Date.now()}`;
 
@@ -117,7 +112,6 @@ export async function POST(request: NextRequest) {
             video_url: signedVideoUrl,
             user_id: userId,
             session_id: videoId,
-            webhook_url: webhookUrl,
             job_id: newJobId, // Pass our job ID to Python
             retry_attempt: originalJob.retry_count + 1,
             parent_job_id: jobId, // Link to original job
@@ -181,7 +175,6 @@ export async function POST(request: NextRequest) {
       runpodJobId,
       retryAttempt: originalJob.retry_count + 1,
       maxRetries: originalJob.max_retries,
-      webhookUrl,
     });
 
   } catch (error: unknown) {

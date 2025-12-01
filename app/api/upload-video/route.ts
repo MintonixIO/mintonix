@@ -302,11 +302,6 @@ export async function POST(request: NextRequest) {
             // Get signed video URL (use same key as uploaded video)
             const signedVideoUrl = await getSignedVideoUrl(r2Key);
 
-            // Construct webhook URL
-            const webhookUrl = process.env.NEXT_PUBLIC_APP_URL
-              ? `${process.env.NEXT_PUBLIC_APP_URL}/api/webhook`
-              : 'http://localhost:3000/api/webhook';
-
             // Submit job to RunPod
             const runpodResponse = await fetch(`https://api.runpod.ai/v2/${runpodEndpoint}/run`, {
               method: 'POST',
@@ -318,8 +313,7 @@ export async function POST(request: NextRequest) {
                 input: {
                   video_url: signedVideoUrl,
                   user_id: userId,
-                  video_id: result.videoId,
-                  webhook_url: webhookUrl
+                  video_id: result.videoId
                 }
               })
             });
