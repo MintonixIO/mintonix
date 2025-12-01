@@ -13,7 +13,6 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { Mail, Lock, Loader2, Eye, EyeOff } from "lucide-react";
 
@@ -55,7 +54,6 @@ export function LoginForm({
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const router = useRouter();
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -69,12 +67,11 @@ export function LoginForm({
         password,
       });
       if (error) throw error;
-      // Refresh the router cache and redirect to dashboard after successful login
-      router.refresh();
-      router.push("/dashboard");
+      // Use hard redirect to ensure cookies are properly synced before navigation
+      window.location.href = "/dashboard";
+      return; // Exit early on success - don't reset loading state since we're redirecting
     } catch (error: unknown) {
       setError(getLoginErrorMessage(error));
-    } finally {
       setIsLoading(false);
     }
   };

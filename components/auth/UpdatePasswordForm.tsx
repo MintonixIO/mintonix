@@ -12,7 +12,6 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { useRouter } from "next/navigation";
 import { useState } from "react";
 
 // Map of known error codes to user-friendly messages
@@ -57,7 +56,6 @@ export function UpdatePasswordForm({
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const router = useRouter();
 
   const handleForgotPassword = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -68,11 +66,11 @@ export function UpdatePasswordForm({
     try {
       const { error } = await supabase.auth.updateUser({ password });
       if (error) throw error;
-      router.refresh();
-      router.push("/dashboard");
+      // Use hard redirect to ensure cookies are properly synced before navigation
+      window.location.href = "/dashboard";
+      return; // Exit early on success - don't reset loading state since we're redirecting
     } catch (error: unknown) {
       setError(getUpdatePasswordErrorMessage(error));
-    } finally {
       setIsLoading(false);
     }
   };
