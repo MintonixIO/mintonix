@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { completeMultipartUpload, verifyUpload, getSignedVideoUrl } from '@/lib/r2';
 import { createClient } from '@/lib/supabase/server';
-import { logDebug, logSuccess, logError } from '@/lib/logger';
+import { logSuccess, logError } from '@/lib/logger';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -39,7 +39,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Verify upload with retries
-    let verificationResult = { exists: false, size: 0 };
+    let verificationResult: { exists: boolean; size?: number } = { exists: false };
     for (let i = 0; i < 5; i++) {
       verificationResult = await verifyUpload(r2Key);
       if (verificationResult.exists) break;
@@ -78,7 +78,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Get file size from verification
-    const fileSize = verificationResult.size || 0;
+    const fileSize = verificationResult.size ?? 0;
     const estimatedDurationMinutes = estimateVideoDuration(fileSize);
 
     // Deduct usage minutes

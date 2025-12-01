@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createPresignedUpload } from '@/lib/r2';
 import { createClient } from '@/lib/supabase/server';
-import { logDebug, logSuccess, logError, logWarn } from '@/lib/logger';
+import { logSuccess, logError, logWarn } from '@/lib/logger';
 
 export const runtime = 'nodejs';
 export const maxDuration = 30;
@@ -83,7 +83,7 @@ export async function POST(request: NextRequest) {
     const uploadInfo = await createPresignedUpload(userId, fileName, fileSize, fileType);
 
     // Pre-create database record with "uploading" status
-    const { data: videoRecord, error: videoError } = await supabase
+    const { error: videoError } = await supabase
       .from('videos')
       .insert({
         video_id: uploadInfo.videoId,

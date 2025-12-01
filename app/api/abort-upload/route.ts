@@ -32,7 +32,7 @@ export async function POST(request: NextRequest) {
     logWarn('Upload aborted', { videoId, r2Key });
 
     return NextResponse.json({ success: true });
-  } catch (error) {
+  } catch {
     return NextResponse.json(
       { error: 'Failed to abort upload' },
       { status: 500 }

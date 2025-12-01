@@ -14,10 +14,21 @@ export interface UploadOptions {
   signal?: AbortSignal; // For cancellation
 }
 
+interface UploadInfo {
+  uploadId: string;
+  videoId: string;
+  r2Key: string;
+  isMultipart: boolean;
+  urls: string[];
+  partSize?: number;
+  totalParts?: number;
+  expiresAt: number;
+}
+
 export class VideoUploadManager {
   private file: File;
   private userId: string;
-  private uploadInfo: any;
+  private uploadInfo: UploadInfo | null = null;
   private abortController: AbortController;
   private startTime: number = 0;
   private uploadedBytes: number = 0;
@@ -71,6 +82,9 @@ export class VideoUploadManager {
   }
 
   private async uploadSingle(options: UploadOptions): Promise<string> {
+    if (!this.uploadInfo) {
+      throw new Error('Upload not initialized');
+    }
     const url = this.uploadInfo.urls[0];
 
     const xhr = new XMLHttpRequest();
@@ -121,6 +135,9 @@ export class VideoUploadManager {
   }
 
   private async uploadMultipart(options: UploadOptions): Promise<string> {
+    if (!this.uploadInfo) {
+      throw new Error('Upload not initialized');
+    }
     const { urls, partSize, totalParts } = this.uploadInfo;
     this.parts = [];
 
@@ -163,7 +180,7 @@ export class VideoUploadManager {
 
         const progress = this.calculateProgress(this.uploadedBytes, this.file.size);
         progress.currentPart = partNumber;
-        progress.totalParts = this.uploadInfo.totalParts;
+        progress.totalParts = this.uploadInfo?.totalParts;
 
         options.onProgress?.(progress);
       }
@@ -221,7 +238,10 @@ export class VideoUploadManager {
     };
   }
 
-  async complete(thumbnail?: string): Promise<any> {
+  async complete(thumbnail?: string): Promise<{ success: boolean; videoId: string; minutes_consumed: string }> {
+    if (!this.uploadInfo) {
+      throw new Error('Upload not initialized');
+    }
     const response = await fetch('/api/complete-upload', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
