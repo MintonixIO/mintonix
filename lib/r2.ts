@@ -1,7 +1,17 @@
-import { S3Client, GetObjectCommand, ListObjectsV2Command, HeadObjectCommand } from '@aws-sdk/client-s3';
+import {
+  S3Client,
+  GetObjectCommand,
+  ListObjectsV2Command,
+  HeadObjectCommand,
+  PutObjectCommand,
+  CreateMultipartUploadCommand,
+  CompleteMultipartUploadCommand,
+  AbortMultipartUploadCommand,
+  UploadPartCommand
+} from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { Upload } from '@aws-sdk/lib-storage';
-import { logDebug, logSuccess, logError } from './logger';
+import { logDebug, logSuccess, logError, logWarn } from './logger';
 
 // Cloudflare R2 configuration
 export const r2Client = new S3Client({
@@ -25,6 +35,30 @@ export interface UploadedVideo {
   userId: string;
   videoId: string;
 }
+
+export interface PresignedUploadUrls {
+  uploadId: string;
+  videoId: string;
+  r2Key: string;
+  isMultipart: boolean;
+  urls: string[];
+  partSize?: number;
+  totalParts?: number;
+  expiresAt: number;
+}
+
+export interface CompleteUploadRequest {
+  uploadId: string;
+  videoId: string;
+  r2Key: string;
+  parts?: Array<{ ETag: string; PartNumber: number }>;
+}
+
+// Constants for multipart upload
+const MULTIPART_THRESHOLD = 100 * 1024 * 1024; // 100MB
+const PART_SIZE = 10 * 1024 * 1024; // 10MB chunks
+const PRESIGNED_URL_EXPIRY = 3600; // 1 hour
+const MAX_PARTS = 1000; // Support up to 10GB files
 
 function generateVideoId(): string {
   // Generate a unique video ID
@@ -409,6 +443,152 @@ export async function getAnalysisFileContent(
     logError('Error reading file', { fileName, error });
     throw error;
   }
+}
+
+/**
+ * Create presigned URLs for direct upload to R2
+ * For files < 100MB: Returns single PUT URL
+ * For files >= 100MB: Initiates multipart upload and returns array of part URLs
+ */
+export async function createPresignedUpload(
+  userId: string,
+  fileName: string,
+  fileSize: number,
+  fileType: string
+): Promise<PresignedUploadUrls> {
+  const videoId = generateVideoId();
+  const sanitizedFileName = sanitizeFileName(fileName);
+  const fileExtension = sanitizedFileName.split('.').pop();
+  const r2Key = `${R2_ENVIRONMENT}/${userId}/${videoId}/video.${fileExtension}`;
+
+  // Decide: single upload or multipart
+  const isMultipart = fileSize >= MULTIPART_THRESHOLD;
+
+  if (!isMultipart) {
+    // Simple single-file upload using PutObject presigned URL
+    const command = new PutObjectCommand({
+      Bucket: BUCKET_NAME,
+      Key: r2Key,
+      ContentType: fileType,
+      Metadata: {
+        userId,
+        videoId,
+        originalName: sanitizedFileName,
+        uploadTimestamp: Date.now().toString(),
+      },
+    });
+
+    const presignedUrl = await getSignedUrl(r2Client, command, {
+      expiresIn: PRESIGNED_URL_EXPIRY,
+    });
+
+    logDebug('Generated single presigned URL', { r2Key, fileSize: `${(fileSize / 1024 / 1024).toFixed(2)} MB` });
+
+    return {
+      uploadId: videoId, // Use videoId as uploadId for simple uploads
+      videoId,
+      r2Key,
+      isMultipart: false,
+      urls: [presignedUrl],
+      expiresAt: Date.now() + PRESIGNED_URL_EXPIRY * 1000,
+    };
+  } else {
+    // Multipart upload
+    const createCommand = new CreateMultipartUploadCommand({
+      Bucket: BUCKET_NAME,
+      Key: r2Key,
+      ContentType: fileType,
+      Metadata: {
+        userId,
+        videoId,
+        originalName: sanitizedFileName,
+        uploadTimestamp: Date.now().toString(),
+      },
+    });
+
+    const createResponse = await r2Client.send(createCommand);
+    const uploadId = createResponse.UploadId!;
+
+    // Calculate number of parts
+    const totalParts = Math.ceil(fileSize / PART_SIZE);
+
+    if (totalParts > MAX_PARTS) {
+      throw new Error(`File too large: requires ${totalParts} parts, maximum is ${MAX_PARTS}`);
+    }
+
+    // Generate presigned URLs for each part
+    const urls: string[] = [];
+    for (let partNumber = 1; partNumber <= totalParts; partNumber++) {
+      const uploadPartCommand = new UploadPartCommand({
+        Bucket: BUCKET_NAME,
+        Key: r2Key,
+        UploadId: uploadId,
+        PartNumber: partNumber,
+      });
+
+      const presignedUrl = await getSignedUrl(r2Client, uploadPartCommand, {
+        expiresIn: PRESIGNED_URL_EXPIRY,
+      });
+      urls.push(presignedUrl);
+    }
+
+    logDebug('Generated multipart presigned URLs', {
+      r2Key,
+      fileSize: `${(fileSize / 1024 / 1024).toFixed(2)} MB`,
+      totalParts,
+    });
+
+    return {
+      uploadId,
+      videoId,
+      r2Key,
+      isMultipart: true,
+      urls,
+      partSize: PART_SIZE,
+      totalParts,
+      expiresAt: Date.now() + PRESIGNED_URL_EXPIRY * 1000,
+    };
+  }
+}
+
+/**
+ * Complete a multipart upload
+ */
+export async function completeMultipartUpload(
+  r2Key: string,
+  uploadId: string,
+  parts: Array<{ ETag: string; PartNumber: number }>
+): Promise<void> {
+  const command = new CompleteMultipartUploadCommand({
+    Bucket: BUCKET_NAME,
+    Key: r2Key,
+    UploadId: uploadId,
+    MultipartUpload: {
+      Parts: parts.sort((a, b) => a.PartNumber - b.PartNumber),
+    },
+  });
+
+  await r2Client.send(command);
+
+  logSuccess('Multipart upload completed', { r2Key, uploadId, partsCount: parts.length });
+}
+
+/**
+ * Abort a multipart upload and clean up resources
+ */
+export async function abortMultipartUpload(
+  r2Key: string,
+  uploadId: string
+): Promise<void> {
+  const command = new AbortMultipartUploadCommand({
+    Bucket: BUCKET_NAME,
+    Key: r2Key,
+    UploadId: uploadId,
+  });
+
+  await r2Client.send(command);
+
+  logWarn('Multipart upload aborted', { r2Key, uploadId });
 }
 
 /**
