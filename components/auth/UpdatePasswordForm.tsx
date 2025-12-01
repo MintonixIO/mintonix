@@ -30,8 +30,11 @@ function getUpdatePasswordErrorMessage(error: unknown): string {
   if (message.includes("password") && message.includes("short")) {
     return "Password must be at least 6 characters long.";
   }
-  if (message.includes("same password") || message.includes("different password")) {
-    return "Please choose a different password from your current one.";
+  if (message.includes("same password")) {
+    return "New password must be different from your current password.";
+  }
+  if (message.includes("different password")) {
+    return "Please choose a different password.";
   }
   if (message.includes("session") || message.includes("expired") || message.includes("not authenticated")) {
     return "Your session has expired. Please request a new password reset link.";
