@@ -82,12 +82,37 @@ export async function POST(request: NextRequest) {
 // }
 
 function createPlaceholderThumbnail(): string {
-  // Create a simple SVG placeholder thumbnail
-  const svg = `<svg width="320" height="180" xmlns="http://www.w3.org/2000/svg">
-<rect width="100%" height="100%" fill="#1f2937"/>
-<circle cx="160" cy="90" r="30" fill="#6b7280" stroke="#9ca3af" stroke-width="3"/>
-<polygon points="150,75 150,105 175,90" fill="#f3f4f6"/>
+  // Create a modern glassmorphism SVG placeholder thumbnail
+  const svg = `<svg width="640" height="360" xmlns="http://www.w3.org/2000/svg">
+<defs>
+  <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+    <stop offset="0%" style="stop-color:#1e1e1e"/>
+    <stop offset="100%" style="stop-color:#0a0a0a"/>
+  </linearGradient>
+  <filter id="blur">
+    <feGaussianBlur in="SourceGraphic" stdDeviation="4"/>
+  </filter>
+  <filter id="innerGlow">
+    <feGaussianBlur stdDeviation="2" result="coloredBlur"/>
+    <feMerge>
+      <feMergeNode in="coloredBlur"/>
+      <feMergeNode in="SourceGraphic"/>
+    </feMerge>
+  </filter>
+</defs>
+<rect width="100%" height="100%" fill="url(#bg)"/>
+<rect width="100%" height="100%" fill="url(#bg)" opacity="0.05"/>
+<rect x="210" y="100" width="220" height="160" rx="16" fill="#2a2a2a" opacity="0.3" filter="url(#blur)"/>
+<rect x="215" y="105" width="210" height="150" rx="14" fill="#252525" opacity="0.4" filter="url(#blur)"/>
+<rect x="215" y="105" width="210" height="150" rx="14" fill="none" stroke="#404040" stroke-width="1" opacity="0.6"/>
+<rect x="220" y="110" width="200" height="140" rx="12" fill="none" stroke="#505050" stroke-width="0.5" opacity="0.3"/>
+<rect x="255" y="135" width="130" height="90" rx="10" fill="#1a1a1a" opacity="0.7" filter="url(#innerGlow)"/>
+<rect x="255" y="135" width="130" height="90" rx="10" fill="none" stroke="#505050" stroke-width="2" opacity="0.5"/>
+<rect x="258" y="138" width="124" height="84" rx="8" fill="none" stroke="#606060" stroke-width="1" opacity="0.3"/>
+<path d="M 300 160 L 300 200 L 345 180 Z" fill="#e0e0e0" opacity="0.9"/>
+<path d="M 303 165 L 303 195 L 335 180 Z" fill="#ffffff" opacity="0.15"/>
+<ellipse cx="260" cy="130" rx="40" ry="25" fill="#ffffff" opacity="0.03" filter="url(#blur)"/>
 </svg>`;
-  
+
   return svg;
 }

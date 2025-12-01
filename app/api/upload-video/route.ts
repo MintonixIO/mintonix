@@ -16,6 +16,41 @@ function estimateVideoDuration(file: File): number {
   return Math.min(Math.max(estimatedMinutes, 0.5), 60); // Min 0.5 min, max 60 min
 }
 
+function createDefaultThumbnail(): string {
+  // Create a modern glassmorphism SVG placeholder thumbnail
+  const svg = `<svg width="640" height="360" xmlns="http://www.w3.org/2000/svg">
+<defs>
+  <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+    <stop offset="0%" style="stop-color:#1e1e1e"/>
+    <stop offset="100%" style="stop-color:#0a0a0a"/>
+  </linearGradient>
+  <filter id="blur">
+    <feGaussianBlur in="SourceGraphic" stdDeviation="4"/>
+  </filter>
+  <filter id="innerGlow">
+    <feGaussianBlur stdDeviation="2" result="coloredBlur"/>
+    <feMerge>
+      <feMergeNode in="coloredBlur"/>
+      <feMergeNode in="SourceGraphic"/>
+    </feMerge>
+  </filter>
+</defs>
+<rect width="100%" height="100%" fill="url(#bg)"/>
+<rect width="100%" height="100%" fill="url(#bg)" opacity="0.05"/>
+<rect x="210" y="100" width="220" height="160" rx="16" fill="#2a2a2a" opacity="0.3" filter="url(#blur)"/>
+<rect x="215" y="105" width="210" height="150" rx="14" fill="#252525" opacity="0.4" filter="url(#blur)"/>
+<rect x="215" y="105" width="210" height="150" rx="14" fill="none" stroke="#404040" stroke-width="1" opacity="0.6"/>
+<rect x="220" y="110" width="200" height="140" rx="12" fill="none" stroke="#505050" stroke-width="0.5" opacity="0.3"/>
+<rect x="255" y="135" width="130" height="90" rx="10" fill="#1a1a1a" opacity="0.7" filter="url(#innerGlow)"/>
+<rect x="255" y="135" width="130" height="90" rx="10" fill="none" stroke="#505050" stroke-width="2" opacity="0.5"/>
+<rect x="258" y="138" width="124" height="84" rx="8" fill="none" stroke="#606060" stroke-width="1" opacity="0.3"/>
+<path d="M 300 160 L 300 200 L 345 180 Z" fill="#e0e0e0" opacity="0.9"/>
+<path d="M 303 165 L 303 195 L 335 180 Z" fill="#ffffff" opacity="0.15"/>
+<ellipse cx="260" cy="130" rx="40" ry="25" fill="#ffffff" opacity="0.03" filter="url(#blur)"/>
+</svg>`;
+  return svg;
+}
+
 
 export async function POST(request: NextRequest) {
   try {
@@ -23,7 +58,11 @@ export async function POST(request: NextRequest) {
     const file = formData.get('file') as File;
     const userId = formData.get('userId') as string;
     const fileName = formData.get('fileName') as string;
-    const thumbnail = formData.get('thumbnail') as string;
+    const thumbnailSmall = formData.get('thumbnailSmall') as string | null;
+    const thumbnailMedium = formData.get('thumbnailMedium') as string | null;
+    const thumbnailLarge = formData.get('thumbnailLarge') as string | null;
+    // Legacy support for old single thumbnail format
+    const thumbnail = formData.get('thumbnail') as string | null;
 
     if (!file || !userId || !fileName) {
       return NextResponse.json(
@@ -160,18 +199,83 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Save thumbnail if provided
-    if (thumbnail) {
-      try {
-        // Convert data URL to buffer
-        const base64Data = thumbnail.replace(/^data:image\/jpeg;base64,/, '');
-        const thumbnailBuffer = Buffer.from(base64Data, 'base64');
+    // Save thumbnails if provided
+    const { uploadAnalysisFile } = await import('@/lib/r2');
+    let thumbnailUploaded = false;
 
-        // Upload thumbnail
-        const { uploadAnalysisFile } = await import('@/lib/r2');
-        await uploadAnalysisFile(userId, result.videoId, 'thumbnail.jpg', thumbnailBuffer, 'image/jpeg');
+    // Helper function to extract format and data from data URL
+    const parseThumbnailData = (dataUrl: string) => {
+      const match = dataUrl.match(/^data:image\/(jpeg|jpg|webp);base64,(.+)$/);
+      if (!match) return null;
+      const format = match[1] === 'jpg' ? 'jpeg' : match[1];
+      const base64Data = match[2];
+      const buffer = Buffer.from(base64Data, 'base64');
+      const mimeType = `image/${format}`;
+      return { buffer, format, mimeType };
+    };
+
+    // Try to upload multi-resolution thumbnails
+    if (thumbnailSmall || thumbnailMedium || thumbnailLarge) {
+      try {
+        const uploadPromises: Promise<void>[] = [];
+
+        if (thumbnailSmall) {
+          const parsed = parseThumbnailData(thumbnailSmall);
+          if (parsed) {
+            uploadPromises.push(
+              uploadAnalysisFile(userId, result.videoId, `thumbnail-sm.${parsed.format}`, parsed.buffer, parsed.mimeType)
+            );
+          }
+        }
+
+        if (thumbnailMedium) {
+          const parsed = parseThumbnailData(thumbnailMedium);
+          if (parsed) {
+            uploadPromises.push(
+              uploadAnalysisFile(userId, result.videoId, `thumbnail.${parsed.format}`, parsed.buffer, parsed.mimeType)
+            );
+          }
+        }
+
+        if (thumbnailLarge) {
+          const parsed = parseThumbnailData(thumbnailLarge);
+          if (parsed) {
+            uploadPromises.push(
+              uploadAnalysisFile(userId, result.videoId, `thumbnail-lg.${parsed.format}`, parsed.buffer, parsed.mimeType)
+            );
+          }
+        }
+
+        await Promise.all(uploadPromises);
+        thumbnailUploaded = true;
+        logSuccess('Multi-resolution thumbnails uploaded successfully', { videoId: result.videoId, count: uploadPromises.length });
       } catch (thumbnailError) {
-        logWarn('Failed to save thumbnail (continuing anyway)', thumbnailError);
+        logWarn('Failed to save multi-resolution thumbnails', thumbnailError);
+      }
+    }
+
+    // Legacy single thumbnail support
+    if (!thumbnailUploaded && thumbnail) {
+      try {
+        const parsed = parseThumbnailData(thumbnail);
+        if (parsed) {
+          await uploadAnalysisFile(userId, result.videoId, `thumbnail.${parsed.format}`, parsed.buffer, parsed.mimeType);
+          thumbnailUploaded = true;
+          logSuccess('Legacy thumbnail uploaded successfully', { videoId: result.videoId });
+        }
+      } catch (thumbnailError) {
+        logWarn('Failed to save legacy thumbnail', thumbnailError);
+      }
+    }
+
+    // If no thumbnails were uploaded, use default SVG
+    if (!thumbnailUploaded) {
+      try {
+        const defaultThumbnail = createDefaultThumbnail();
+        await uploadAnalysisFile(userId, result.videoId, 'thumbnail.svg', defaultThumbnail, 'image/svg+xml');
+        logSuccess('Default SVG thumbnail uploaded');
+      } catch (fallbackError) {
+        logError('Failed to upload default thumbnail', fallbackError);
       }
     }
 

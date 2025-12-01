@@ -265,22 +265,17 @@ export function VideoGrid({ userId, refreshTrigger, onVideoDeleted }: VideoGridP
               <CardContent className="p-4">
                 <div className="relative h-32 bg-muted rounded mb-4 overflow-hidden group">
                   <Image
-                    src={`/api/thumbnail-stream?key=dev/${userId}/${video.videoId}/thumbnail.jpg`}
+                    src={`/api/thumbnail-stream?key=dev/${userId}/${video.videoId}/thumbnail&size=small`}
                     alt={video.fileName}
                     fill
                     className="object-cover"
                     style={{ imageRendering: 'auto' }}
                     onError={(e) => {
-                      // Try SVG fallback first
+                      // Smart fallback handled by API, only show icon if API fails completely
                       const target = e.target as HTMLImageElement;
-                      if (target.src.includes('thumbnail.jpg')) {
-                        target.src = `/api/thumbnail-stream?key=dev/${userId}/${video.videoId}/thumbnail.svg`;
-                      } else {
-                        // If SVG also fails, show icon
-                        target.style.display = 'none';
-                        const fallback = target.nextElementSibling as HTMLElement;
-                        if (fallback) fallback.style.display = 'flex';
-                      }
+                      target.style.display = 'none';
+                      const fallback = target.nextElementSibling as HTMLElement;
+                      if (fallback) fallback.style.display = 'flex';
                     }}
                   />
                   <div className="absolute inset-0 flex items-center justify-center bg-muted" style={{ display: 'none' }}>

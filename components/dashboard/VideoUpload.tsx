@@ -6,8 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Progress } from "@/components/ui/progress";
 import { Upload, FileVideo, Loader2, X } from "lucide-react";
 import toast from "react-hot-toast";
-import { generateThumbnailFromFile } from "@/lib/thumbnail";
-import { VideoUploadManager, UploadProgress } from "@/lib/upload-manager";
+import { generateMultiResolutionThumbnails, generateThumbnailWithRetry } from "@/lib/thumbnail";
 
 interface VideoUploadProps {
   userId: string;
@@ -82,21 +81,42 @@ export function VideoUpload({ userId, onVideoUploaded, userSubscription }: Video
     const uploadToast = toast.loading(`Preparing ${file.name}...`);
 
     try {
-      // Generate thumbnail
-      let thumbnailDataUrl = '';
+      // Generate multi-resolution thumbnails with timeout and error handling
+      let thumbnailData: { small?: string; medium?: string; large?: string } = {};
       try {
-        const thumbnailPromise = generateThumbnailFromFile(file);
-        const timeoutPromise = new Promise<string>((_, reject) =>
-          setTimeout(() => reject(new Error('Thumbnail generation timeout')), 10000)
+        const timeoutPromise = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Thumbnail generation timeout')), 15000)
         );
-        thumbnailDataUrl = await Promise.race([thumbnailPromise, timeoutPromise]);
-      } catch {
-        // Continue without thumbnail
+
+        const thumbnailPromise = generateMultiResolutionThumbnails(file);
+        const thumbnails = await Promise.race([thumbnailPromise, timeoutPromise]);
+
+        thumbnailData = {
+          small: thumbnails.small.dataUrl,
+          medium: thumbnails.medium.dataUrl,
+          large: thumbnails.large.dataUrl,
+        };
+      } catch (error) {
+        // If multi-resolution fails, try single thumbnail with retry
+        console.warn('Multi-resolution thumbnail generation failed, trying single resolution with retry:', error);
+        try {
+          const fallbackThumbnail = await generateThumbnailWithRetry(file, {}, 2);
+          thumbnailData.medium = fallbackThumbnail.dataUrl;
+        } catch {
+          // Continue upload without thumbnail
+          console.warn('All thumbnail generation attempts failed, continuing without thumbnail');
+        }
       }
 
-      // Initialize upload manager
-      const uploadManager = new VideoUploadManager(file, userId);
-      uploadManagerRef.current = uploadManager;
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('userId', userId);
+      formData.append('fileName', file.name);
+
+      // Attach thumbnails if available
+      if (thumbnailData.small) formData.append('thumbnailSmall', thumbnailData.small);
+      if (thumbnailData.medium) formData.append('thumbnailMedium', thumbnailData.medium);
+      if (thumbnailData.large) formData.append('thumbnailLarge', thumbnailData.large);
 
       toast.loading(`Initializing upload...`, { id: uploadToast });
       await uploadManager.initialize();
