@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { uploadVideo, getSignedVideoUrl } from '@/lib/r2';
+import { uploadVideo } from '@/lib/r2';
 import { createClient } from '@/lib/supabase/server';
 import { logJobInfo, logSuccess, logError, logWarn } from '@/lib/logger';
 
@@ -291,58 +291,67 @@ export async function POST(request: NextRequest) {
     });
 
     // Automatically trigger full video processing via RunPod
+    // PHASE 1: Create pending job record (fast, reliable)
     try {
       const runpodEndpoint = process.env.RUNPOD_ENDPOINT_ID;
       const runpodApiKey = process.env.RUNPOD_API_KEY;
 
+      logJobInfo({
+        autoProcessingCheck: 'Starting',
+        hasRunpodEndpoint: !!runpodEndpoint,
+        hasRunpodApiKey: !!runpodApiKey,
+        videoId: result.videoId,
+        userId: userId
+      });
+
       if (runpodEndpoint && runpodApiKey) {
-        // Trigger async processing directly (no HTTP call needed)
-        (async () => {
-          try {
-            // Get signed video URL (use same key as uploaded video)
-            const signedVideoUrl = await getSignedVideoUrl(r2Key);
+        const internalJobId = `unified-${result.videoId}-${Date.now()}`;
 
-            // Construct webhook URL
-            const webhookUrl = process.env.NEXT_PUBLIC_APP_URL
-              ? `${process.env.NEXT_PUBLIC_APP_URL}/api/webhook`
-              : 'http://localhost:3000/api/webhook';
+        logJobInfo({ creatingJob: internalJobId });
 
-            // Submit job to RunPod
-            const runpodResponse = await fetch(`https://api.runpod.ai/v2/${runpodEndpoint}/run`, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${runpodApiKey}`,
-              },
-              body: JSON.stringify({
-                input: {
-                  video_url: signedVideoUrl,
-                  user_id: userId,
-                  video_id: result.videoId,
-                  webhook_url: webhookUrl
-                }
-              })
-            });
+        // Create pending job record in database (fast, <100ms)
+        const { createProcessingJob } = await import('@/lib/processing-jobs');
 
-            if (!runpodResponse.ok) {
-              throw new Error(`RunPod API error: ${runpodResponse.status}`);
-            }
-
-            const runpodData = await runpodResponse.json();
-            const runpodJobId = runpodData.id;
-            const internalJobId = `unified-${result.videoId}-${Date.now()}`;
-
-            // Python worker will create the processing job record
-            logSuccess('Auto-processing initiated', { jobId: internalJobId, runpodJobId });
-          } catch (error) {
-            logError('Auto-processing failed', error);
+        const job = await createProcessingJob({
+          jobId: internalJobId,
+          userId: userId,
+          videoId: result.videoId,
+          jobType: 'unified_analysis',
+          jobParams: {
+            r2_key: r2Key
           }
-        })();
+        });
+
+        if (job) {
+          logSuccess('Pending job created', { jobId: internalJobId, videoId: result.videoId });
+
+          // PHASE 2: Trigger the processing endpoint (fire-and-forget HTTP call)
+          // This returns immediately but the separate endpoint will process the job
+          const triggerUrl = process.env.NEXT_PUBLIC_APP_URL
+            ? `${process.env.NEXT_PUBLIC_APP_URL}/api/trigger-pending-jobs`
+            : `${request.headers.get('origin') || 'http://localhost:3000'}/api/trigger-pending-jobs`;
+
+          // Non-blocking HTTP request to trigger Phase 2
+          fetch(triggerUrl, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'User-Agent': 'MintonixUploadTrigger/1.0'
+            },
+            body: JSON.stringify({ jobId: internalJobId })
+          }).catch(err => {
+            // If immediate trigger fails, cron job will pick it up
+            logError('Failed to trigger job processor (cron will retry)', err);
+          });
+
+        } else {
+          logError('Failed to create pending job record');
+        }
       } else {
         logWarn('RunPod not configured - skipping auto-processing');
       }
     } catch (autoProcessError) {
-      logError('Failed to trigger auto-processing', autoProcessError);
+      logError('Failed to create pending job', autoProcessError);
     }
 
     return NextResponse.json({
