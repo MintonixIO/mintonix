@@ -1,5 +1,4 @@
-import { createClient } from '@/lib/supabase/server';
-import { cookies } from 'next/headers';
+import { createAdminClient } from '@/lib/supabase/server';
 
 export type JobStatus =
   | 'queued'
@@ -59,8 +58,8 @@ export async function createProcessingJob({
   webhookUrl?: string;
   parentJobId?: string;
 }): Promise<ProcessingJob | null> {
-  await cookies(); // Ensure cookies are available
-  const supabase = await createClient();
+  // Use admin client to bypass RLS for server-side operations
+  const supabase = createAdminClient();
 
   const { data, error } = await supabase
     .from('processing_jobs')
@@ -111,8 +110,8 @@ export async function updateJobStatus({
   error?: string;
   errorDetails?: Record<string, unknown>;
 }): Promise<ProcessingJob | null> {
-  await cookies(); // Ensure cookies are available
-  const supabase = await createClient();
+  // Use admin client to bypass RLS for server-side operations
+  const supabase = createAdminClient();
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const updates: Record<string, any> = {
@@ -154,8 +153,8 @@ export async function updateJobStatus({
  * Get processing job by job_id
  */
 export async function getProcessingJob(jobId: string): Promise<ProcessingJob | null> {
-  await cookies(); // Ensure cookies are available
-  const supabase = await createClient();
+  // Use admin client to bypass RLS for server-side operations
+  const supabase = createAdminClient();
 
   const { data, error } = await supabase
     .from('processing_jobs')
@@ -178,8 +177,8 @@ export async function getProcessingJobsForVideo(
   userId: string,
   videoId: string
 ): Promise<ProcessingJob[]> {
-  await cookies(); // Ensure cookies are available
-  const supabase = await createClient();
+  // Use admin client to bypass RLS for server-side operations
+  const supabase = createAdminClient();
 
   const { data, error } = await supabase
     .from('processing_jobs')
@@ -211,8 +210,8 @@ export async function getLatestProcessingJob(
  * Increment retry count
  */
 export async function incrementRetryCount(jobId: string): Promise<ProcessingJob | null> {
-  await cookies(); // Ensure cookies are available
-  const supabase = await createClient();
+  // Use admin client to bypass RLS for server-side operations
+  const supabase = createAdminClient();
 
   const { data, error } = await supabase.rpc('increment_job_retry_count', {
     job_id_param: jobId,
@@ -249,8 +248,8 @@ export async function canRetryJob(jobId: string): Promise<boolean> {
  * Mark webhook as received
  */
 export async function markWebhookReceived(jobId: string): Promise<void> {
-  await cookies(); // Ensure cookies are available
-  const supabase = await createClient();
+  // Use admin client to bypass RLS for server-side operations
+  const supabase = createAdminClient();
 
   await supabase
     .from('processing_jobs')
