@@ -94,6 +94,7 @@ CREATE TABLE public.videos (
 
   -- Status tracking
   status TEXT NOT NULL DEFAULT 'uploaded' CHECK (status IN (
+    'uploading',   -- Upload in progress (direct-to-R2 upload)
     'uploaded',    -- Just uploaded, not yet processed
     'processing',  -- Currently being analyzed
     'completed',   -- Analysis finished successfully
@@ -116,7 +117,7 @@ CREATE TABLE public.videos (
 COMMENT ON TABLE public.videos IS 'Video metadata and status tracking (actual files stored in R2)';
 COMMENT ON COLUMN public.videos.video_id IS 'Unique video identifier matching R2 folder name';
 COMMENT ON COLUMN public.videos.r2_key IS 'Full R2 object path including environment prefix';
-COMMENT ON COLUMN public.videos.status IS 'Current video processing status';
+COMMENT ON COLUMN public.videos.status IS 'Current video processing status (uploading = upload in progress, uploaded = upload complete but not analyzed, processing = being analyzed, completed = analysis finished, failed = analysis failed, archived = user archived, deleted = soft deleted)';
 COMMENT ON COLUMN public.videos.deleted_at IS 'Soft delete timestamp - NULL means active';
 
 -- ============================================================================

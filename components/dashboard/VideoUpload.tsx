@@ -1,11 +1,13 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Upload, FileVideo, Loader2 } from "lucide-react";
+import { Progress } from "@/components/ui/progress";
+import { Upload, FileVideo, Loader2, X } from "lucide-react";
 import toast from "react-hot-toast";
-import { generateMultiResolutionThumbnails, generateThumbnailWithRetry } from "@/lib/thumbnail";
+import { generateThumbnailFromFile } from "@/lib/thumbnail";
+import { VideoUploadManager, UploadProgress } from "@/lib/upload-manager";
 
 interface VideoUploadProps {
   userId: string;
@@ -20,7 +22,52 @@ interface VideoUploadProps {
 export function VideoUpload({ userId, onVideoUploaded, userSubscription }: VideoUploadProps) {
   const [isUploading, setIsUploading] = useState(false);
   const [dragActive, setDragActive] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<UploadProgress | null>(null);
+  const [currentFileName, setCurrentFileName] = useState<string>("");
+  const uploadManagerRef = useRef<VideoUploadManager | null>(null);
 
+  const formatBytes = (bytes: number): string => {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
+  };
+
+  const formatTime = (seconds: number): string => {
+    if (seconds < 60) return `${Math.round(seconds)}s`;
+    const minutes = Math.floor(seconds / 60);
+    const secs = Math.round(seconds % 60);
+    return `${minutes}m ${secs}s`;
+  };
+
+  const handleCancelUpload = async () => {
+    if (uploadManagerRef.current) {
+      try {
+        await uploadManagerRef.current.abort();
+        toast.error('Upload cancelled');
+      } catch (error) {
+        console.error('Failed to cancel upload:', error);
+      } finally {
+        setIsUploading(false);
+        setUploadProgress(null);
+        setCurrentFileName("");
+        uploadManagerRef.current = null;
+      }
+    }
+  };
+
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (isUploading) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [isUploading]);
 
   const handleFileUpload = async (file: File) => {
     if (!file.type.startsWith('video/')) {
@@ -29,62 +76,47 @@ export function VideoUpload({ userId, onVideoUploaded, userSubscription }: Video
     }
 
     setIsUploading(true);
-    const uploadToast = toast.loading(`Uploading ${file.name}...`);
+    setCurrentFileName(file.name);
+    setUploadProgress(null);
+
+    const uploadToast = toast.loading(`Preparing ${file.name}...`);
 
     try {
-      // Generate multi-resolution thumbnails with timeout and error handling
-      let thumbnailData: { small?: string; medium?: string; large?: string } = {};
+      // Generate thumbnail
+      let thumbnailDataUrl = '';
       try {
+        const thumbnailPromise = generateThumbnailFromFile(file);
         const timeoutPromise = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('Thumbnail generation timeout')), 15000)
+          setTimeout(() => reject(new Error('Thumbnail generation timeout')), 10000)
         );
-
-        const thumbnailPromise = generateMultiResolutionThumbnails(file);
-        const thumbnails = await Promise.race([thumbnailPromise, timeoutPromise]);
-
-        thumbnailData = {
-          small: thumbnails.small.dataUrl,
-          medium: thumbnails.medium.dataUrl,
-          large: thumbnails.large.dataUrl,
-        };
-      } catch (error) {
-        // If multi-resolution fails, try single thumbnail with retry
-        console.warn('Multi-resolution thumbnail generation failed, trying single resolution with retry:', error);
-        try {
-          const fallbackThumbnail = await generateThumbnailWithRetry(file, {}, 2);
-          thumbnailData.medium = fallbackThumbnail.dataUrl;
-        } catch {
-          // Continue upload without thumbnail
-          console.warn('All thumbnail generation attempts failed, continuing without thumbnail');
-        }
+        const thumbnail = await Promise.race([thumbnailPromise, timeoutPromise]);
+        thumbnailDataUrl = thumbnail.dataUrl;
+      } catch {
+        // Continue without thumbnail
       }
 
-      const formData = new FormData();
-      formData.append('file', file);
-      formData.append('userId', userId);
-      formData.append('fileName', file.name);
+      // Initialize upload manager
+      const uploadManager = new VideoUploadManager(file, userId);
+      uploadManagerRef.current = uploadManager;
 
-      // Attach thumbnails if available
-      if (thumbnailData.small) formData.append('thumbnailSmall', thumbnailData.small);
-      if (thumbnailData.medium) formData.append('thumbnailMedium', thumbnailData.medium);
-      if (thumbnailData.large) formData.append('thumbnailLarge', thumbnailData.large);
+      toast.loading(`Initializing upload...`, { id: uploadToast });
+      await uploadManager.initialize();
 
-      const response = await fetch('/api/upload-video', {
-        method: 'POST',
-        body: formData,
+      // Start upload with progress tracking
+      toast.loading(`Uploading ${file.name}...`, { id: uploadToast });
+
+      await uploadManager.upload({
+        onProgress: (progress) => {
+          setUploadProgress(progress);
+        },
+        onError: (error) => {
+          console.error('Upload error:', error);
+        },
       });
 
-      if (!response.ok) {
-        let errorData;
-        try {
-          errorData = await response.json();
-        } catch {
-          throw new Error(`Upload failed with status ${response.status}`);
-        }
-        throw new Error(errorData?.error || `Upload failed with status ${response.status}`);
-      }
-
-      const result = await response.json();
+      // Complete upload
+      toast.loading(`Finalizing upload...`, { id: uploadToast });
+      const result = await uploadManager.complete(thumbnailDataUrl);
 
       const successMessage = result.minutes_consumed ?
         `${file.name} uploaded successfully! Used ${(parseFloat(result.minutes_consumed) / 60).toFixed(1)} hours.` :
@@ -92,22 +124,21 @@ export function VideoUpload({ userId, onVideoUploaded, userSubscription }: Video
 
       toast.success(successMessage, { id: uploadToast });
 
-      // Wait a bit longer for R2 to propagate before refreshing video list
-      // This helps ensure the video is actually streamable when the player loads it
+      // Wait for R2 propagation
       await new Promise(resolve => setTimeout(resolve, 2000));
 
-      // Call the callback to refresh the video list
+      // Refresh video list
       onVideoUploaded?.();
+
     } catch (error) {
       let errorMessage = 'Upload failed. Please try again.';
 
       if (error instanceof Error) {
         errorMessage = error.message;
-        // Add more context for common errors
         if (error.message.includes('Insufficient minutes') || error.message.includes('Insufficient hours')) {
           errorMessage = 'You have reached your usage limit. Please upgrade your plan to upload more videos.';
         } else if (error.message.includes('timeout')) {
-          errorMessage = 'Upload timed out. The file may be too large or your connection is slow.';
+          errorMessage = 'Upload timed out. Please try again.';
         } else if (error.message.includes('network')) {
           errorMessage = 'Network error. Please check your internet connection and try again.';
         }
@@ -116,6 +147,9 @@ export function VideoUpload({ userId, onVideoUploaded, userSubscription }: Video
       toast.error(errorMessage, { id: uploadToast, duration: 5000 });
     } finally {
       setIsUploading(false);
+      setUploadProgress(null);
+      setCurrentFileName("");
+      uploadManagerRef.current = null;
     }
   };
 
@@ -182,8 +216,39 @@ export function VideoUpload({ userId, onVideoUploaded, userSubscription }: Video
           {isUploading ? (
             <div className="flex flex-col items-center gap-4">
               <Loader2 className="h-12 w-12 animate-spin text-primary" />
-              <p className="text-lg font-medium">Uploading video...</p>
-              <p className="text-sm text-muted-foreground">Please wait while we process your video</p>
+              <p className="text-lg font-medium">Uploading {currentFileName}...</p>
+
+              {uploadProgress && (
+                <div className="w-full max-w-md space-y-2">
+                  <Progress value={uploadProgress.percentage} className="h-2" />
+
+                  <div className="flex justify-between text-sm text-muted-foreground">
+                    <span>{uploadProgress.percentage}%</span>
+                    <span>{formatBytes(uploadProgress.uploadedBytes)} / {formatBytes(uploadProgress.totalBytes)}</span>
+                  </div>
+
+                  <div className="flex justify-between text-xs text-muted-foreground">
+                    <span>Speed: {formatBytes(uploadProgress.uploadSpeed)}/s</span>
+                    <span>ETA: {formatTime(uploadProgress.estimatedTimeRemaining)}</span>
+                  </div>
+
+                  {uploadProgress.totalParts && (
+                    <div className="text-xs text-muted-foreground text-center">
+                      Part {uploadProgress.currentPart} of {uploadProgress.totalParts}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleCancelUpload}
+                className="mt-2"
+              >
+                <X className="h-4 w-4 mr-2" />
+                Cancel Upload
+              </Button>
             </div>
           ) : (
             <div className="flex flex-col items-center gap-4">
@@ -191,6 +256,7 @@ export function VideoUpload({ userId, onVideoUploaded, userSubscription }: Video
               <div className="flex flex-col gap-2">
                 <p className="text-lg font-medium">Drop your video here</p>
                 <p className="text-sm text-muted-foreground">or click to browse files</p>
+                <p className="text-xs text-muted-foreground mt-1">Supports videos up to several GB</p>
               </div>
               <Button asChild variant="outline">
                 <label className="cursor-pointer">
