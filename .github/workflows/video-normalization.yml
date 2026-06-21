@@ -1,0 +1,76 @@
+name: Video Normalization Worker
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - "workers/runpod/video-normalization/**"
+  pull_request:
+    paths:
+      - "workers/runpod/video-normalization/**"
+
+jobs:
+  staging:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build
+        working-directory: workers/runpod/video-normalization
+        run: |
+          IMAGE=ghcr.io/${{ github.repository_owner }}/video-normalization
+          IMAGE=${IMAGE,,}
+          docker build -t video-normalization -t $IMAGE:staging .
+
+      - name: Test
+        run: docker run --rm video-normalization python -m unittest test_handler -v
+
+      - name: Push
+        run: |
+          IMAGE=ghcr.io/${{ github.repository_owner }}/video-normalization
+          IMAGE=${IMAGE,,}
+          docker push $IMAGE:staging
+
+  prod:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build
+        working-directory: workers/runpod/video-normalization
+        run: |
+          IMAGE=ghcr.io/${{ github.repository_owner }}/video-normalization
+          IMAGE=${IMAGE,,}
+          docker build -t video-normalization -t $IMAGE:latest .
+
+      - name: Test
+        run: docker run --rm video-normalization python -m unittest test_handler -v
+
+      - name: Push
+        run: |
+          IMAGE=ghcr.io/${{ github.repository_owner }}/video-normalization
+          IMAGE=${IMAGE,,}
+          docker push $IMAGE:latest
