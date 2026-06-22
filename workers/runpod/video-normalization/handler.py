@@ -192,8 +192,40 @@ def probe(path: str) -> dict:
     }
 
 
+def _has_nvenc() -> bool:
+    """Detect h264_nvenc encoder support at runtime."""
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-encoders"],
+            capture_output=True, text=True, timeout=5,
+        )
+        return "h264_nvenc" in result.stdout
+    except Exception:
+        return False
+
+
+_USE_GPU: bool | None = None
+
+
+def use_gpu() -> bool:
+    global _USE_GPU
+    if _USE_GPU is None:
+        _USE_GPU = _has_nvenc()
+    return _USE_GPU
+
+
+# Codecs NVDEC can hardware-decode. -hwaccel cuda auto-selects these and falls
+# back to CPU decode for codecs not in this list, so we don't need to manually
+# pick decoders — but we keep this map for logging / future use.
+_NVDEC_CODECS = {
+    "h264", "hevc", "vp9", "av1", "vp8",
+    "mpeg2video", "mpeg4", "vc1", "mjpeg",
+}
+
+
 def build_ffmpeg_cmd(input_path: str, output_path: str, info: dict) -> list[str]:
     w, h, fps, audio_codec = info["width"], info["height"], info["fps"], info["audio_codec"]
+    src_codec = info.get("codec", "unknown")
 
     vf: list[str] = []
 
@@ -217,20 +249,41 @@ def build_ffmpeg_cmd(input_path: str, output_path: str, info: dict) -> list[str]
     else:
         audio_args = ["-c:a", "aac", "-b:a", "128k"]
 
-    cmd = [
-        "ffmpeg", "-y",
-        "-nostats",
-        "-threads", "0",
-        "-i", input_path,
-        "-c:v", "libx264",
-        "-crf", "23",
-        "-preset", "fast",
+    gpu = use_gpu()
+
+    cmd = ["ffmpeg", "-y", "-nostats", "-threads", "0"]
+
+    if gpu:
+        # -hwaccel cuda uses NVDEC for hardware decode when the source codec
+        # supports it (h264/hevc/vp9/av1/vp8/mpeg2/mpeg4/vc1/mjpeg), and falls
+        # back to CPU decode automatically for anything else.
+        cmd.extend(["-hwaccel", "cuda", "-hwaccel_device", "0"])
+
+    cmd.extend(["-i", input_path])
+
+    if gpu:
+        cmd.extend([
+            "-c:v", "h264_nvenc",
+            "-preset", "p4",
+            "-tune", "hq",
+            "-rc", "vbr",
+            "-cq", "23",
+            "-b:v", "0",
+        ])
+    else:
+        cmd.extend([
+            "-c:v", "libx264",
+            "-crf", "23",
+            "-preset", "fast",
+        ])
+
+    cmd.extend([
         "-vf", ",".join(vf),
         *audio_args,
         "-movflags", "+faststart",
         "-progress", "pipe:2",
         output_path,
-    ]
+    ])
 
     return cmd
 
@@ -322,9 +375,10 @@ def handler(job: dict) -> dict:
 
             src_info = probe(src)
             log.info(f"probe(source): {json.dumps(src_info)}", jid)
-            _progress(job, {"phase": "probe", "status": "done", "source": src_info})
+            _progress(job, {"phase": "probe", "status": "done", "source": src_info, "gpu": use_gpu()})
 
             cmd = build_ffmpeg_cmd(src, dst, src_info)
+            log.info(f"encoder: {'h264_nvenc (GPU)' if use_gpu() else 'libx264 (CPU)'}, source codec: {src_info['codec']}", jid)
             run_ffmpeg(cmd, job, src_info["duration"])
 
             dst_info = probe(dst)
