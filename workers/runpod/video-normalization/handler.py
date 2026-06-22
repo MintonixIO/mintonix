@@ -192,8 +192,16 @@ def probe(path: str) -> dict:
     }
 
 
-def _has_nvenc() -> bool:
-    """Detect h264_nvenc encoder support at runtime."""
+def _has_gpu() -> bool:
+    """Detect an usable NVIDIA GPU at runtime.
+
+    Two conditions must hold:
+      1. A device node exists (e.g. /dev/nvidia0 on Linux GPU pods).
+         Absent on CPU pods and CI runners.
+      2. ffmpeg was compiled with h264_nvenc support.
+    """
+    if not os.path.exists("/dev/nvidia0"):
+        return False
     try:
         result = subprocess.run(
             ["ffmpeg", "-hide_banner", "-encoders"],
@@ -210,7 +218,7 @@ _USE_GPU: bool | None = None
 def use_gpu() -> bool:
     global _USE_GPU
     if _USE_GPU is None:
-        _USE_GPU = _has_nvenc()
+        _USE_GPU = _has_gpu()
     return _USE_GPU
 
 
