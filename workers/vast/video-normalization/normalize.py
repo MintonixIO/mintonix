@@ -1,31 +1,28 @@
+"""Provider-neutral video normalization core.
+
+Pure transcode logic with no platform SDK dependency (no runpod, no vastai).
+Imported by:
+  - server.py      (the FastAPI "model server" the PyWorker proxies to)
+  - worker.py      (only indirectly, via the backend)
+  - test_handler.py (unit + e2e tests run without any serverless SDK installed)
+
+Normalization target: <=1920x1080, <=30 fps, h264 / yuv420p, AAC audio.
+"""
+
 import json
+import logging
 import os
+import shutil
 import subprocess
-import tempfile
 import time
-import traceback
 from urllib.parse import urlparse
 
 import requests
-import runpod
-from runpod.serverless.modules.rp_progress import progress_update
 
-log = runpod.RunPodLogger()
+log = logging.getLogger("video-normalization")
 
 DOWNLOAD_PROGRESS_INTERVAL_SEC = 5.0
-UPLOAD_PROGRESS_INTERVAL_SEC = 5.0
 FFMPEG_PROGRESS_INTERVAL_SEC = 10.0
-
-
-def _jid(job: dict) -> str | None:
-    return job.get("id")
-
-
-def _progress(job: dict, payload: dict) -> None:
-    jid = _jid(job)
-    if jid:
-        progress_update(job, payload)
-    log.info(json.dumps(payload, default=str), jid)
 
 
 def _redact(url: str) -> str:
@@ -33,18 +30,15 @@ def _redact(url: str) -> str:
     return f"{parsed.netloc}{parsed.path}"
 
 
-def download(url: str, dest: str, job: dict) -> None:
-    jid = _jid(job)
+def download(url: str, dest: str) -> None:
     if url.startswith("file://"):
-        import shutil
         src = url[len("file://"):]
         size = os.path.getsize(src)
-        log.info(f"download(local): {src} -> {dest} ({size} bytes)", jid)
+        log.info("download(local): %s -> %s (%d bytes)", src, dest, size)
         shutil.copy(src, dest)
         return
 
-    log.info(f"download(start): {_redact(url)} -> {dest}", jid)
-    _progress(job, {"phase": "download", "status": "started", "url": _redact(url)})
+    log.info("download(start): %s -> %s", _redact(url), dest)
 
     t0 = time.time()
     written = 0
@@ -54,7 +48,7 @@ def download(url: str, dest: str, job: dict) -> None:
     with requests.get(url, stream=True, timeout=300) as r:
         r.raise_for_status()
         total = int(r.headers.get("Content-Length", 0))
-        log.info(f"download(content-length): {total} bytes ({total / 1024 / 1024:.1f} MB)", jid)
+        log.info("download(content-length): %d bytes (%.1f MB)", total, total / 1024 / 1024)
         with open(dest, "wb") as f:
             for chunk in r.iter_content(chunk_size=8 * 1024 * 1024):
                 f.write(chunk)
@@ -70,34 +64,24 @@ def download(url: str, dest: str, job: dict) -> None:
                     if pct is not None:
                         msg += f" ({pct:.1f}%)"
                     msg += f" @ {speed:.1f} MB/s"
-                    log.info(msg, jid)
-                    _progress(job, {
-                        "phase": "download",
-                        "bytes": written,
-                        "total": total,
-                        "progress": round(pct, 1) if pct is not None else None,
-                        "speed_mbps": round(speed, 1),
-                    })
+                    log.info(msg)
 
     elapsed = time.time() - t0
     speed = (written / elapsed / 1024 / 1024) if elapsed else 0
-    log.info(f"download(done): {written} bytes in {elapsed:.1f}s ({speed:.1f} MB/s)", jid)
-    _progress(job, {"phase": "download", "status": "done", "bytes": written, "elapsed_sec": round(elapsed, 1)})
+    log.info("download(done): %d bytes in %.1fs (%.1f MB/s)", written, elapsed, speed)
 
 
-def upload(local_path: str, url: str, job: dict) -> None:
-    jid = _jid(job)
+def upload(local_path: str, url: str) -> None:
     if url.startswith("file://"):
-        import shutil
         dst = url[len("file://"):]
         size = os.path.getsize(local_path)
-        log.info(f"upload(local): {local_path} -> {dst} ({size} bytes)", jid)
+        log.info("upload(local): %s -> %s (%d bytes)", local_path, dst, size)
         shutil.copy(local_path, dst)
         return
 
     size = os.path.getsize(local_path)
-    log.info(f"upload(start): {local_path} ({size} bytes, {size / 1024 / 1024:.1f} MB) -> {_redact(url)}", jid)
-    _progress(job, {"phase": "upload", "status": "started", "bytes": size, "url": _redact(url)})
+    log.info("upload(start): %s (%d bytes, %.1f MB) -> %s",
+             local_path, size, size / 1024 / 1024, _redact(url))
 
     t0 = time.time()
     with open(local_path, "rb") as f:
@@ -106,8 +90,7 @@ def upload(local_path: str, url: str, job: dict) -> None:
 
     elapsed = time.time() - t0
     speed = (size / elapsed / 1024 / 1024) if elapsed else 0
-    log.info(f"upload(done): {size} bytes in {elapsed:.1f}s ({speed:.1f} MB/s)", jid)
-    _progress(job, {"phase": "upload", "status": "done", "bytes": size, "elapsed_sec": round(elapsed, 1)})
+    log.info("upload(done): %d bytes in %.1fs (%.1f MB/s)", size, elapsed, speed)
 
 
 def _parse_fps(rate_str: str) -> float:
@@ -161,7 +144,7 @@ def probe(path: str) -> dict:
 
 
 def _has_gpu() -> bool:
-    """Detect an usable NVIDIA GPU at runtime.
+    """Detect a usable NVIDIA GPU at runtime.
 
     Two conditions must hold:
       1. A device node exists (e.g. /dev/nvidia0, or /dev/nvidia3 on a
@@ -193,8 +176,6 @@ def use_gpu() -> bool:
     return _USE_GPU
 
 
-# Codecs NVDEC can hardware-decode. -hwaccel cuda auto-selects these and falls
-# back to CPU decode for codecs not in this list, so we don't need to manually
 def _has_gpu_filter(name: str) -> bool:
     """Check if a CUDA filter (scale_cuda, etc.) is available at runtime."""
     try:
@@ -233,7 +214,6 @@ def needs_transcode(info: dict) -> bool:
 
 def build_ffmpeg_cmd(input_path: str, output_path: str, info: dict) -> list[str]:
     w, h, fps, audio_codec = info["width"], info["height"], info["fps"], info["audio_codec"]
-    src_codec = info.get("codec", "unknown")
     src_pixfmt = info.get("pixel_fmt", "")
 
     if not needs_transcode(info):
@@ -320,10 +300,8 @@ def build_ffmpeg_cmd(input_path: str, output_path: str, info: dict) -> list[str]
     return cmd
 
 
-def run_ffmpeg(cmd: list[str], job: dict, source_duration: float | None) -> None:
-    jid = _jid(job)
-    log.info(f"ffmpeg(command): {' '.join(cmd)}", jid)
-    _progress(job, {"phase": "transcode", "status": "started"})
+def run_ffmpeg(cmd: list[str], source_duration: float | None) -> None:
+    log.info("ffmpeg(command): %s", " ".join(cmd))
 
     proc = subprocess.Popen(
         cmd,
@@ -372,90 +350,78 @@ def run_ffmpeg(cmd: list[str], job: dict, source_duration: float | None) -> None
                     )
                     if pct is not None:
                         msg += f" ({pct:.1f}%)"
-                    log.info(msg, jid)
-                    _progress(job, {
-                        "phase": "transcode",
-                        "frame": stats.get("frame"),
-                        "fps": stats.get("fps"),
-                        "speed": stats.get("speed"),
-                        "time_sec": round(t_sec, 1),
-                        "progress": round(pct, 1) if pct is not None else None,
-                    })
+                    log.info(msg)
 
     proc.stderr.close()
     proc.wait()
     rc = proc.returncode
     if rc != 0:
         tail = "".join(stderr_tail[-50:])
-        log.error(f"ffmpeg(failed): exit={rc}\n{tail}", jid)
+        log.error("ffmpeg(failed): exit=%d\n%s", rc, tail)
         raise RuntimeError(f"ffmpeg failed (exit {rc}):\n{tail}")
 
-    log.info(f"ffmpeg(done): exit={rc}", jid)
-    _progress(job, {"phase": "transcode", "status": "done"})
+    log.info("ffmpeg(done): exit=%d", rc)
 
 
-def handler(job: dict) -> dict:
-    jid = _jid(job)
-    inp = job["input"]
-    input_url = inp["input_url"]
-    output_upload_url = inp["output_upload_url"]
+def normalize_job(input_url: str, output_upload_url: str) -> dict:
+    """Download -> normalize -> upload. Provider-neutral orchestrator.
 
-    log.info(
-        f"job(start): input={_redact(input_url)} output={_redact(output_upload_url)}",
-        jid,
-    )
-    _progress(job, {"phase": "init", "status": "started"})
+    Returns the output probe dict plus the source probe and elapsed time.
+    Raises on any failure (the caller maps it to an HTTP error / job failure).
+    """
+    import tempfile
+
+    log.info("job(start): input=%s output=%s", _redact(input_url), _redact(output_upload_url))
 
     t_start = time.time()
-    try:
-        with tempfile.TemporaryDirectory() as tmp:
-            src = os.path.join(tmp, "source")
-            dst = os.path.join(tmp, "normalized.mp4")
+    with tempfile.TemporaryDirectory() as tmp:
+        src = os.path.join(tmp, "source")
+        dst = os.path.join(tmp, "normalized.mp4")
 
-            download(input_url, src, job)
+        download(input_url, src)
 
-            src_info = probe(src)
-            log.info(f"probe(source): {json.dumps(src_info)}", jid)
-            _progress(job, {"phase": "probe", "status": "done", "source": src_info, "gpu": use_gpu()})
+        src_info = probe(src)
+        log.info("probe(source): %s gpu=%s", json.dumps(src_info), use_gpu())
 
-            cmd = build_ffmpeg_cmd(src, dst, src_info)
-            is_copy = "-c copy" in cmd or "-c" in cmd and "copy" in cmd
-            if is_copy:
-                log.info(f"remux(copy): source already matches spec, no re-encode needed", jid)
-            else:
-                log.info(f"encoder: {'h264_nvenc' if use_gpu() else 'libx264'}"
-                         f" source: {src_info['codec']} pixfmt={src_info['pixel_fmt']}"
-                         f" {'scale_cuda' if use_gpu() and has_scale_cuda() else 'scale(CPU)'}",
-                         jid)
-            run_ffmpeg(cmd, job, src_info["duration"])
+        cmd = build_ffmpeg_cmd(src, dst, src_info)
+        if not needs_transcode(src_info):
+            log.info("remux(copy): source already matches spec, no re-encode needed")
+        else:
+            log.info(
+                "encoder: %s source: %s pixfmt=%s %s",
+                "h264_nvenc" if use_gpu() else "libx264",
+                src_info["codec"], src_info["pixel_fmt"],
+                "scale_cuda" if use_gpu() and has_scale_cuda() else "scale(CPU)",
+            )
+        run_ffmpeg(cmd, src_info["duration"])
 
-            dst_info = probe(dst)
-            log.info(f"probe(output): {json.dumps(dst_info)}", jid)
-            _progress(job, {"phase": "probe", "status": "done", "output": dst_info})
+        dst_info = probe(dst)
+        log.info("probe(output): %s", json.dumps(dst_info))
 
-            upload(dst, output_upload_url, job)
+        upload(dst, output_upload_url)
 
-            elapsed = round(time.time() - t_start, 1)
-            log.info(f"job(done): elapsed={elapsed}s", jid)
-            _progress(job, {"phase": "done", "status": "complete", "elapsed_sec": elapsed})
-
-            return {
-                **dst_info,
-                "source": src_info,
-                "elapsed_sec": elapsed,
-            }
-    except Exception as e:
         elapsed = round(time.time() - t_start, 1)
-        log.error(f"job(failed): {e}\n{traceback.format_exc()}", jid)
-        _progress(job, {"phase": "error", "status": "failed", "error": str(e), "elapsed_sec": elapsed})
-        raise
+        log.info("job(done): elapsed=%ss", elapsed)
+
+        return {
+            **dst_info,
+            "source": src_info,
+            "elapsed_sec": elapsed,
+        }
 
 
 if __name__ == "__main__":
     import sys
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
     if len(sys.argv) > 1:
         job = json.loads(sys.argv[1])
-        result = handler({"input": job} if "input" not in job else job)
+        inp = job.get("input", job)
+        result = normalize_job(inp["input_url"], inp["output_upload_url"])
         print(json.dumps(result, indent=2))
     else:
-        runpod.serverless.start({"handler": handler})
+        sys.exit("usage: python normalize.py '{\"input_url\": \"file://...\", "
+                 "\"output_upload_url\": \"file://...\"}'")

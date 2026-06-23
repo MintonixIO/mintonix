@@ -57,8 +57,15 @@ though NVENC worked fine.
 - **Verified:** after the fix the 5080 ran the full `h264_nvenc` + `scale_cuda`
   path.
 
-Both fixes are in `handler.py`; the regression assertion is in `test_handler.py`.
-All 12 unit tests pass locally.
+Both fixes are in `normalize.py` (the provider-neutral core); the regression
+assertion is in `test_handler.py`. All 12 unit tests pass locally.
+
+> **Refactor note (vast.ai):** the worker was moved off RunPod's serverless SDK
+> to a vast.ai **PyWorker** deployment. The transcode logic now lives in
+> `normalize.py` (no platform SDK), a FastAPI backend (`server.py`) exposes it as
+> the "model server," and `worker.py` is the vast PyWorker proxy the autoscaler
+> talks to. Directory moved `workers/runpod/...` → `workers/vast/...`. The bug
+> fixes and benchmarks below carried over unchanged.
 
 ---
 
@@ -168,9 +175,9 @@ decode it less or faster on this chip.
 
 ## 6. Recommendations
 
-1. **Land both bug fixes** (fps duration, GPU device glob) — done in `handler.py`
-   / `test_handler.py`. Without Bug B's fix the worker silently runs on CPU on any
-   GPU index ≠ 0.
+1. **Land both bug fixes** (fps duration, GPU device glob) — done in
+   `normalize.py` / `test_handler.py`. Without Bug B's fix the worker silently
+   runs on CPU on any GPU index ≠ 0.
 2. **Monitor NVDEC/NVENC, not `utilization.gpu`** — use `nvidia-smi dmon -s u`.
    Alert on dec/enc %, not the SM number.
 3. **For batch throughput:** the 5080 is the clear winner — ~3× the 4090's

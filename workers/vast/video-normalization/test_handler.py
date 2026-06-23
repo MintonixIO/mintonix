@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import handler as h
+import normalize as h
 
 VIDEO = str(Path(__file__).parent / "sample.mov")
 
@@ -65,12 +65,7 @@ class TestFullPipeline(unittest.TestCase):
     def test_full_pipeline(self):
         with tempfile.TemporaryDirectory() as tmp:
             out = os.path.join(tmp, "normalized.mp4")
-            result = h.handler({
-                "input": {
-                    "input_url": f"file://{VIDEO}",
-                    "output_upload_url": f"file://{out}",
-                }
-            })
+            result = h.normalize_job(f"file://{VIDEO}", f"file://{out}")
 
         self.assertEqual(result["width"], 1920)
         self.assertEqual(result["height"], 1080)

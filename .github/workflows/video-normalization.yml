@@ -5,10 +5,10 @@ on:
     branches:
       - master
     paths:
-      - "workers/runpod/video-normalization/**"
+      - "workers/vast/video-normalization/**"
   pull_request:
     paths:
-      - "workers/runpod/video-normalization/**"
+      - "workers/vast/video-normalization/**"
 
 jobs:
   staging:
@@ -28,7 +28,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build
-        working-directory: workers/runpod/video-normalization
+        working-directory: workers/vast/video-normalization
         run: |
           IMAGE=ghcr.io/${{ github.repository_owner }}/video-normalization
           IMAGE=${IMAGE,,}
@@ -60,7 +60,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build
-        working-directory: workers/runpod/video-normalization
+        working-directory: workers/vast/video-normalization
         run: |
           IMAGE=ghcr.io/${{ github.repository_owner }}/video-normalization
           IMAGE=${IMAGE,,}

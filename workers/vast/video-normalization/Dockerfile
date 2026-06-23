@@ -13,4 +13,8 @@ RUN python3 -m pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-CMD ["python", "-u", "handler.py"]
+# Backend FastAPI server (server.py) + vast.ai PyWorker (worker.py).
+ENV MODEL_SERVER_PORT=18000 \
+    MODEL_LOG=/var/log/portal/video-normalization.log
+
+CMD ["bash", "entrypoint.sh"]
