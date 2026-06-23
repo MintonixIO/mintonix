@@ -1,7 +1,19 @@
 # CUDA 12.8 is the first toolkit with Blackwell / sm_120 support (RTX 50-series,
-# e.g. RTX 5080). 12.4 cannot run GPU code on those GPUs, and vast serverless
-# excludes 5080 offers for a 12.4 image. Keep this >= 12.8 to rent 5080s.
+# e.g. RTX 5080). Keep this base >= 12.8 to run GPU code on those GPUs.
 FROM nvidia/cuda:12.8.0-runtime-ubuntu22.04
+
+# vast.ai decides 5080 (Blackwell) compatibility by evaluating the image's
+# NVIDIA_REQUIRE_CUDA against each offer's host driver. The stock 12.8.0 string
+# whitelists host drivers only up to 565 (driver<566), but EVERY rentable vast
+# RTX 5080 runs driver 570-595 (verified: 52 live offers, drivers 570.x-595.x,
+# cuda_max_good 12.8-13.2). So vast's compat check rejects this image on all of
+# them and the autoscaler can never recruit a 5080 — bumping the base tag would
+# only shift the ceiling, not remove it (12.9.x still caps at driver<571, which
+# matches just 1 of those 52 hosts). Relax the constraint to the real
+# requirement — the CUDA floor for sm_120 — so any modern Blackwell driver
+# passes. (vast reads this env; NVIDIA_DISABLE_REQUIRE would only affect the
+# runtime check, not vast's offer filter.)
+ENV NVIDIA_REQUIRE_CUDA="cuda>=12.8"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
