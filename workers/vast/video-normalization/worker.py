@@ -16,8 +16,9 @@ Request envelope (the SDK delivers {"input": {...}}; request_parser unwraps it):
 """
 
 import os
+import uuid
 
-from vastai import Worker, WorkerConfig, HandlerConfig, LogActionConfig
+from vastai import Worker, WorkerConfig, HandlerConfig, LogActionConfig, BenchmarkConfig
 
 # Backend model server (server.py). Must match MODEL_SERVER_HOST/PORT there.
 MODEL_SERVER_URL = os.environ.get("MODEL_SERVER_URL", "http://127.0.0.1")
@@ -51,6 +52,22 @@ def request_parser(request: dict) -> dict:
     return request
 
 
+# The autoscaler runs this at startup to measure a worker's capacity. It must
+# produce a real, runnable job. We use the sample clip baked into the image
+# (/app/sample.mov) as input and a throwaway local file as output, so the
+# benchmark is self-contained — no external hosting or upload target needed.
+# Each call gets a unique output path so concurrent benchmark runs don't clobber.
+BENCHMARK_INPUT_URL = os.environ.get("BENCHMARK_INPUT_URL", "file:///app/sample.mov")
+
+
+def benchmark_generator() -> dict:
+    return {
+        "input_url": BENCHMARK_INPUT_URL,
+        "output_upload_url": f"file:///tmp/benchmark_{uuid.uuid4().hex}.mp4",
+        "request_id": "benchmark",
+    }
+
+
 worker_config = WorkerConfig(
     model_server_url=MODEL_SERVER_URL,
     model_server_port=MODEL_SERVER_PORT,
@@ -65,11 +82,15 @@ worker_config = WorkerConfig(
             # A 4K60 master can run minutes; give the autoscaler room to spin up
             # a worker before a queued request times out.
             max_queue_time=900.0,
-            # NOTE: no BenchmarkConfig. The vast examples attach one so the
-            # autoscaler can measure per-worker capacity at startup; without it,
-            # scaling falls back to the fixed workload weight above and may be
-            # less precise. Add one (with a small hosted sample clip) once an
-            # endpoint is live and we can measure a representative job.
+            # Required by the SDK (Worker() raises "Missing EndpointHandler with
+            # BenchmarkConfig" without it). concurrency=1 because the workload is
+            # decode-bound — one job saturates a GPU's NVDEC, so measuring with a
+            # single in-flight job reflects real per-worker capacity.
+            benchmark_config=BenchmarkConfig(
+                generator=benchmark_generator,
+                concurrency=1,
+                runs=2,
+            ),
         ),
     ],
     log_action_config=LogActionConfig(

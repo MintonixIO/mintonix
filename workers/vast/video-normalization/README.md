@@ -77,14 +77,30 @@ in-image test suite (CI builds the image and runs `python -m unittest test_handl
 The `vastai-sdk` imports and `WorkerConfig` construction in `worker.py` are
 validated.
 
-**Not yet verified (needs a live test deploy):** managed vast-serverless wiring.
-On managed serverless, `start_server.sh` runs `python -m worker` but does **not**
-run `entrypoint.sh`, so something must still start `server.py` — confirm how the
-endpoint template launches the backend and sets `SERVER_DIR` / `MODEL_LOG`. The
-hyphenated path `workers/vast/video-normalization` is also not a valid
-`workers.<BACKEND>.worker` module path, so a managed deploy likely needs
-`worker.py` resolved via `SERVER_DIR` (root of this dir) rather than `BACKEND`.
-Treat the first managed deploy as a smoke test of these two points.
+`worker.py` reaches the SDK's backend init and stops only at
+`KeyError: 'CONTAINER_ID'` — an env var vast injects on a real serverless
+instance — which confirms config, the mandatory `BenchmarkConfig`, and the
+imports are all correct.
+
+**Not yet verified (needs a live test deploy):**
+- **Autoscaler env injection.** The SDK requires `CONTAINER_ID` (and
+  `MASTER_TOKEN`, `REPORT_ADDR`, `WORKER_PORT`, …), injected by the platform.
+  Confirm these reach the container under **docker ENTRYPOINT** launch mode, not
+  just vast's `start_server.sh` flow.
+- **Backend startup on managed serverless.** `start_server.sh` runs
+  `python -m worker` but does **not** run `entrypoint.sh`, so on the managed flow
+  something must still start `server.py`. Our self-contained ENTRYPOINT image
+  starts both, which is why ENTRYPOINT launch mode is the intended path.
+- **Module path.** `workers/vast/video-normalization` is not a valid
+  `workers.<BACKEND>.worker` module path; ENTRYPOINT mode sidesteps this (it runs
+  `worker.py` directly), but a `start_server.sh`-based deploy would need it
+  resolved via `SERVER_DIR`.
+
+Treat the first managed deploy as a smoke test of these points.
+
+> The mandatory `BenchmarkConfig` runs a real transcode of the baked-in
+> `sample.mov` at worker startup to measure capacity; override its source with
+> `BENCHMARK_INPUT_URL` if needed.
 
 ## Performance
 
