@@ -100,40 +100,8 @@ def upload(local_path: str, url: str, job: dict) -> None:
     _progress(job, {"phase": "upload", "status": "started", "bytes": size, "url": _redact(url)})
 
     t0 = time.time()
-    sent = 0
-    last_emit = 0.0
-
-    class _ProgressReader:
-        def __init__(self, fp):
-            self._fp = fp
-        def read(self, n=-1):
-            nonlocal sent, last_emit
-            chunk = self._fp.read(n)
-            if chunk:
-                sent += len(chunk)
-                now = time.time()
-                if now - last_emit >= UPLOAD_PROGRESS_INTERVAL_SEC:
-                    last_emit = now
-                    elapsed = now - t0
-                    mb = sent / 1024 / 1024
-                    pct = (sent / size * 100) if size else None
-                    speed = (sent / elapsed / 1024 / 1024) if elapsed else 0
-                    msg = f"upload: {mb:.1f} MB"
-                    if pct is not None:
-                        msg += f" ({pct:.1f}%)"
-                    msg += f" @ {speed:.1f} MB/s"
-                    log.info(msg, jid)
-                    _progress(job, {
-                        "phase": "upload",
-                        "bytes": sent,
-                        "total": size,
-                        "progress": round(pct, 1) if pct is not None else None,
-                        "speed_mbps": round(speed, 1),
-                    })
-            return chunk
-
     with open(local_path, "rb") as f:
-        resp = requests.put(url, data=_ProgressReader(f), timeout=600)
+        resp = requests.put(url, data=f, timeout=1200)
         resp.raise_for_status()
 
     elapsed = time.time() - t0
@@ -196,11 +164,14 @@ def _has_gpu() -> bool:
     """Detect an usable NVIDIA GPU at runtime.
 
     Two conditions must hold:
-      1. A device node exists (e.g. /dev/nvidia0 on Linux GPU pods).
-         Absent on CPU pods and CI runners.
+      1. A device node exists (e.g. /dev/nvidia0, or /dev/nvidia3 on a
+         multi-GPU host where this container was assigned a non-zero index).
+         Absent on CPU pods and CI runners. The glob matches /dev/nvidiaN for
+         any index but not /dev/nvidiactl or /dev/nvidia-modeset.
       2. ffmpeg was compiled with h264_nvenc support.
     """
-    if not os.path.exists("/dev/nvidia0"):
+    import glob
+    if not glob.glob("/dev/nvidia[0-9]*"):
         return False
     try:
         result = subprocess.run(
@@ -224,32 +195,114 @@ def use_gpu() -> bool:
 
 # Codecs NVDEC can hardware-decode. -hwaccel cuda auto-selects these and falls
 # back to CPU decode for codecs not in this list, so we don't need to manually
-# pick decoders — but we keep this map for logging / future use.
-_NVDEC_CODECS = {
-    "h264", "hevc", "vp9", "av1", "vp8",
-    "mpeg2video", "mpeg4", "vc1", "mjpeg",
-}
+def _has_gpu_filter(name: str) -> bool:
+    """Check if a CUDA filter (scale_cuda, etc.) is available at runtime."""
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-filters"],
+            capture_output=True, text=True, timeout=5,
+        )
+        return name in result.stdout
+    except Exception:
+        return False
+
+
+_HAS_SCALE_CUDA: bool | None = None
+
+
+def has_scale_cuda() -> bool:
+    global _HAS_SCALE_CUDA
+    if _HAS_SCALE_CUDA is None:
+        _HAS_SCALE_CUDA = _has_gpu_filter("scale_cuda")
+    return _HAS_SCALE_CUDA
+
+
+def needs_transcode(info: dict) -> bool:
+    """True if the source needs re-encoding; False means we can remux with -c copy."""
+    MAX_LONG, MAX_SHORT = 1920, 1080
+    codec = info.get("codec", "unknown")
+    long_edge = max(info.get("width", 0), info.get("height", 0))
+    short_edge = min(info.get("width", 0), info.get("height", 0))
+    needs_scale = min(MAX_LONG / long_edge, MAX_SHORT / short_edge) < 1.0 if long_edge else True
+    needs_fps_cap = (info.get("fps", 0) or 0) > 30
+    needs_pixfmt = info.get("pixel_fmt", "unknown") != "yuv420p"
+    ac = info.get("audio_codec")
+    needs_audio = ac is not None and ac != "aac"
+    return codec != "h264" or needs_scale or needs_fps_cap or needs_pixfmt or needs_audio
 
 
 def build_ffmpeg_cmd(input_path: str, output_path: str, info: dict) -> list[str]:
     w, h, fps, audio_codec = info["width"], info["height"], info["fps"], info["audio_codec"]
     src_codec = info.get("codec", "unknown")
+    src_pixfmt = info.get("pixel_fmt", "")
 
-    vf: list[str] = []
+    if not needs_transcode(info):
+        return [
+            "ffmpeg", "-y", "-nostats",
+            "-threads", "0",
+            "-i", input_path,
+            "-c", "copy",
+            "-movflags", "+faststart",
+            output_path,
+        ]
 
-    if fps > 30:
-        vf.append("fps=30")
+    gpu = use_gpu()
 
+    # --- input options ---
+    input_opts = ["-threads", "0"]
+
+    if gpu:
+        input_opts += ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda", "-hwaccel_device", "0"]
+
+    input_opts += ["-i", input_path]
+
+    # --- video encoder ---
+    if gpu:
+        video_enc = [
+            "-c:v", "h264_nvenc",
+            "-preset", "p4",
+            "-tune", "hq",
+            "-rc", "vbr",
+            "-cq", "23",
+            "-b:v", "0",
+        ]
+    else:
+        video_enc = [
+            "-c:v", "libx264",
+            "-crf", "23",
+            "-preset", "fast",
+        ]
+
+    # --- video filter chain ---
     MAX_LONG, MAX_SHORT = 1920, 1080
     long_edge, short_edge = max(w, h), min(w, h)
-    scale = min(MAX_LONG / long_edge, MAX_SHORT / short_edge)
-    if scale < 1.0:
-        new_w = (int(w * scale) // 2) * 2
-        new_h = (int(h * scale) // 2) * 2
-        vf.append(f"scale={new_w}:{new_h}")
+    scale_ratio = min(MAX_LONG / long_edge, MAX_SHORT / short_edge)
+    needs_scale = scale_ratio < 1.0
+    needs_pixfmt = src_pixfmt not in ("yuv420p", "")
 
-    vf.append("format=yuv420p")
+    vf_parts: list[str] = []
 
+    if gpu and has_scale_cuda():
+        # fps filter operates on the timestamp stream and passes CUDA hwframes
+        # through untouched, so it works ahead of scale_cuda in a full GPU chain.
+        if fps > 30:
+            vf_parts.append("fps=30")
+        if needs_scale:
+            new_w = (int(w * scale_ratio) // 2) * 2
+            new_h = (int(h * scale_ratio) // 2) * 2
+            vf_parts.append(f"scale_cuda={new_w}:{new_h}:format=nv12")
+        elif needs_pixfmt:
+            vf_parts.append(f"scale_cuda=iw:ih:format=nv12")
+    else:
+        if fps > 30:
+            vf_parts.append("fps=30")
+        if needs_scale:
+            new_w = (int(w * scale_ratio) // 2) * 2
+            new_h = (int(h * scale_ratio) // 2) * 2
+            vf_parts.append(f"scale={new_w}:{new_h}")
+        vf_parts.append("format=yuv420p")
+
+    # --- audio ---
     if audio_codec is None:
         audio_args = ["-an"]
     elif audio_codec == "aac":
@@ -257,41 +310,12 @@ def build_ffmpeg_cmd(input_path: str, output_path: str, info: dict) -> list[str]
     else:
         audio_args = ["-c:a", "aac", "-b:a", "128k"]
 
-    gpu = use_gpu()
-
-    cmd = ["ffmpeg", "-y", "-nostats", "-threads", "0"]
-
-    if gpu:
-        # -hwaccel cuda uses NVDEC for hardware decode when the source codec
-        # supports it (h264/hevc/vp9/av1/vp8/mpeg2/mpeg4/vc1/mjpeg), and falls
-        # back to CPU decode automatically for anything else.
-        cmd.extend(["-hwaccel", "cuda", "-hwaccel_device", "0"])
-
-    cmd.extend(["-i", input_path])
-
-    if gpu:
-        cmd.extend([
-            "-c:v", "h264_nvenc",
-            "-preset", "p4",
-            "-tune", "hq",
-            "-rc", "vbr",
-            "-cq", "23",
-            "-b:v", "0",
-        ])
-    else:
-        cmd.extend([
-            "-c:v", "libx264",
-            "-crf", "23",
-            "-preset", "fast",
-        ])
-
-    cmd.extend([
-        "-vf", ",".join(vf),
-        *audio_args,
-        "-movflags", "+faststart",
-        "-progress", "pipe:2",
-        output_path,
-    ])
+    cmd = ["ffmpeg", "-y", "-nostats"] + input_opts
+    cmd += video_enc
+    if vf_parts:
+        cmd += ["-vf", ",".join(vf_parts)]
+    cmd += audio_args
+    cmd += ["-movflags", "+faststart", "-progress", "pipe:2", output_path]
 
     return cmd
 
@@ -322,13 +346,22 @@ def run_ffmpeg(cmd: list[str], job: dict, source_duration: float | None) -> None
         stripped = line.strip()
         if "=" in stripped:
             key, _, val = stripped.partition("=")
+            # -progress pipe:2 emits clean key=value pairs.  Human-readable
+            # status lines (frame=    0 fps= ...) have spaces in the value;
+            # skip those.
+            if " " in val:
+                continue
             if key in ("frame", "fps", "out_time_ms", "out_time_us", "total_size", "speed", "progress"):
                 stats[key] = val
                 now = time.time()
                 is_end = key == "progress" and val == "end"
                 if now - last_emit >= FFMPEG_PROGRESS_INTERVAL_SEC or is_end:
                     last_emit = now
-                    t_us = int(stats.get("out_time_us", stats.get("out_time_ms", 0)) or 0)
+                    raw = stats.get("out_time_us", stats.get("out_time_ms", "0"))
+                    try:
+                        t_us = int(raw)
+                    except (ValueError, TypeError):
+                        t_us = 0
                     t_sec = t_us / 1_000_000
                     pct = (t_sec / source_duration * 100) if source_duration else None
                     msg = (
@@ -386,7 +419,14 @@ def handler(job: dict) -> dict:
             _progress(job, {"phase": "probe", "status": "done", "source": src_info, "gpu": use_gpu()})
 
             cmd = build_ffmpeg_cmd(src, dst, src_info)
-            log.info(f"encoder: {'h264_nvenc (GPU)' if use_gpu() else 'libx264 (CPU)'}, source codec: {src_info['codec']}", jid)
+            is_copy = "-c copy" in cmd or "-c" in cmd and "copy" in cmd
+            if is_copy:
+                log.info(f"remux(copy): source already matches spec, no re-encode needed", jid)
+            else:
+                log.info(f"encoder: {'h264_nvenc' if use_gpu() else 'libx264'}"
+                         f" source: {src_info['codec']} pixfmt={src_info['pixel_fmt']}"
+                         f" {'scale_cuda' if use_gpu() and has_scale_cuda() else 'scale(CPU)'}",
+                         jid)
             run_ffmpeg(cmd, job, src_info["duration"])
 
             dst_info = probe(dst)

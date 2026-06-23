@@ -80,6 +80,10 @@ class TestFullPipeline(unittest.TestCase):
         self.assertEqual(result["pixel_fmt"], "yuv420p")
         self.assertGreater(result["duration"], 0)
         self.assertGreater(result["file_size"], 0)
+        # fps capping must drop frames, not stretch duration: output length
+        # must match the source (regression guard for an input -r 30 that
+        # reinterpreted >30fps sources to 2x duration).
+        self.assertAlmostEqual(result["duration"], result["source"]["duration"], delta=0.5)
 
 
 if __name__ == "__main__":
