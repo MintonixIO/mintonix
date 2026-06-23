@@ -16,10 +16,21 @@ A PyWorker is a thin proxy the vast autoscaler runs in front of a backend
 |---|---|---|
 | `normalize.py` | Provider-neutral core: probe / build ffmpeg cmd / run / download / upload. | ffmpeg, `requests` only — **no** serverless SDK |
 | `server.py` | FastAPI backend ("model server") on `127.0.0.1:18000`, exposes `POST /normalize/sync` + `GET /health`. | `normalize.py`, fastapi, uvicorn |
-| `worker.py` | The vast PyWorker proxy: routes `/normalize/sync` to the backend, reports load, gates readiness on the backend log. | `vastai-sdk` |
+| `worker.py` | The vast PyWorker proxy: routes `/normalize/sync` to the backend, reports load, gates readiness on the backend log. | `vastai` (vendor) |
+| `start_server.sh` | Vendored from vast-ai/pyworker. Fills autoscaler env defaults, signs the instance TLS cert, builds the worker venv, and launches `python -m worker`. | — |
 
-`entrypoint.sh` starts the backend, then runs the PyWorker. `test_handler.py`
-imports only `normalize.py`, so the unit + e2e tests run with no SDK installed.
+`entrypoint.sh` starts the backend (`server.py`), then `exec`s `start_server.sh`,
+which launches the PyWorker. We hand off to `start_server.sh` rather than running
+`python -m worker` ourselves because the SDK's `Worker` needs autoscaler env
+(`WORKER_PORT`, `REPORT_ADDR`, `USE_SSL`) and a signed TLS cert that the script
+provides — running the worker directly crash-loops on `KeyError: 'WORKER_PORT'`.
+The script runs `worker.py` from `SERVER_DIR=/workspace/vast-pyworker` (pre-placed
+in the image) in an isolated uv venv, so it never collides with the backend's
+system-python deps. `test_handler.py` imports only `normalize.py`, so the unit +
+e2e tests run with no SDK installed.
+
+**Deploy must:** publish port 3000 (`-p 3000:3000`, so vast sets
+`VAST_TCP_PORT_3000`); leave `BACKEND` and `USE_SYSTEM_PYTHON` unset.
 
 ## Request / response
 
@@ -72,31 +83,26 @@ docker run --rm --gpus all video-normalization
 
 ### Verified vs. not
 
-**Verified:** the standalone container path above (`docker run --gpus all`) and the
-in-image test suite (CI builds the image and runs `python -m unittest test_handler`).
-The `vastai-sdk` imports and `WorkerConfig` construction in `worker.py` are
-validated.
+**Verified:**
+- In-image test suite (CI builds the image, runs `python -m unittest test_handler`).
+- The full `entrypoint.sh` → `start_server.sh` → PyWorker chain, run locally in
+  the image with dummy autoscaler env + `USE_SSL=false`: the venv builds, vendor
+  `vastai` installs, the PyWorker boots, **healthchecks the backend `GET /health
+  → 200` on a loop**, and the startup `BenchmarkConfig` runs a real `sample.mov`
+  transcode (`max_perf` reported). This exercises everything except the two
+  platform-only steps below.
 
-`worker.py` reaches the SDK's backend init and stops only at
-`KeyError: 'CONTAINER_ID'` — an env var vast injects on a real serverless
-instance — which confirms config, the mandatory `BenchmarkConfig`, and the
-imports are all correct.
+**Not yet verified (needs a live deploy — platform-only):**
+- **Real TLS cert signing** — `start_server.sh` POSTs a CSR to
+  `console.vast.ai/api/v0/sign_cert?instance_id=$CONTAINER_ID`. Needs a real
+  instance. If it fails, `UNSECURED=true` is the documented fallback.
+- **Autoscaler registration** — the worker reporting to `REPORT_ADDR` with the
+  injected `MASTER_TOKEN` and becoming routable. Confirmed locally only with a
+  dummy token (no real registration).
 
-**Not yet verified (needs a live test deploy):**
-- **Autoscaler env injection.** The SDK requires `CONTAINER_ID` (and
-  `MASTER_TOKEN`, `REPORT_ADDR`, `WORKER_PORT`, …), injected by the platform.
-  Confirm these reach the container under **docker ENTRYPOINT** launch mode, not
-  just vast's `start_server.sh` flow.
-- **Backend startup on managed serverless.** `start_server.sh` runs
-  `python -m worker` but does **not** run `entrypoint.sh`, so on the managed flow
-  something must still start `server.py`. Our self-contained ENTRYPOINT image
-  starts both, which is why ENTRYPOINT launch mode is the intended path.
-- **Module path.** `workers/vast/video-normalization` is not a valid
-  `workers.<BACKEND>.worker` module path; ENTRYPOINT mode sidesteps this (it runs
-  `worker.py` directly), but a `start_server.sh`-based deploy would need it
-  resolved via `SERVER_DIR`.
-
-Treat the first managed deploy as a smoke test of these points.
+Both depend on vast injecting `CONTAINER_ID` / `MASTER_TOKEN` / `PUBLIC_IPADDR` /
+`VAST_TCP_PORT_3000` under docker ENTRYPOINT mode. `CONTAINER_ID` was observed
+present on a real instance, a strong signal the rest are too.
 
 > The mandatory `BenchmarkConfig` runs a real transcode of the baked-in
 > `sample.mov` at worker startup to measure capacity; override its source with

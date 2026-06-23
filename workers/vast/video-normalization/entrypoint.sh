@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
-# Starts the two processes a vast.ai PyWorker deployment needs in one container:
-#   1. server.py  — the FastAPI backend "model server" that does the transcode
-#   2. worker.py  — the PyWorker proxy the autoscaler talks to
+# Container entrypoint (docker ENTRYPOINT launch mode on vast serverless).
 #
-# The PyWorker detects backend readiness by tailing MODEL_LOG for uvicorn's
-# "Application startup complete." line, so the backend's stdout/stderr must land
-# in that file. We also mirror it to the container log for debugging.
+# Two processes are needed: our FastAPI backend (server.py) that does the
+# transcode, and vast's PyWorker that the autoscaler talks to. We start the
+# backend, then hand off to vast's own start_server.sh to launch the PyWorker.
 #
-# On managed vast serverless the platform's start_server.sh launches worker.py
-# itself; this entrypoint is for running the image standalone (or as the base
-# the platform builds on).
-set -euo pipefail
+# Why start_server.sh and not `python -m worker` directly: the SDK's Worker
+# needs autoscaler env (WORKER_PORT, REPORT_ADDR, USE_SSL, a signed TLS cert,
+# ...) that start_server.sh provides — it fills the env defaults, signs the
+# instance cert via the injected CONTAINER_ID, builds the worker venv, and runs
+# `python -m worker` from SERVER_DIR. Running worker.py ourselves skipped all of
+# that and crash-looped on `KeyError: 'WORKER_PORT'`.
+set -uo pipefail
 
 export MODEL_LOG="${MODEL_LOG:-/var/log/portal/video-normalization.log}"
 export MODEL_SERVER_PORT="${MODEL_SERVER_PORT:-18000}"
@@ -19,20 +20,11 @@ mkdir -p "$(dirname "$MODEL_LOG")"
 : > "$MODEL_LOG"
 
 echo "entrypoint: starting backend (server.py) -> $MODEL_LOG"
-python -u server.py >> "$MODEL_LOG" 2>&1 &
-backend_pid=$!
+python -u /app/server.py >> "$MODEL_LOG" 2>&1 &
 
-# Surface backend logs in the container's own stdout too.
+# Mirror backend logs into the container log (start_server.sh's PyWorker also
+# tails MODEL_LOG to detect the backend's readiness line).
 tail -n +1 -F "$MODEL_LOG" &
-tail_pid=$!
 
-echo "entrypoint: starting PyWorker (worker.py)"
-python -u -m worker &
-worker_pid=$!
-
-# Take the container down if EITHER process exits — a worker proxying to a dead
-# backend (or a dead worker) is useless. `wait -n` returns on the first exit.
-cleanup() { kill "$backend_pid" "$worker_pid" "$tail_pid" 2>/dev/null || true; }
-trap cleanup EXIT INT TERM
-wait -n "$backend_pid" "$worker_pid"
-echo "entrypoint: a child exited; shutting down"
+echo "entrypoint: handing off to start_server.sh (launches the PyWorker)"
+exec bash /app/start_server.sh
