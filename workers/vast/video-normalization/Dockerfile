@@ -1,4 +1,7 @@
-FROM nvidia/cuda:12.4.0-runtime-ubuntu22.04
+# CUDA 12.8 is the first toolkit with Blackwell / sm_120 support (RTX 50-series,
+# e.g. RTX 5080). 12.4 cannot run GPU code on those GPUs, and vast serverless
+# excludes 5080 offers for a 12.4 image. Keep this >= 12.8 to rent 5080s.
+FROM nvidia/cuda:12.8.0-runtime-ubuntu22.04
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
