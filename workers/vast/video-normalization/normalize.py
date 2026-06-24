@@ -383,6 +383,18 @@ def normalize_job(input_url: str, output_upload_url: str) -> dict:
         src_info = probe(src)
         log.info("probe(source): %s gpu=%s", json.dumps(src_info), use_gpu())
 
+        # On a deployed worker (REQUIRE_GPU=1) refuse to transcode on CPU: a
+        # libx264 fallback on a rented GPU instance burns credit at a fraction of
+        # NVENC speed. Raising here also makes the startup benchmark fail on a
+        # GPU-broken host so the autoscaler discards it instead of running jobs
+        # on the CPU. Remux-copy jobs (no re-encode) don't need the GPU.
+        if (os.environ.get("REQUIRE_GPU") == "1"
+                and needs_transcode(src_info) and not use_gpu()):
+            raise RuntimeError(
+                "REQUIRE_GPU=1 but no usable NVIDIA GPU detected — refusing to "
+                "transcode on CPU (would waste a rented GPU instance)"
+            )
+
         cmd = build_ffmpeg_cmd(src, dst, src_info)
         if not needs_transcode(src_info):
             log.info("remux(copy): source already matches spec, no re-encode needed")
