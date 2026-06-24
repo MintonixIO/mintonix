@@ -1,0 +1,9 @@
+# Backend model server (server.py) + provider-neutral core (normalize.py).
+fastapi
+uvicorn
+requests
+
+# Vast.ai PyWorker framework (worker.py). On real serverless instances vast's
+# start_server.sh installs this itself; pinned here so the image can run the
+# worker standalone and so CI has it available.
+vastai-sdk
