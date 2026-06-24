@@ -10,6 +10,7 @@ Normalization target: <=1920x1080, <=30 fps, h264 / yuv420p, AAC audio.
 """
 
 import concurrent.futures
+import functools
 import json
 import logging
 import math
@@ -328,14 +329,9 @@ def _has_gpu() -> bool:
         return False
 
 
-_USE_GPU: bool | None = None
-
-
+@functools.cache
 def use_gpu() -> bool:
-    global _USE_GPU
-    if _USE_GPU is None:
-        _USE_GPU = _has_gpu()
-    return _USE_GPU
+    return _has_gpu()
 
 
 def _has_gpu_filter(name: str) -> bool:
@@ -350,28 +346,46 @@ def _has_gpu_filter(name: str) -> bool:
         return False
 
 
-_HAS_SCALE_CUDA: bool | None = None
-
-
+@functools.cache
 def has_scale_cuda() -> bool:
-    global _HAS_SCALE_CUDA
-    if _HAS_SCALE_CUDA is None:
-        _HAS_SCALE_CUDA = _has_gpu_filter("scale_cuda")
-    return _HAS_SCALE_CUDA
+    return _has_gpu_filter("scale_cuda")
+
+
+# Delivery spec — the single source of truth for the normalization target.
+# Both needs_transcode() (does the source already conform?) and
+# build_ffmpeg_cmd() (how to make it conform) derive from these.
+MAX_LONG_EDGE = 1920
+MAX_SHORT_EDGE = 1080
+MAX_FPS = 30
+TARGET_VCODEC = "h264"
+TARGET_PIXFMT = "yuv420p"
+TARGET_ACODEC = "aac"
+
+
+def _scale_ratio(w: int, h: int) -> float | None:
+    """Downscale ratio to fit the delivery envelope; >=1.0 means already fits.
+    None when dimensions are unknown (treated as "needs scaling")."""
+    long_edge, short_edge = max(w, h), min(w, h)
+    if not long_edge:
+        return None
+    return min(MAX_LONG_EDGE / long_edge, MAX_SHORT_EDGE / short_edge)
+
+
+def _scaled_dims(w: int, h: int, ratio: float) -> tuple[int, int]:
+    """Even-rounded target dimensions (h264 requires even width/height)."""
+    return (int(w * ratio) // 2) * 2, (int(h * ratio) // 2) * 2
 
 
 def needs_transcode(info: dict) -> bool:
     """True if the source needs re-encoding; False means we can remux with -c copy."""
-    MAX_LONG, MAX_SHORT = 1920, 1080
-    codec = info.get("codec", "unknown")
-    long_edge = max(info.get("width", 0), info.get("height", 0))
-    short_edge = min(info.get("width", 0), info.get("height", 0))
-    needs_scale = min(MAX_LONG / long_edge, MAX_SHORT / short_edge) < 1.0 if long_edge else True
-    needs_fps_cap = (info.get("fps", 0) or 0) > 30
-    needs_pixfmt = info.get("pixel_fmt", "unknown") != "yuv420p"
+    ratio = _scale_ratio(info.get("width", 0), info.get("height", 0))
+    needs_scale = ratio is None or ratio < 1.0
+    needs_fps_cap = (info.get("fps", 0) or 0) > MAX_FPS
+    needs_pixfmt = info.get("pixel_fmt", "unknown") != TARGET_PIXFMT
     ac = info.get("audio_codec")
-    needs_audio = ac is not None and ac != "aac"
-    return codec != "h264" or needs_scale or needs_fps_cap or needs_pixfmt or needs_audio
+    needs_audio = ac is not None and ac != TARGET_ACODEC
+    return (info.get("codec", "unknown") != TARGET_VCODEC
+            or needs_scale or needs_fps_cap or needs_pixfmt or needs_audio)
 
 
 def build_ffmpeg_cmd(input_path: str, output_path: str, info: dict) -> list[str]:
@@ -416,41 +430,37 @@ def build_ffmpeg_cmd(input_path: str, output_path: str, info: dict) -> list[str]
         ]
 
     # --- video filter chain ---
-    MAX_LONG, MAX_SHORT = 1920, 1080
-    long_edge, short_edge = max(w, h), min(w, h)
-    scale_ratio = min(MAX_LONG / long_edge, MAX_SHORT / short_edge)
-    needs_scale = scale_ratio < 1.0
-    needs_pixfmt = src_pixfmt not in ("yuv420p", "")
+    ratio = _scale_ratio(w, h)
+    needs_scale = ratio is not None and ratio < 1.0
+    needs_pixfmt = src_pixfmt not in (TARGET_PIXFMT, "")
 
     vf_parts: list[str] = []
 
+    # The fps cap operates on the timestamp stream and passes CUDA hwframes
+    # through untouched, so it sits ahead of scale_cuda in a full GPU chain
+    # exactly as it does for the CPU chain.
+    if fps > MAX_FPS:
+        vf_parts.append(f"fps={MAX_FPS}")
+
     if gpu and has_scale_cuda():
-        # fps filter operates on the timestamp stream and passes CUDA hwframes
-        # through untouched, so it works ahead of scale_cuda in a full GPU chain.
-        if fps > 30:
-            vf_parts.append("fps=30")
         if needs_scale:
-            new_w = (int(w * scale_ratio) // 2) * 2
-            new_h = (int(h * scale_ratio) // 2) * 2
+            new_w, new_h = _scaled_dims(w, h, ratio)
             vf_parts.append(f"scale_cuda={new_w}:{new_h}:format=nv12")
         elif needs_pixfmt:
-            vf_parts.append(f"scale_cuda=iw:ih:format=nv12")
+            vf_parts.append("scale_cuda=iw:ih:format=nv12")
     else:
-        if fps > 30:
-            vf_parts.append("fps=30")
         if needs_scale:
-            new_w = (int(w * scale_ratio) // 2) * 2
-            new_h = (int(h * scale_ratio) // 2) * 2
+            new_w, new_h = _scaled_dims(w, h, ratio)
             vf_parts.append(f"scale={new_w}:{new_h}")
-        vf_parts.append("format=yuv420p")
+        vf_parts.append(f"format={TARGET_PIXFMT}")
 
     # --- audio ---
     if audio_codec is None:
         audio_args = ["-an"]
-    elif audio_codec == "aac":
+    elif audio_codec == TARGET_ACODEC:
         audio_args = ["-c:a", "copy"]
     else:
-        audio_args = ["-c:a", "aac", "-b:a", "128k"]
+        audio_args = ["-c:a", TARGET_ACODEC, "-b:a", "128k"]
 
     cmd = ["ffmpeg", "-y", "-nostats"] + input_opts
     cmd += video_enc
