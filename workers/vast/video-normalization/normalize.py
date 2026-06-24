@@ -15,6 +15,7 @@ import json
 import logging
 import math
 import os
+import random
 import shutil
 import subprocess
 import threading
@@ -37,6 +38,8 @@ DL_CONNECTIONS = int(os.environ.get("DL_CONNECTIONS", "8"))
 UL_CONNECTIONS = int(os.environ.get("UL_CONNECTIONS", "8"))
 # S3/B2 require every multipart part except the last to be >= 5 MiB.
 MULTIPART_PART_SIZE = int(os.environ.get("MULTIPART_PART_SIZE", str(64 * 1024 * 1024)))
+# Thumbnail: a single random frame, scaled to this width (aspect preserved).
+THUMBNAIL_WIDTH = int(os.environ.get("THUMBNAIL_WIDTH", "640"))
 
 
 def _session(pool: int) -> requests.Session:
@@ -254,6 +257,48 @@ def upload_multipart(local_path: str, spec: dict) -> None:
     speed = (size / elapsed / 1024 / 1024) if elapsed else 0
     log.info("upload(done,multipart): %d bytes in %.1fs (%.1f MB/s, %d parts, %d conns)",
              size, elapsed, speed, nparts, UL_CONNECTIONS)
+
+
+def extract_thumbnail(video_path: str, dest_path: str, duration: float) -> dict:
+    """Grab one random frame as a JPEG thumbnail scaled to THUMBNAIL_WIDTH wide.
+
+    JPEG over PNG/WebP: smallest universally-supported format for a single
+    photographic frame — every browser, CDN and image pipeline handles it with
+    no decode surprises, and a ~640px frame lands well under 100 KB.
+
+    The frame is sampled from the *normalized output* (so the thumbnail matches
+    the delivered asset) at a uniform-random point in the middle 90% of the
+    timeline, dodging black intro/outro frames. `-ss` precedes `-i` for a fast
+    keyframe seek. Returns {width, height, file_size, timestamp_sec}.
+    """
+    ts = random.uniform(0.05, 0.95) * duration if duration and duration > 0 else 0.0
+    cmd = [
+        "ffmpeg", "-y", "-nostats", "-loglevel", "error",
+        "-ss", f"{ts:.3f}", "-i", video_path,
+        "-frames:v", "1",
+        "-vf", f"scale='min({THUMBNAIL_WIDTH},iw)':-2",
+        "-q:v", "2",
+        dest_path,
+    ]
+    log.info("thumbnail(extract): t=%.3fs width<=%d", ts, THUMBNAIL_WIDTH)
+    subprocess.run(cmd, check=True, capture_output=True, text=True)
+
+    # A single JPEG has no container duration, so probe() (which reads
+    # format.duration) doesn't apply — read just the image dimensions.
+    out = subprocess.run(
+        ["ffprobe", "-v", "quiet", "-select_streams", "v:0",
+         "-show_entries", "stream=width,height", "-of", "json", dest_path],
+        capture_output=True, text=True, check=True,
+    )
+    stream = json.loads(out.stdout)["streams"][0]
+    size = os.path.getsize(dest_path)
+    log.info("thumbnail(done): %dx%d %d bytes", stream["width"], stream["height"], size)
+    return {
+        "width": int(stream["width"]),
+        "height": int(stream["height"]),
+        "file_size": size,
+        "timestamp_sec": round(ts, 3),
+    }
 
 
 def _parse_fps(rate_str: str) -> float:
@@ -536,12 +581,19 @@ def run_ffmpeg(cmd: list[str], source_duration: float | None) -> None:
 
 
 def normalize_job(input_url: str, output_upload_url: str | None = None,
-                  output_upload: dict | None = None) -> dict:
+                  output_upload: dict | None = None,
+                  thumbnail_upload_url: str | None = None) -> dict:
     """Download -> normalize -> upload. Provider-neutral orchestrator.
 
     Output destination is either:
       - `output_upload` (dict): parallel multipart upload via presigned URLs, or
       - `output_upload_url` (str): a single presigned PUT (or file:// for local).
+
+    If `thumbnail_upload_url` (a presigned PUT, expecting a `.jpg` key in the
+    same directory) is given, a single random JPEG frame of the delivered video
+    is uploaded there. The thumbnail is best-effort: a failure is reported in
+    the result (`thumbnail_error`) but does not fail the job — the video is the
+    deliverable and is already uploaded.
 
     Returns the output probe dict plus the source probe and elapsed time.
     Raises on any failure (the caller maps it to an HTTP error / job failure).
@@ -595,14 +647,28 @@ def normalize_job(input_url: str, output_upload_url: str | None = None,
         else:
             raise RuntimeError("no output destination (output_upload or output_upload_url)")
 
+        # Best-effort thumbnail, last: the video is already delivered, so a
+        # thumbnail hiccup must not sink the job (which would re-run the whole
+        # transcode). Report what happened and let the caller decide.
+        result: dict = {**dst_info, "source": src_info}
+        if thumbnail_upload_url:
+            try:
+                thumb = os.path.join(tmp, "thumbnail.jpg")
+                thumb_info = extract_thumbnail(dst, thumb, dst_info["duration"])
+                upload(thumb, thumbnail_upload_url)
+                result["thumbnail"] = thumb_info
+            except Exception as e:  # noqa: BLE001 — thumbnail is non-fatal
+                # Surface ffmpeg/ffprobe stderr when present so the caller can
+                # actually diagnose a best-effort failure.
+                detail = getattr(e, "stderr", None) or str(e)
+                log.warning("thumbnail(failed): %s", detail)
+                result["thumbnail"] = None
+                result["thumbnail_error"] = detail.strip() if isinstance(detail, str) else str(e)
+
         elapsed = round(time.time() - t_start, 1)
         log.info("job(done): elapsed=%ss", elapsed)
-
-        return {
-            **dst_info,
-            "source": src_info,
-            "elapsed_sec": elapsed,
-        }
+        result["elapsed_sec"] = elapsed
+        return result
 
 
 if __name__ == "__main__":
@@ -616,7 +682,7 @@ if __name__ == "__main__":
         job = json.loads(sys.argv[1])
         inp = job.get("input", job)
         result = normalize_job(inp["input_url"], inp.get("output_upload_url"),
-                               inp.get("output_upload"))
+                               inp.get("output_upload"), inp.get("thumbnail_upload_url"))
         print(json.dumps(result, indent=2))
     else:
         sys.exit("usage: python normalize.py '{\"input_url\": \"file://...\", "

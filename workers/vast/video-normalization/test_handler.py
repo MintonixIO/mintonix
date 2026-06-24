@@ -80,6 +80,32 @@ class TestFullPipeline(unittest.TestCase):
         # reinterpreted >30fps sources to 2x duration).
         self.assertAlmostEqual(result["duration"], result["source"]["duration"], delta=0.5)
 
+    def test_full_pipeline_with_thumbnail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = os.path.join(tmp, "normalized.mp4")
+            thumb = os.path.join(tmp, "thumbnail.jpg")
+            result = h.normalize_job(
+                f"file://{VIDEO}", f"file://{out}",
+                thumbnail_upload_url=f"file://{thumb}",
+            )
+            # the JPEG was produced and uploaded to the same dir
+            self.assertTrue(os.path.exists(thumb))
+            self.assertGreater(os.path.getsize(thumb), 0)
+
+        self.assertIsNotNone(result.get("thumbnail"))
+        self.assertNotIn("thumbnail_error", result)
+        self.assertLessEqual(result["thumbnail"]["width"], h.THUMBNAIL_WIDTH)
+        self.assertGreater(result["thumbnail"]["file_size"], 0)
+        # frame sampled from within the clip, never past the end
+        self.assertLess(result["thumbnail"]["timestamp_sec"], result["duration"])
+
+    def test_thumbnail_omitted_by_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = os.path.join(tmp, "normalized.mp4")
+            result = h.normalize_job(f"file://{VIDEO}", f"file://{out}")
+        # no thumbnail requested -> no thumbnail keys (backward compatible)
+        self.assertNotIn("thumbnail", result)
+
 
 if __name__ == "__main__":
     unittest.main()

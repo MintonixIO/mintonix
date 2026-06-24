@@ -47,11 +47,15 @@ POST /normalize/sync
     "part_urls":    ["https://…UploadPart&partNumber=1", "…"],
     "complete_url": "https://…CompleteMultipartUpload",
     "abort_url":    "https://…AbortMultipartUpload",
-    "part_size":    67108864 } }
+    "part_size":    67108864 },
+  "thumbnail_upload_url": "https://…/normalized.jpg" } // optional, presigned PUT
 ```
 ```json
 200 { "request_id", "width", "height", "fps", "codec", "audio_codec",
-      "pixel_fmt", "duration", "file_size", "source": {…}, "elapsed_sec" }
+      "pixel_fmt", "duration", "file_size", "source": {…}, "elapsed_sec",
+      // present only when thumbnail_upload_url was given:
+      "thumbnail": { "width", "height", "file_size", "timestamp_sec" } | null,
+      "thumbnail_error"?: "…" }
 500 { "request_id", "error" }
 ```
 
@@ -67,6 +71,15 @@ storage credentials — the caller presigns `create`/`upload_part`/`complete`/
 `file://` for local runs). On any multipart failure the worker POSTs `abort_url`;
 a hard kill can still orphan an incomplete upload, so set a B2 lifecycle rule to
 auto-abort incomplete multipart uploads.
+
+If `thumbnail_upload_url` is given, the worker grabs one **random frame** of the
+normalized output (uniform within the middle 90% of the timeline, so no black
+intro/outro), scales it to `THUMBNAIL_WIDTH` (default 640px, aspect preserved),
+and PUTs it there as **JPEG** — the smallest universally-supported format for a
+single frame. Presign a `.jpg` key in the same directory as the output so the
+extension matches the bytes. The thumbnail is **best-effort**: a failure is
+reported in the response (`thumbnail: null` + `thumbnail_error`) but never fails
+the job, since the video is already delivered by then.
 
 ## Local development
 

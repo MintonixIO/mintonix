@@ -13,9 +13,15 @@ this server receives the inner object):
           "output_upload_url": "...",        # single presigned PUT, OR
           "output_upload": {                 # parallel multipart (preferred)
               "part_urls": [...], "complete_url": "...",
-              "abort_url": "...", "part_size": 67108864 } }
+              "abort_url": "...", "part_size": 67108864 },
+          # optional: presigned PUT for a random-frame JPEG thumbnail; presign a
+          # .jpg key in the same directory as the output.
+          "thumbnail_upload_url": "..." }
       -> 200 { "request_id", "width", "height", "fps", "codec", "audio_codec",
-               "pixel_fmt", "duration", "file_size", "source", "elapsed_sec" }
+               "pixel_fmt", "duration", "file_size", "source", "elapsed_sec",
+               # when thumbnail_upload_url given (best-effort):
+               "thumbnail": { "width", "height", "file_size", "timestamp_sec" }
+                            | null, "thumbnail_error"? }
       -> 500 { "request_id", "error" }
 
     GET /health  -> 200 { "status": "ok", "gpu": <bool> }
@@ -66,6 +72,7 @@ async def normalize_sync(request: Request) -> JSONResponse:
     input_url = body.get("input_url")
     output_upload_url = body.get("output_upload_url")
     output_upload = body.get("output_upload")  # multipart spec (dict) or None
+    thumbnail_upload_url = body.get("thumbnail_upload_url")  # presigned PUT or None
     if not input_url or not (output_upload_url or output_upload):
         return JSONResponse(
             {"request_id": request_id,
@@ -76,7 +83,8 @@ async def normalize_sync(request: Request) -> JSONResponse:
     # normalize_job is blocking (ffmpeg, large I/O); run it off the event loop.
     try:
         result = await run_in_threadpool(
-            normalize.normalize_job, input_url, output_upload_url, output_upload
+            normalize.normalize_job, input_url, output_upload_url, output_upload,
+            thumbnail_upload_url,
         )
         return JSONResponse({"request_id": request_id, **result})
     except Exception as e:  # noqa: BLE001 — report any job failure as 500
