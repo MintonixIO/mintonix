@@ -9,20 +9,44 @@ Imported by:
 Normalization target: <=1920x1080, <=30 fps, h264 / yuv420p, AAC audio.
 """
 
+import concurrent.futures
 import json
 import logging
+import math
 import os
 import shutil
 import subprocess
+import threading
 import time
 from urllib.parse import urlparse
 
 import requests
+from requests.adapters import HTTPAdapter
 
 log = logging.getLogger("video-normalization")
 
 DOWNLOAD_PROGRESS_INTERVAL_SEC = 5.0
 FFMPEG_PROGRESS_INTERVAL_SEC = 10.0
+
+# Single-stream transfers to/from object storage (B2) top out around ~27 MB/s
+# regardless of the host link (measured on a 1.2 Gbps host). Parallelism — many
+# byte-ranges on download, many multipart parts on upload — is what reaches line
+# rate. Tunable via env.
+DL_CONNECTIONS = int(os.environ.get("DL_CONNECTIONS", "8"))
+UL_CONNECTIONS = int(os.environ.get("UL_CONNECTIONS", "8"))
+# S3/B2 require every multipart part except the last to be >= 5 MiB.
+MULTIPART_PART_SIZE = int(os.environ.get("MULTIPART_PART_SIZE", str(64 * 1024 * 1024)))
+
+
+def _session(pool: int) -> requests.Session:
+    """A requests.Session whose connection pool is wide enough for `pool`
+    concurrent transfers (default pool_maxsize is 10, which would serialize
+    extra threads), with a few retries on transient errors."""
+    s = requests.Session()
+    adapter = HTTPAdapter(pool_connections=pool, pool_maxsize=pool, max_retries=3)
+    s.mount("http://", adapter)
+    s.mount("https://", adapter)
+    return s
 
 
 def _redact(url: str) -> str:
@@ -30,22 +54,13 @@ def _redact(url: str) -> str:
     return f"{parsed.netloc}{parsed.path}"
 
 
-def download(url: str, dest: str) -> None:
-    if url.startswith("file://"):
-        src = url[len("file://"):]
-        size = os.path.getsize(src)
-        log.info("download(local): %s -> %s (%d bytes)", src, dest, size)
-        shutil.copy(src, dest)
-        return
-
-    log.info("download(start): %s -> %s", _redact(url), dest)
-
+def _download_stream(url: str, dest: str, sess: requests.Session) -> None:
+    """Single-connection streaming download (fallback when the server doesn't
+    support Range requests)."""
     t0 = time.time()
     written = 0
-    total = 0
     last_emit = 0.0
-
-    with requests.get(url, stream=True, timeout=300) as r:
+    with sess.get(url, stream=True, timeout=300) as r:
         r.raise_for_status()
         total = int(r.headers.get("Content-Length", 0))
         log.info("download(content-length): %d bytes (%.1f MB)", total, total / 1024 / 1024)
@@ -57,18 +72,90 @@ def download(url: str, dest: str) -> None:
                 if now - last_emit >= DOWNLOAD_PROGRESS_INTERVAL_SEC:
                     last_emit = now
                     elapsed = now - t0
-                    mb = written / 1024 / 1024
                     pct = (written / total * 100) if total else None
                     speed = (written / elapsed / 1024 / 1024) if elapsed else 0
-                    msg = f"download: {mb:.1f} MB"
+                    msg = f"download: {written / 1024 / 1024:.1f} MB"
                     if pct is not None:
                         msg += f" ({pct:.1f}%)"
-                    msg += f" @ {speed:.1f} MB/s"
-                    log.info(msg)
-
+                    log.info(msg + f" @ {speed:.1f} MB/s")
     elapsed = time.time() - t0
     speed = (written / elapsed / 1024 / 1024) if elapsed else 0
-    log.info("download(done): %d bytes in %.1fs (%.1f MB/s)", written, elapsed, speed)
+    log.info("download(done,single): %d bytes in %.1fs (%.1f MB/s)", written, elapsed, speed)
+
+
+def download(url: str, dest: str, connections: int | None = None) -> None:
+    """Download `url` to `dest`, in parallel byte-ranges when the server
+    supports them (S3/B2 presigned GETs do), else a single stream."""
+    if url.startswith("file://"):
+        src = url[len("file://"):]
+        size = os.path.getsize(src)
+        log.info("download(local): %s -> %s (%d bytes)", src, dest, size)
+        shutil.copy(src, dest)
+        return
+
+    connections = connections or DL_CONNECTIONS
+    log.info("download(start): %s -> %s (%d conns)", _redact(url), dest, connections)
+    sess = _session(connections)
+
+    # Probe size + Range support with a tiny range request.
+    total = 0
+    ranges_ok = False
+    if connections > 1:
+        try:
+            probe = sess.get(url, headers={"Range": "bytes=0-0"}, stream=True, timeout=60)
+            if probe.status_code == 206:
+                cr = probe.headers.get("Content-Range", "")  # "bytes 0-0/12345"
+                total = int(cr.split("/")[-1]) if "/" in cr else 0
+                ranges_ok = total > 0
+            probe.close()
+        except Exception as e:  # noqa: BLE001
+            log.info("download: range probe failed (%s), falling back to single stream", e)
+
+    # Too small to bother splitting, or no Range support -> single stream.
+    if not ranges_ok or total < 2 * MULTIPART_PART_SIZE:
+        _download_stream(url, dest, sess)
+        return
+
+    log.info("download(content-length): %d bytes (%.1f MB), %d ranges",
+             total, total / 1024 / 1024, connections)
+    with open(dest, "wb") as f:
+        f.truncate(total)
+
+    part = math.ceil(total / connections)
+    chunks = [(i * part, min((i + 1) * part, total) - 1)
+              for i in range(connections) if i * part < total]
+
+    t0 = time.time()
+    done = [0]
+    last_emit = [0.0]
+    lock = threading.Lock()
+
+    def fetch(start: int, end: int) -> None:
+        r = sess.get(url, headers={"Range": f"bytes={start}-{end}"}, stream=True, timeout=600)
+        r.raise_for_status()
+        with open(dest, "r+b") as f:
+            f.seek(start)
+            for ch in r.iter_content(chunk_size=8 * 1024 * 1024):
+                f.write(ch)
+                with lock:
+                    done[0] += len(ch)
+                    now = time.time()
+                    if now - last_emit[0] >= DOWNLOAD_PROGRESS_INTERVAL_SEC:
+                        last_emit[0] = now
+                        el = now - t0
+                        sp = (done[0] / el / 1024 / 1024) if el else 0
+                        log.info("download: %.1f MB (%.1f%%) @ %.1f MB/s",
+                                 done[0] / 1024 / 1024, done[0] / total * 100, sp)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=connections) as ex:
+        futs = [ex.submit(fetch, s, e) for s, e in chunks]
+        for fu in concurrent.futures.as_completed(futs):
+            fu.result()  # re-raise the first failure
+
+    elapsed = time.time() - t0
+    speed = (total / elapsed / 1024 / 1024) if elapsed else 0
+    log.info("download(done): %d bytes in %.1fs (%.1f MB/s, %d conns)",
+             total, elapsed, speed, connections)
 
 
 def upload(local_path: str, url: str) -> None:
@@ -90,7 +177,82 @@ def upload(local_path: str, url: str) -> None:
 
     elapsed = time.time() - t0
     speed = (size / elapsed / 1024 / 1024) if elapsed else 0
-    log.info("upload(done): %d bytes in %.1fs (%.1f MB/s)", size, elapsed, speed)
+    log.info("upload(done,single): %d bytes in %.1fs (%.1f MB/s)", size, elapsed, speed)
+
+
+def upload_multipart(local_path: str, spec: dict) -> None:
+    """Parallel S3/B2 multipart upload using orchestrator-presigned URLs.
+
+    `spec` carries only presigned URLs — the worker holds no storage
+    credentials. Shape:
+        { "part_urls": [<presigned UploadPart>, ...],   # 1-based: part_urls[0] is part 1
+          "complete_url": <presigned CompleteMultipartUpload>,
+          "abort_url":    <presigned AbortMultipartUpload>,   # optional but recommended
+          "part_size":    <bytes> }                            # optional; defaults to env
+    Uploads parts concurrently, then POSTs the completion XML. On any failure it
+    POSTs the abort URL so the incomplete upload doesn't linger (and bill) on B2.
+    """
+    part_size = int(spec.get("part_size") or MULTIPART_PART_SIZE)
+    part_urls = spec["part_urls"]
+    complete_url = spec["complete_url"]
+    abort_url = spec.get("abort_url")
+
+    size = os.path.getsize(local_path)
+    nparts = max(1, math.ceil(size / part_size))
+    if nparts > len(part_urls):
+        raise RuntimeError(
+            f"multipart: output needs {nparts} parts ({size} B / {part_size} B) "
+            f"but only {len(part_urls)} presigned part URLs were provided"
+        )
+
+    log.info("upload(start,multipart): %d bytes (%.1f MB) -> %s (%d parts x %d MB, %d conns)",
+             size, size / 1024 / 1024, _redact(complete_url),
+             nparts, part_size // 1024 // 1024, UL_CONNECTIONS)
+
+    sess = _session(UL_CONNECTIONS)
+    t0 = time.time()
+
+    def put_part(n: int) -> tuple[int, str]:
+        start = (n - 1) * part_size
+        length = min(part_size, size - start)
+        with open(local_path, "rb") as f:
+            f.seek(start)
+            data = f.read(length)
+        r = sess.put(part_urls[n - 1], data=data, timeout=600)
+        r.raise_for_status()
+        etag = r.headers.get("ETag")
+        if not etag:
+            raise RuntimeError(f"multipart: part {n} returned no ETag")
+        return n, etag
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=UL_CONNECTIONS) as ex:
+            results = list(ex.map(put_part, range(1, nparts + 1)))
+        results.sort()
+        parts_xml = "".join(
+            f"<Part><PartNumber>{n}</PartNumber><ETag>{etag}</ETag></Part>"
+            for n, etag in results
+        )
+        body = f"<CompleteMultipartUpload>{parts_xml}</CompleteMultipartUpload>"
+        r = sess.post(complete_url, data=body,
+                      headers={"Content-Type": "application/xml"}, timeout=300)
+        r.raise_for_status()
+        # S3/B2 can return 200 with an <Error> body if completion fails.
+        if "<Error>" in r.text:
+            raise RuntimeError(f"multipart complete failed: {r.text[:300]}")
+    except Exception:
+        if abort_url:
+            try:
+                sess.delete(abort_url, timeout=60)
+                log.info("upload(multipart): aborted incomplete upload after failure")
+            except Exception as ae:  # noqa: BLE001
+                log.warning("upload(multipart): abort failed: %s", ae)
+        raise
+
+    elapsed = time.time() - t0
+    speed = (size / elapsed / 1024 / 1024) if elapsed else 0
+    log.info("upload(done,multipart): %d bytes in %.1fs (%.1f MB/s, %d parts, %d conns)",
+             size, elapsed, speed, nparts, UL_CONNECTIONS)
 
 
 def _parse_fps(rate_str: str) -> float:
@@ -363,15 +525,21 @@ def run_ffmpeg(cmd: list[str], source_duration: float | None) -> None:
     log.info("ffmpeg(done): exit=%d", rc)
 
 
-def normalize_job(input_url: str, output_upload_url: str) -> dict:
+def normalize_job(input_url: str, output_upload_url: str | None = None,
+                  output_upload: dict | None = None) -> dict:
     """Download -> normalize -> upload. Provider-neutral orchestrator.
+
+    Output destination is either:
+      - `output_upload` (dict): parallel multipart upload via presigned URLs, or
+      - `output_upload_url` (str): a single presigned PUT (or file:// for local).
 
     Returns the output probe dict plus the source probe and elapsed time.
     Raises on any failure (the caller maps it to an HTTP error / job failure).
     """
     import tempfile
 
-    log.info("job(start): input=%s output=%s", _redact(input_url), _redact(output_upload_url))
+    out_redacted = _redact(output_upload["complete_url"]) if output_upload else _redact(output_upload_url)
+    log.info("job(start): input=%s output=%s", _redact(input_url), out_redacted)
 
     t_start = time.time()
     with tempfile.TemporaryDirectory() as tmp:
@@ -410,7 +578,12 @@ def normalize_job(input_url: str, output_upload_url: str) -> dict:
         dst_info = probe(dst)
         log.info("probe(output): %s", json.dumps(dst_info))
 
-        upload(dst, output_upload_url)
+        if output_upload:
+            upload_multipart(dst, output_upload)
+        elif output_upload_url:
+            upload(dst, output_upload_url)
+        else:
+            raise RuntimeError("no output destination (output_upload or output_upload_url)")
 
         elapsed = round(time.time() - t_start, 1)
         log.info("job(done): elapsed=%ss", elapsed)
@@ -432,7 +605,8 @@ if __name__ == "__main__":
     if len(sys.argv) > 1:
         job = json.loads(sys.argv[1])
         inp = job.get("input", job)
-        result = normalize_job(inp["input_url"], inp["output_upload_url"])
+        result = normalize_job(inp["input_url"], inp.get("output_upload_url"),
+                               inp.get("output_upload"))
         print(json.dumps(result, indent=2))
     else:
         sys.exit("usage: python normalize.py '{\"input_url\": \"file://...\", "

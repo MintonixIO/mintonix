@@ -39,9 +39,15 @@ unwraps it, so the backend receives the inner object:
 
 ```json
 POST /normalize/sync
-{ "input_url": "https://…/source.mp4",
-  "output_upload_url": "https://…/normalized.mp4",   // presigned PUT
-  "request_id": "abc123" }
+{ "input_url": "https://…/source.mp4",                // presigned GET
+  "request_id": "abc123",
+  // exactly one output destination:
+  "output_upload_url": "https://…/normalized.mp4",    // single presigned PUT, OR
+  "output_upload": {                                  // parallel multipart (preferred)
+    "part_urls":    ["https://…UploadPart&partNumber=1", "…"],
+    "complete_url": "https://…CompleteMultipartUpload",
+    "abort_url":    "https://…AbortMultipartUpload",
+    "part_size":    67108864 } }
 ```
 ```json
 200 { "request_id", "width", "height", "fps", "codec", "audio_codec",
@@ -49,8 +55,18 @@ POST /normalize/sync
 500 { "request_id", "error" }
 ```
 
-`input_url` is downloaded (HTTP GET, or `file://` for local runs);
-the result is uploaded to `output_upload_url` (HTTP PUT, or `file://`).
+`input_url` is downloaded (HTTP GET, or `file://` for local runs). Downloads use
+parallel HTTP byte-ranges (`DL_CONNECTIONS`, default 8) when the server supports
+Range, else a single stream — single-stream to B2 caps near ~27 MB/s on a fast
+host, so parallelism is what reaches line rate.
+
+The result is uploaded either to `output_upload`'s presigned **multipart** URLs
+(parts PUT concurrently, `UL_CONNECTIONS`/`part_size`; the worker holds no
+storage credentials — the caller presigns `create`/`upload_part`/`complete`/
+`abort`) or, if only `output_upload_url` is given, a single presigned PUT (or
+`file://` for local runs). On any multipart failure the worker POSTs `abort_url`;
+a hard kill can still orphan an incomplete upload, so set a B2 lifecycle rule to
+auto-abort incomplete multipart uploads.
 
 ## Local development
 

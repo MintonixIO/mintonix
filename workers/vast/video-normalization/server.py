@@ -7,7 +7,13 @@ Contract (the PyWorker's request_parser unwraps the outer {"input": ...}, so
 this server receives the inner object):
 
     POST /normalize/sync
-        { "input_url": "...", "output_upload_url": "...", "request_id": "..." }
+        { "input_url": "...",                # presigned GET (parallel ranges)
+          "request_id": "...",
+          # exactly one output destination:
+          "output_upload_url": "...",        # single presigned PUT, OR
+          "output_upload": {                 # parallel multipart (preferred)
+              "part_urls": [...], "complete_url": "...",
+              "abort_url": "...", "part_size": 67108864 } }
       -> 200 { "request_id", "width", "height", "fps", "codec", "audio_codec",
                "pixel_fmt", "duration", "file_size", "source", "elapsed_sec" }
       -> 500 { "request_id", "error" }
@@ -59,17 +65,18 @@ async def normalize_sync(request: Request) -> JSONResponse:
     request_id = body.get("request_id")
     input_url = body.get("input_url")
     output_upload_url = body.get("output_upload_url")
-    if not input_url or not output_upload_url:
+    output_upload = body.get("output_upload")  # multipart spec (dict) or None
+    if not input_url or not (output_upload_url or output_upload):
         return JSONResponse(
             {"request_id": request_id,
-             "error": "input_url and output_upload_url are required"},
+             "error": "input_url and one of output_upload_url / output_upload are required"},
             status_code=422,
         )
 
     # normalize_job is blocking (ffmpeg, large I/O); run it off the event loop.
     try:
         result = await run_in_threadpool(
-            normalize.normalize_job, input_url, output_upload_url
+            normalize.normalize_job, input_url, output_upload_url, output_upload
         )
         return JSONResponse({"request_id": request_id, **result})
     except Exception as e:  # noqa: BLE001 — report any job failure as 500
