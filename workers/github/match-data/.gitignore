@@ -1,0 +1,7 @@
+# Generated pipeline artifacts — Supabase is the source of truth
+bwf_*_results.json
+bwf_videos.json
+bwf_videos.csv
+bwf_videos_detailed.*
+video_matches.json
+__pycache__/

@@ -1,0 +1,67 @@
+name: Match data — scrape & load to Supabase
+
+on:
+  schedule:
+    # Weekly, Sunday 09:00 UTC
+    - cron: "0 9 * * 0"
+  workflow_dispatch:
+
+# Don't let a scheduled run overlap a manual one
+concurrency:
+  group: match-data
+  cancel-in-progress: false
+
+defaults:
+  run:
+    working-directory: workers/github/match-data
+
+jobs:
+  scrape-and-load:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: workers/github/match-data/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # 1. Scrape the current season (year comes from a time server)
+      - name: Scrape BWF results
+        run: python3 scraper.py
+
+      # 2. Fetch BWF channel video metadata (offline-friendly producer)
+      - name: Fetch YouTube video metadata
+        run: python3 fetch_bwf_videos.py flat
+
+      # 3. Match videos to scraped matches — pure local transform, no DB
+      - name: Match videos to matches
+        run: python3 find_youtube_videos.py --videos-file bwf_videos.json
+
+      # 4. Load results + video links to Supabase (the only step that needs secrets)
+      - name: Load to Supabase
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          for f in bwf_*_results.json; do
+            echo "Loading $f ..."
+            python3 load_to_supabase.py --json-file "$f" --videos-file video_matches.json
+          done
+
+      # 5. Keep the run's artifacts for debugging (data lives in Supabase)
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: match-data
+          path: |
+            workers/github/match-data/bwf_*_results.json
+            workers/github/match-data/bwf_videos.json
+            workers/github/match-data/video_matches.json
+          if-no-files-found: warn
+          retention-days: 14
