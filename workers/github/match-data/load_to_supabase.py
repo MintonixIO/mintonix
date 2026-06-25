@@ -183,6 +183,35 @@ def reconcile_match_players(mp_rows, scope_mids, id_to_key=None):
     return removed
 
 
+def delete_matches(mids, batch_size=100):
+    """Delete match rows by id; match_players follow via ON DELETE CASCADE.
+
+    Used by the finished-only purge to remove matches the current scrape sees as
+    cleanly unfinished (no winner, no scores). Returns the number deleted.
+    """
+    if not mids:
+        return 0
+    removed = 0
+    for i in range(0, len(mids), batch_size):
+        batch = mids[i : i + batch_size]
+        inlist = "(" + ",".join(str(m) for m in batch) + ")"
+        for attempt in range(6):
+            r = requests.delete(
+                f"{SUPABASE_URL}/rest/v1/matches",
+                headers={**HEADERS, "Prefer": "return=minimal"},
+                params={"id": f"in.{inlist}"},
+                timeout=60,
+            )
+            if r.status_code in (200, 204):
+                removed += len(batch)
+                break
+            if r.status_code in (429, 500, 502, 503) and attempt < 5:
+                time.sleep(2 ** attempt)
+                continue
+            r.raise_for_status()
+    return removed
+
+
 def player_name(p):
     """Canonical, dedup-stable name: wiki page title when present, else display."""
     return (p.get("wiki_name") or p.get("display_name") or "").strip()
@@ -287,6 +316,7 @@ def main():
     match_rows = []       # match dicts
     links = []            # {"_match_key", "name", "team_side"}
     incomplete_keys = set()  # match_keys whose roster came back partial this run
+    unfinished_purge_keys = set()  # finished-only: cleanly-unfinished keys to purge
 
     for t in data["tournaments"]:
         tournament = t.get("title") or t.get("page")
@@ -306,6 +336,19 @@ def main():
             # fall back to the per-game win counts when neither team is flagged.
             if winner is None and w1 != w2:
                 winner = 1 if w1 > w2 else 2
+
+            # Persist finished matches only. A match with no determined winner is
+            # an unplayed draw slot (TBD/placeholder roster → 'p' idx) or a not-
+            # yet-played fixture; skip it entirely — no match row, no player links.
+            # If it also carries no game scores it's *cleanly* unfinished, so flag
+            # the key to purge any stale copy already in the DB (below). A winner-
+            # less match that DOES have scores is in-progress, or a transient
+            # winner-parse gap on a real result — we neither insert nor purge it,
+            # so a genuinely finished row is never deleted on a flaky parse.
+            if winner is None:
+                if not any(v is not None for v in score_cols.values()):
+                    unfinished_purge_keys.add(match_key)
+                continue
 
             row = {
                 "match_key": match_key,
@@ -393,7 +436,10 @@ def main():
 
     print(f"{act} {len(match_rows)} matches...")
     upsert("matches", match_rows, on_conflict="match_key")
-    m_map = {r["match_key"]: r["id"] for r in select("matches", "id,match_key", "id")}
+    db_matches_rows = select("matches", "id,match_key,winner", "id")
+    m_map = {r["match_key"]: r["id"] for r in db_matches_rows}
+    # Keys whose DB row is itself resultless — the only rows the purge may delete.
+    db_unfinished_keys = {r["match_key"] for r in db_matches_rows if r["winner"] is None}
 
     # --- 5. Upsert match_players (dedup on match_id+player_id) ---
     mp_seen = set()
@@ -429,6 +475,27 @@ def main():
     stale = reconcile_match_players(mp_rows, scope_mids, id_to_key)
     if stale and not DRY_RUN:
         print(f"  Reconciled: removed {stale} stale match_players")
+
+    # Finished-only purge: drop matches the DB still holds that *both* this scrape
+    # and the DB agree are resultless (no winner, no scores). Clears legacy
+    # placeholder rows and draws loaded before a result existed. Requiring the DB
+    # row to also be winner-null — like reconcile's paranoia about transient gaps —
+    # means a genuinely finished row whose markup flakes to no-result this run is
+    # never deleted; that case is left for manual cleanup. match_players follow via
+    # ON DELETE CASCADE. In steady state the filter prevents new unfinished inserts,
+    # so this is a no-op once the DB is clean.
+    purge_mids = {m_map[k]: k for k in unfinished_purge_keys
+                  if k in m_map and k in db_unfinished_keys}
+    if DRY_RUN:
+        purged = len(purge_mids)
+        if purged:
+            print(f"  [dry-run] would purge {purged} unfinished match(es) from the DB:")
+            for k in list(purge_mids.values())[:10]:
+                print(f"      - {k}")
+    else:
+        purged = delete_matches(list(purge_mids.keys()))
+        if purged:
+            print(f"  Purged {purged} unfinished matches from the DB")
 
     if DRY_RUN:
         # New entities fall out of the pre-write maps/selects: a collected key
@@ -473,6 +540,7 @@ def main():
         elif videos:
             print(f"  Video links:        skipped by guard (see warning above)")
         print(f"  Stale links removed:{stale}  (detail above, if any)")
+        print(f"  Unfinished purged:  {purged}  (detail above, if any)")
         return
 
     print("\nDone!")
