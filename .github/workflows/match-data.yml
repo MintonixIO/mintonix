@@ -5,11 +5,22 @@ on:
     # Weekly, Sunday 09:00 UTC
     - cron: "0 9 * * 0"
   workflow_dispatch:
+  pull_request:
+    paths:
+      - "workers/github/match-data/**"
+      - ".github/workflows/match-data.yml"
+  push:
+    branches: [master]
+    paths:
+      - "workers/github/match-data/**"
+      - ".github/workflows/match-data.yml"
 
-# Don't let a scheduled run overlap a manual one
+# Serialize runs that touch the same database (push to master + schedule share
+# the master ref), but give each PR its own group and let a newer push cancel an
+# in-flight PR run. Never cancel an applying run on master.
 concurrency:
-  group: match-data
-  cancel-in-progress: false
+  group: match-data-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 defaults:
   run:
@@ -18,6 +29,9 @@ defaults:
 jobs:
   scrape-and-load:
     runs-on: ubuntu-latest
+    # PR → dev (diff only); push to master / schedule / manual → prod (apply).
+    # Each environment supplies its own SUPABASE_URL + SUPABASE_SERVICE_KEY.
+    environment: ${{ github.event_name == 'pull_request' && 'dev' || 'prod' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -42,16 +56,29 @@ jobs:
       - name: Match videos to matches
         run: python3 find_youtube_videos.py --videos-file bwf_videos.json
 
-      # 4. Load results + video links to Supabase (the only step that needs secrets)
+      # 4. Load to Supabase. On a PR this runs --dry-run: it reports the diff
+      #    against the dev DB and writes nothing. On push/schedule/manual it
+      #    applies to prod. The diff/apply log is mirrored to the run summary.
       - name: Load to Supabase
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: |
+          set -eo pipefail
+          DRY=""
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            DRY="--dry-run"
+            echo "### Match-data dry run (diff vs dev DB)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### Match-data load (applied to prod)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
           for f in bwf_*_results.json; do
-            echo "Loading $f ..."
-            python3 load_to_supabase.py --json-file "$f" --videos-file video_matches.json
+            echo "Loading $f ..." | tee -a "$GITHUB_STEP_SUMMARY"
+            python3 load_to_supabase.py --json-file "$f" --videos-file video_matches.json $DRY \
+              | tee -a "$GITHUB_STEP_SUMMARY"
           done
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
 
       # 5. Keep the run's artifacts for debugging (data lives in Supabase)
       - name: Upload artifacts

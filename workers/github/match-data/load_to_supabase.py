@@ -35,6 +35,12 @@ HEADERS = {
     "Content-Type": "application/json",
 }
 
+# When True, every write primitive is a no-op: main() becomes a read-only pass
+# that reports what *would* change. Set from --dry-run in main(). Guarding the
+# two write seams (the POST below and the DELETE in reconcile) is what makes it
+# structurally impossible for a dry run to mutate the DB.
+DRY_RUN = False
+
 
 def upsert(table, rows, on_conflict, batch_size=500):
     """Upsert rows in batches, retrying on rate-limit / server errors.
@@ -45,6 +51,8 @@ def upsert(table, rows, on_conflict, batch_size=500):
     """
     if not rows:
         return 0
+    if DRY_RUN:
+        return 0  # read-only: caller computes the diff separately
     headers = {**HEADERS, "Prefer": "resolution=merge-duplicates,return=minimal"}
     params = {"on_conflict": on_conflict}
     total = 0
@@ -71,15 +79,19 @@ def upsert(table, rows, on_conflict, batch_size=500):
     return total
 
 
-def select(table, columns, order):
-    """Fetch all rows with pagination."""
+def select(table, columns, order, params=None):
+    """Fetch all rows with pagination. `params` adds PostgREST filters (e.g.
+    {"season": "eq.2026"})."""
     rows = []
     offset = 0
     while True:
+        q = {"select": columns, "order": order, "limit": 1000, "offset": offset}
+        if params:
+            q.update(params)
         r = requests.get(
             f"{SUPABASE_URL}/rest/v1/{table}",
             headers=HEADERS,
-            params={"select": columns, "order": order, "limit": 1000, "offset": offset},
+            params=q,
             timeout=60,
         )
         r.raise_for_status()
@@ -104,7 +116,7 @@ def count_rows(table, filters):
     return int(cr.split("/")[-1]) if "/" in cr else len(r.json())
 
 
-def reconcile_match_players(mp_rows, scope_mids):
+def reconcile_match_players(mp_rows, scope_mids, id_to_key=None):
     """Delete match_players that exist in the DB but not in `mp_rows`.
 
     `mp_rows` is the authoritative link set for the matches in the current load.
@@ -142,6 +154,15 @@ def reconcile_match_players(mp_rows, scope_mids):
         pair = (row["match_id"], row["player_id"])
         if pair not in auth:
             stale.setdefault(row["match_id"], []).append(row["player_id"])
+    if DRY_RUN:
+        total = sum(len(p) for p in stale.values())
+        if total:
+            print(f"  [dry-run] would remove {total} stale match_players "
+                  f"across {len(stale)} match(es):")
+            for mid, pids in list(stale.items())[:10]:
+                label = (id_to_key or {}).get(mid, f"match_id={mid}")
+                print(f"      - {label}: {len(pids)} link(s)")
+        return total
     removed = 0
     for mid, pids in stale.items():
         inlist = "(" + ",".join(str(p) for p in pids) + ")"
@@ -229,7 +250,15 @@ def main():
     parser.add_argument("--videos-file", default=None,
                         help="Optional video_matches.json from find_youtube_videos.py; "
                              "folds video columns onto matches by match_key")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Report the diff vs the current DB and write nothing")
     args = parser.parse_args()
+
+    global DRY_RUN
+    DRY_RUN = args.dry_run
+    act = "Would upsert" if DRY_RUN else "Upserting"
+    if DRY_RUN:
+        print("DRY RUN — no writes will be made.\n")
 
     here = os.path.dirname(os.path.abspath(__file__))
     resolve = lambda p: p if os.path.isabs(p) else os.path.join(here, p)
@@ -315,11 +344,11 @@ def main():
                     links.append({"_match_key": match_key, "name": name, "team_side": side})
 
     # --- 2. Upsert nations (omit flag_url to preserve backfills) ---
-    print(f"Upserting {len(nations)} nations...")
+    print(f"{act} {len(nations)} nations...")
     upsert("nations", list(nations.values()), on_conflict="code")
 
     # --- 3. Upsert players (omit avatar_url to preserve backfills) ---
-    print(f"Upserting {len(players)} players...")
+    print(f"{act} {len(players)} players...")
     upsert("players", list(players.values()), on_conflict="name")
     p_map = {r["name"]: r["id"] for r in select("players", "id,name", "id")}
 
@@ -362,7 +391,7 @@ def main():
             row["video_confidence"] = v["video_confidence"] if v else None
         print(f"  Applying {matched_now} video links")
 
-    print(f"Upserting {len(match_rows)} matches...")
+    print(f"{act} {len(match_rows)} matches...")
     upsert("matches", match_rows, on_conflict="match_key")
     m_map = {r["match_key"]: r["id"] for r in select("matches", "id,match_key", "id")}
 
@@ -384,7 +413,7 @@ def main():
         mp_seen.add(key)
         mp_rows.append({"match_id": mid, "player_id": pid, "team_side": link["team_side"]})
 
-    print(f"Upserting {len(mp_rows)} match_players...")
+    print(f"{act} {len(mp_rows)} match_players...")
     upsert("match_players", mp_rows, on_conflict="match_id,player_id")
 
     # Reconcile: drop links that are no longer in the source for the matches we
@@ -396,9 +425,55 @@ def main():
     scope_mids = {r["match_id"] for r in mp_rows} - incomplete_mids
     if incomplete_mids:
         print(f"  Skipping reconcile for {len(incomplete_mids)} matches with partial rosters")
-    stale = reconcile_match_players(mp_rows, scope_mids)
-    if stale:
+    id_to_key = {v: k for k, v in m_map.items()} if DRY_RUN else None
+    stale = reconcile_match_players(mp_rows, scope_mids, id_to_key)
+    if stale and not DRY_RUN:
         print(f"  Reconciled: removed {stale} stale match_players")
+
+    if DRY_RUN:
+        # New entities fall out of the pre-write maps/selects: a collected key
+        # absent from p_map / m_map (built from a read of the un-mutated DB) is
+        # new. For keys already present, compare the writable columns to count
+        # field-level changes. scraped_at is excluded — it changes every run.
+        existing_codes = {r["code"] for r in select("nations", "code", "code")}
+        new_nations = [c for c in nations if c not in existing_codes]
+        new_players = [n for n in players if n not in p_map]
+
+        score_keys = [f"g{n}_t{s}" for n in (1, 2, 3) for s in (1, 2)]
+        cmp_cols = ["match_date", "team1_seed", "team2_seed", "winner",
+                    "games_won"] + score_keys
+        if apply_videos:
+            cmp_cols += ["video_id", "video_title", "video_confidence"]
+        db_matches = {r["match_key"]: r for r in select(
+            "matches", ",".join(["match_key"] + cmp_cols), "id",
+            params={"season": f"eq.{season}"})}
+        norm = lambda v: None if v is None else str(v)
+        new_matches, changed = [], []
+        for row in match_rows:
+            db = db_matches.get(row["match_key"])
+            if db is None:
+                new_matches.append(row["match_key"])
+                continue
+            d = [c for c in cmp_cols if norm(row.get(c)) != norm(db.get(c))]
+            if d:
+                changed.append((row["match_key"], d))
+
+        print(f"\n===== DRY RUN — diff vs current DB (season {season}) =====")
+        print("Nothing was written.\n")
+        print(f"  New matches:        {len(new_matches)}")
+        for k in new_matches[:5]:
+            print(f"      + {k}")
+        print(f"  Changed matches:    {len(changed)}")
+        for k, d in changed[:5]:
+            print(f"      ~ {k}  ({', '.join(d)})")
+        print(f"  New players:        {len(new_players)}")
+        print(f"  New nations:        {len(new_nations)}")
+        if videos and apply_videos:
+            print(f"  Video links:        would set/refresh {matched_now} match(es)")
+        elif videos:
+            print(f"  Video links:        skipped by guard (see warning above)")
+        print(f"  Stale links removed:{stale}  (detail above, if any)")
+        return
 
     print("\nDone!")
     print(f"  Nations:            {len(nations)}")
