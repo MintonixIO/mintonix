@@ -61,7 +61,8 @@ jobs:
       #    applies to prod. The diff/apply log is mirrored to the run summary.
       - name: Load to Supabase
         env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          # URL is non-sensitive → environment variable; key stays a secret.
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: |
           set -eo pipefail
