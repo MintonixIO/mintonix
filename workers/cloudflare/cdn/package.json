@@ -1,0 +1,24 @@
+{
+  "name": "@mintonix/cloudflare-cdn",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cloudflare Worker that serves private Backblaze B2 objects through Cloudflare's CDN, gated by short-lived Ed25519 JWTs minted by the orchestrator.",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --env dev",
+    "deploy:dev": "wrangler deploy --env dev",
+    "deploy:prod": "wrangler deploy --env prod",
+    "typecheck": "tsc --noEmit",
+    "keygen": "node scripts/keygen.mjs",
+    "sign": "node scripts/sign-token.mjs"
+  },
+  "dependencies": {
+    "aws4fetch": "^1.0.20",
+    "jose": "^5.9.6"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240909.0",
+    "typescript": "^5.6.2",
+    "wrangler": "^3.78.0"
+  }
+}

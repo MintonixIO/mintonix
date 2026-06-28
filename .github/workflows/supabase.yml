@@ -1,0 +1,64 @@
+name: Supabase — migrations & cdn-access function
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - "supabase/**"
+      - ".github/workflows/supabase.yml"
+  pull_request:
+    paths:
+      - "supabase/**"
+      - ".github/workflows/supabase.yml"
+
+# Serialize runs against the same project (master/manual share the master ref).
+# A newer PR commit cancels an in-flight PR run; never cancel a master apply.
+concurrency:
+  group: supabase-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # PR  -> DEV project (apply migrations + deploy fn so the branch is testable).
+    # push to master -> PROD project.
+    # Each GitHub Environment supplies its own SUPABASE_URL (var) plus the
+    # SUPABASE_ACCESS_TOKEN and SUPABASE_DB_PASSWORD secrets. The project ref is
+    # derived from SUPABASE_URL (<ref>.supabase.co), so there's no extra secret.
+    environment: ${{ github.event_name == 'pull_request' && 'dev' || 'prod' }}
+    permissions:
+      contents: read
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Derive project ref from SUPABASE_URL
+        env:
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+        run: |
+          set -euo pipefail
+          REF="$(printf '%s' "$SUPABASE_URL" | sed -E 's#^https?://([^.]+)\..*#\1#')"
+          if [ -z "$REF" ] || [ "$REF" = "$SUPABASE_URL" ]; then
+            echo "::error::Could not derive a project ref from SUPABASE_URL ('$SUPABASE_URL')"
+            exit 1
+          fi
+          echo "Linking to project: $REF"
+          echo "SUPABASE_PROJECT_ID=$REF" >> "$GITHUB_ENV"
+
+      - name: Link project
+        run: supabase link --project-ref "$SUPABASE_PROJECT_ID"
+
+      - name: Push database migrations
+        # Applies only migrations not already in the project's schema_migrations
+        # table, so re-running on every PR commit is a safe no-op.
+        run: supabase db push
+
+      - name: Deploy cdn-access function
+        run: supabase functions deploy cdn-access --project-ref "$SUPABASE_PROJECT_ID"
