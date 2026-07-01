@@ -1,0 +1,81 @@
+name: Supabase Deploy
+
+# PR commits deploy to the DEV project; merges to master deploy to PROD.
+# The environment (and thus which project's secrets/vars are used) is chosen by
+# the trigger, so the job body is identical for both targets.
+on:
+  pull_request:
+    paths:
+      - "supabase/**"
+      - ".github/workflows/supabase-deploy.yml"
+  push:
+    branches:
+      - master
+    paths:
+      - "supabase/**"
+      - ".github/workflows/supabase-deploy.yml"
+
+concurrency:
+  # Don't let two deploys to the same target race; cancel superseded PR runs.
+  group: supabase-deploy-${{ github.event_name == 'push' && 'prod' || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # 'prod' on master push, 'dev' otherwise. Configure both as GitHub
+    # Environments (Settings > Environments); add required reviewers on 'prod'
+    # for a manual approval gate before production deploys.
+    environment: ${{ github.event_name == 'push' && 'prod' || 'dev' }}
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+      PROJECT_ID: ${{ vars.SUPABASE_PROJECT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: supabase/setup-cli@v1
+        with:
+          version: 2.90.0
+
+      - name: Link project
+        run: supabase link --project-ref "$PROJECT_ID"
+
+      # Both projects already have all migrations recorded, so this is a no-op
+      # until a new migration is added; then it applies the pending ones.
+      - name: Push database migrations
+        run: supabase db push
+
+      # Keep the function's Roboflow config in sync with the project. The key
+      # is passed via a file, never on the command line / process list.
+      - name: Set function secrets
+        run: |
+          cat > /tmp/fn.env <<EOF
+          ROBOFLOW_API_KEY=${{ secrets.ROBOFLOW_API_KEY }}
+          RF_DETR_MODEL_ID=${{ vars.RF_DETR_MODEL_ID || 'rfdetr-seg-preview' }}
+          RF_DETR_FILTER_CLASSES=${{ vars.RF_DETR_FILTER_CLASSES }}
+          EOF
+          supabase secrets set --env-file /tmp/fn.env --project-ref "$PROJECT_ID"
+          rm -f /tmp/fn.env
+
+      # --use-api bundles server-side; no Docker needed on the runner.
+      - name: Deploy edge function
+        run: supabase functions deploy rfdetr-infer --use-api --project-ref "$PROJECT_ID"
+
+      # Post-deploy contract + regression test against the live endpoint.
+      # Hard gate on DEV/PRs; non-blocking on PROD so a Roboflow outage can't
+      # turn an otherwise-successful production deploy red.
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Smoke test deployed function
+        continue-on-error: ${{ github.event_name == 'push' }}
+        env:
+          # Legacy anon JWT for this project (a publishable client key — safe as a
+          # GitHub variable). Needed because the function keeps verify_jwt on.
+          SUPABASE_ANON_KEY: ${{ vars.SUPABASE_ANON_KEY }}
+          FUNCTION_URL: https://${{ vars.SUPABASE_PROJECT_ID }}.supabase.co/functions/v1/rfdetr-infer
+        run: |
+          deno run --allow-net --allow-read --allow-env \
+            supabase/functions/rfdetr-infer/test/smoke-test.ts

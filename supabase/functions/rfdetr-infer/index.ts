@@ -52,6 +52,9 @@ interface RoboflowPrediction {
 interface RoboflowResponse {
   predictions: RoboflowPrediction[]
   image: { width: number; height: number }
+  // Server-side inference time in seconds; Roboflow bills serverless credits on
+  // this (credits = max(time_ms, 100) / 500_000). Passed through for cost visibility.
+  time?: number
 }
 
 interface SegmentedPerson {
@@ -187,6 +190,7 @@ const handler = async (req: Request): Promise<Response> => {
         total_predictions: allPredictions.length,
         total_filtered: filtered.length,
         image_size: result.image,
+        inference_time: result.time,
       }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } },
     )
