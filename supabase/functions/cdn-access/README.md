@@ -35,14 +35,25 @@ bucket (B2 UI or `b2 bucket update --cors-rules`), e.g. allow operations
 (no browser) don't need this. Delivery GETs go through the Worker, so they're
 unaffected.
 
-## Authorization status
+## Authorization
 
-⚠️ **Authn-only stub.** The function verifies the caller is logged in but does
-**not** yet check that this user may touch this `key` (see the `TODO(authz)` in
-`index.ts`). **The write path is the urgent one** — any logged-in user can
-presign a PUT to *any* key and overwrite another user's object. Before real
-multi-user data, gate `key` (ownership table or a `users/<user.id>/` prefix),
-starting with `upload`.
+Two checks, both required:
+
+1. **Authn** — `getUser()` must resolve a logged-in user (else `401`).
+2. **Namespace** — `key` must start with `users/<user.id>/` (else `403`).
+
+Every object lives under `users/<uid>/videos/<videoId>/…` (`original.<ext>`,
+`normalized.mp4`, `thumbnail.jpg`, …), so access control is a prefix check with
+no DB lookup. This gates the **write** path (can't presign a PUT over another
+user's object) and the **read** path (can't mint a delivery token for one).
+
+Compute-worker outputs (`normalized.mp4`, `thumbnail.jpg`) are **not** minted
+here — the service-authed job dispatcher writes them into the owner's prefix.
+
+**Sharing (future):** to serve another user's object via a public/shared link,
+look `key` up in a `shares` table on the `delivery` path and mint a token even
+when the prefix isn't the caller's. The key never leaves the owner's namespace;
+sharing is purely a read-side grant. See `TODO(sharing)` in `index.ts`.
 
 ## Secrets
 

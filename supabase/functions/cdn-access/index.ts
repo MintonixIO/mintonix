@@ -19,10 +19,11 @@
  *   DELIVERY_TOKEN_TTL_SECONDS  optional, default 300
  * SUPABASE_URL / SUPABASE_ANON_KEY are injected by the platform.
  *
- * AUTHORIZATION: authn-only stub. We confirm the caller is a logged-in user but
- * do NOT yet check that *this* user may touch *this* key.
- * TODO(authz): gate `key` against an ownership table or a users/<uid>/ prefix
- * before this serves real multi-user data. See README "Authorization".
+ * AUTHORIZATION: authn + namespace check. The caller must be a logged-in user
+ * (getUser) AND `key` must live under their own `users/<uid>/` prefix, so a user
+ * can neither presign a PUT over nor mint a delivery token for another user's
+ * object. Cross-user reads (sharing) are a future read-side grant — see the
+ * TODO(sharing) in the handler and the README.
  */
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
@@ -111,7 +112,7 @@ Deno.serve(async (request: Request): Promise<Response> => {
   if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
   if (request.method !== "POST") return json(405, { error: "Use POST" });
 
-  // --- Authenticate the caller (authn-only stub) ----------------------------
+  // --- Authenticate the caller ----------------------------------------------
   const authHeader = request.headers.get("Authorization") ?? "";
   const supabase = createClient(
     Deno.env.get("SUPABASE_URL")!,
@@ -131,10 +132,25 @@ Deno.serve(async (request: Request): Promise<Response> => {
   const key = body.key ?? "";
   if (!isValidKey(key)) return json(400, { error: "Invalid or missing key" });
 
-  // TODO(authz): enforce that `user.id` may access `key` (ownership table or a
-  // users/<user.id>/ prefix) before going to production. The WRITE path is the
-  // urgent one: authn-only means any logged-in user can presign a PUT to ANY
-  // key and overwrite/squat another user's object. Gate `upload` first.
+  // --- Authorize the key ----------------------------------------------------
+  // Every object a user owns lives under `users/<uid>/videos/<videoId>/…`, so
+  // access control is a prefix check with no DB lookup: a caller may only touch
+  // keys inside their own `users/<uid>/` namespace. This gates BOTH the write
+  // path (can't presign a PUT over someone else's object) and the read path
+  // (can't mint a delivery token for someone else's object).
+  //
+  // Compute-worker writes (normalized.mp4, thumbnail.jpg) do NOT come through
+  // here — they're minted by the service-authed job dispatcher, which writes
+  // into the owner's prefix directly.
+  //
+  // TODO(sharing): to serve another user's object (public/shared links), look
+  // `key` up in a `shares` table on the `delivery` path and mint a token even
+  // when the prefix isn't the caller's. The key never moves out of the owner's
+  // namespace; sharing is purely a read-side grant.
+  const namespace = `users/${user.id}/`;
+  if (!key.startsWith(namespace)) {
+    return json(403, { error: "Forbidden: key is outside your namespace" });
+  }
 
   switch (body.op) {
     case "delivery":
