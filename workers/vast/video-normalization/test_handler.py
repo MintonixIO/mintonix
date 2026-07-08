@@ -1,9 +1,13 @@
+import csv
 import os
 import tempfile
 import unittest
 from pathlib import Path
 
+import numpy as np
+
 import normalize as h
+import valid_frames as vf
 
 VIDEO = str(Path(__file__).parent / "sample.mov")
 
@@ -59,6 +63,132 @@ class TestBuildFfmpegCmd(unittest.TestCase):
         # 2160x3840 portrait 4K → should scale down
         cmd = self._cmd_str({"width": 2160, "height": 3840, "fps": 30, "audio_codec": "aac"})
         self.assertIn("scale=", cmd)
+
+    def test_force_cfr_skips_copy_and_pins_fps(self):
+        # A source that already matches spec would be remux-copied, but a
+        # valid-frames request needs a CFR re-encode so frame indices and
+        # timestamps agree.
+        info = {"width": 1280, "height": 720, "fps": 25, "audio_codec": "aac",
+                "codec": "h264", "pixel_fmt": "yuv420p"}
+        self.assertFalse(h.needs_transcode(info))
+        cmd = " ".join(h.build_ffmpeg_cmd("in", "out", info, force_cfr=True))
+        self.assertNotIn("-c copy", cmd)
+        self.assertIn("fps=25", cmd)
+
+    def test_force_cfr_still_caps_high_fps(self):
+        info = {"width": 1280, "height": 720, "fps": 60, "audio_codec": "aac",
+                "codec": "h264", "pixel_fmt": "yuv420p"}
+        cmd = " ".join(h.build_ffmpeg_cmd("in", "out", info, force_cfr=True))
+        self.assertIn("fps=30", cmd)
+        self.assertNotIn("fps=60", cmd)
+
+
+class TestValidFramesLogic(unittest.TestCase):
+    """Pure-logic parts of valid_frames.py: no ffmpeg decode, no OCR model,
+    so these run in any environment (mirrors this file's no-SDK-needed design
+    for the rest of the suite)."""
+
+    def test_hysteresis_holds_between_on_off(self):
+        # 0.75 is between OFF(0.70) and ON(0.80): once ON, stays on; once OFF
+        # (never triggered), stays off.
+        ncc = np.array([0.5, 0.9, 0.75, 0.75, 0.6, 0.75, 0.9], np.float32)
+        out = vf._hysteresis(ncc, 0.80, 0.70)
+        self.assertListEqual(list(out), [False, True, True, True, False, False, True])
+
+    def test_runs_of_true_respects_min_len(self):
+        mask = np.array([1, 1, 0, 1, 1, 1, 1, 0, 1], dtype=bool)
+        self.assertEqual(vf._runs_of_true(mask, 3), [(3, 6)])
+        self.assertEqual(vf._runs_of_true(mask, 1), [(0, 1), (3, 6), (8, 8)])
+
+    def test_compute_valid_ranges_upsamples_per_second_score(self):
+        # 3 fps, 2 seconds of court visibility; scoreboard visible only in
+        # second 0 -> only frames [0,2] should be valid.
+        court = np.array([True, True, True, True, True, True])
+        svis_per_sec = [True, False]
+        ranges = vf.compute_valid_ranges(court, svis_per_sec, fps=3, min_valid_run=1)
+        self.assertEqual(ranges, [(0, 2)])
+
+    def test_compute_valid_ranges_requires_both_signals(self):
+        court = np.array([False, False, True, True, True, True])
+        svis_per_sec = [True, True]
+        ranges = vf.compute_valid_ranges(court, svis_per_sec, fps=3, min_valid_run=1)
+        self.assertEqual(ranges, [(2, 5)])
+
+    def test_build_frame_manifest_sequential_new_indices(self):
+        manifest = vf.build_frame_manifest([(10, 12), (20, 21)])
+        self.assertEqual(manifest, [(10, 0), (11, 1), (12, 2), (20, 3), (21, 4)])
+
+    def test_write_manifest_csv_roundtrip(self):
+        manifest = vf.build_frame_manifest([(5, 6), (100, 100)])
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "manifest.csv")
+            vf.write_manifest_csv(manifest, path)
+            with open(path) as f:
+                rows = list(csv.reader(f))
+        self.assertEqual(rows[0], ["old_frame", "new_frame"])
+        self.assertEqual(rows[1:], [["5", "0"], ["6", "1"], ["100", "2"]])
+
+    def test_build_select_expr_joins_ranges(self):
+        expr = vf.build_select_expr([(0, 10), (20, 30)])
+        self.assertEqual(expr, "between(n,0,10)+between(n,20,30)")
+
+    def test_green_mask_scales_to_video_dimensions(self):
+        # Corners spanning the full frame must cover the whole detection
+        # canvas whatever the video's resolution — corners are in the video's
+        # own pixel coordinates, not a fixed 1920-wide one.
+        for w, hgt in [(1920, 1080), (1280, 720), (640, 480)]:
+            corners = [[0, 0], [w, 0], [w, hgt], [0, hgt]]
+            _, area = vf._green_mask(corners, w, hgt)
+            self.assertGreater(area, 0.99 * vf.SW * vf.SH, f"{w}x{hgt}")
+
+    def test_build_valid_frames_cmd_no_audio(self):
+        cmd = h.build_valid_frames_cmd("in.mp4", "out.mp4",
+                                       vf.build_select_expr([(0, 5)]), gpu=False)
+        self.assertIn("-an", cmd)
+        self.assertIn("select='between(n,0,5)',setpts=N/FRAME_RATE/TB", cmd)
+        self.assertIn("libx264", cmd)
+
+    def test_build_valid_frames_cmd_gpu_encoder(self):
+        cmd = h.build_valid_frames_cmd("in.mp4", "out.mp4",
+                                       vf.build_select_expr([(0, 5)]), gpu=True)
+        self.assertIn("h264_nvenc", cmd)
+
+
+VALID_VF_CONFIG = {
+    "court_corners": [[667, 398], [1252, 398], [1490, 990], [436, 992]],
+    "scoreboard_crop": {"x": 175, "y": 55, "w": 1525, "h": 360},
+    "score_sub_crop": {"x": 0, "y": 0, "w": 345, "h": 95},
+    "row_split_y": 40,
+    "player_names": ["SHI", "AXELSEN"],
+}
+
+
+class TestValidateValidFramesRequest(unittest.TestCase):
+    def test_accepts_complete_request(self):
+        self.assertIsNone(h.validate_valid_frames_request(VALID_VF_CONFIG, True, True))
+
+    def test_requires_upload_destinations(self):
+        self.assertIn("destination",
+                      h.validate_valid_frames_request(VALID_VF_CONFIG, False, True))
+        self.assertIn("manifest_upload_url",
+                      h.validate_valid_frames_request(VALID_VF_CONFIG, True, False))
+
+    def test_rejects_empty_player_names(self):
+        # '' or [] would compile to a match-everything regex, silently
+        # degrading validity to court-only.
+        for names in ([], [""], ["  "], "SHI", None):
+            cfg = {**VALID_VF_CONFIG, "player_names": names}
+            self.assertIn("player_names",
+                          h.validate_valid_frames_request(cfg, True, True))
+
+    def test_rejects_missing_or_malformed_geometry(self):
+        for key, bad in [("court_corners", [[0, 0], [1, 1]]),
+                         ("court_corners", None),
+                         ("scoreboard_crop", {"x": 0, "y": 0, "w": 10}),
+                         ("score_sub_crop", "0,0,345,95"),
+                         ("row_split_y", None)]:
+            cfg = {**VALID_VF_CONFIG, key: bad}
+            self.assertIn(key, h.validate_valid_frames_request(cfg, True, True))
 
 
 class TestFullPipeline(unittest.TestCase):
