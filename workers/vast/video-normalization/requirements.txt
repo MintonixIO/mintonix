@@ -3,6 +3,16 @@ fastapi
 uvicorn
 requests
 
+# valid_frames.py: court-visibility NCC detection (opencv/numpy) +
+# scoreboard-visibility OCR (paddleocr). CPU-only paddlepaddle -- OCR runs at
+# a ~7 min/85 min-match floor on CPU (measured in the sibling valid-frames
+# project); a GPU build would need a paddlepaddle-gpu wheel matched to this
+# image's CUDA runtime, which isn't wired up here.
+opencv-python-headless
+numpy
+paddleocr
+paddlepaddle
+
 # Vast.ai PyWorker framework (worker.py). On real serverless instances vast's
 # start_server.sh installs this itself; pinned here so the image can run the
 # worker standalone and so CI has it available.

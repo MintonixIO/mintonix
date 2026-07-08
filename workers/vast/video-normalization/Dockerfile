@@ -19,6 +19,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git curl ca-certificates xz-utils \
     python3 python3-pip python3-venv \
     python-is-python3 \
+    # opencv-python-headless (valid_frames.py court detection) and
+    # paddlepaddle (scoreboard OCR) both link against these at import time
+    # even without a display.
+    libgomp1 libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 # Ubuntu 22.04's apt ffmpeg is 4.4, whose scale_cuda filter has NO `format`
@@ -41,6 +45,14 @@ WORKDIR /app
 
 COPY requirements.txt .
 RUN python3 -m pip install --no-cache-dir -r requirements.txt
+
+# PaddleOCR pulls its detection/recognition models from Paddle's CDN on first
+# use. Bake them into the image (instantiating with the exact flags
+# valid_frames.py uses) so a freshly autoscaled instance doesn't stall
+# mid-job on a model download — or fail outright if the CDN is unreachable.
+RUN python3 -c "from paddleocr import PaddleOCR; \
+    PaddleOCR(lang='en', use_doc_orientation_classify=False, \
+    use_doc_unwarping=False, use_textline_orientation=False)"
 
 COPY . .
 

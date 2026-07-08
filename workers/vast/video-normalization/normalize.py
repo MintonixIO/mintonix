@@ -433,11 +433,25 @@ def needs_transcode(info: dict) -> bool:
             or needs_scale or needs_fps_cap or needs_pixfmt or needs_audio)
 
 
-def build_ffmpeg_cmd(input_path: str, output_path: str, info: dict) -> list[str]:
+def _video_encoder_args(gpu: bool) -> list[str]:
+    """The one h264 encoder configuration, shared by the normalize encode and
+    the valid-frames select encode."""
+    if gpu:
+        return ["-c:v", "h264_nvenc", "-preset", "p4", "-tune", "hq",
+                "-rc", "vbr", "-cq", "23", "-b:v", "0"]
+    return ["-c:v", "libx264", "-crf", "23", "-preset", "fast"]
+
+
+def build_ffmpeg_cmd(input_path: str, output_path: str, info: dict,
+                     force_cfr: bool = False) -> list[str]:
+    """force_cfr skips the remux-copy shortcut and always applies an `fps=`
+    filter, so the output is constant-frame-rate: valid-frame extraction
+    addresses frames by index and samples the scoreboard by timestamp, which
+    only agree under CFR (a remuxed VFR source would desync them)."""
     w, h, fps, audio_codec = info["width"], info["height"], info["fps"], info["audio_codec"]
     src_pixfmt = info.get("pixel_fmt", "")
 
-    if not needs_transcode(info):
+    if not force_cfr and not needs_transcode(info):
         return [
             "ffmpeg", "-y", "-nostats",
             "-threads", "0",
@@ -457,22 +471,7 @@ def build_ffmpeg_cmd(input_path: str, output_path: str, info: dict) -> list[str]
 
     input_opts += ["-i", input_path]
 
-    # --- video encoder ---
-    if gpu:
-        video_enc = [
-            "-c:v", "h264_nvenc",
-            "-preset", "p4",
-            "-tune", "hq",
-            "-rc", "vbr",
-            "-cq", "23",
-            "-b:v", "0",
-        ]
-    else:
-        video_enc = [
-            "-c:v", "libx264",
-            "-crf", "23",
-            "-preset", "fast",
-        ]
+    video_enc = _video_encoder_args(gpu)
 
     # --- video filter chain ---
     ratio = _scale_ratio(w, h)
@@ -486,6 +485,8 @@ def build_ffmpeg_cmd(input_path: str, output_path: str, info: dict) -> list[str]
     # exactly as it does for the CPU chain.
     if fps > MAX_FPS:
         vf_parts.append(f"fps={MAX_FPS}")
+    elif force_cfr:
+        vf_parts.append(f"fps={fps or MAX_FPS}")
 
     if gpu and has_scale_cuda():
         if needs_scale:
@@ -580,9 +581,62 @@ def run_ffmpeg(cmd: list[str], source_duration: float | None) -> None:
     log.info("ffmpeg(done): exit=%d", rc)
 
 
+def build_valid_frames_cmd(input_path: str, output_path: str,
+                           select_expr: str, gpu: bool) -> list[str]:
+    """Single-pass select+re-encode: drop every frame outside the keep-ranges
+    (valid_frames.build_select_expr), then reset timestamps to be contiguous.
+    No audio -- dropping frames desyncs the audio track, and re-deriving
+    matching audio cuts is out of scope."""
+    vf = f"select='{select_expr}',setpts=N/FRAME_RATE/TB"
+    return (
+        ["ffmpeg", "-y", "-nostats", "-threads", "0", "-i", input_path, "-vf", vf]
+        + _video_encoder_args(gpu)
+        + ["-an", "-movflags", "+faststart", "-progress", "pipe:2", output_path]
+    )
+
+
+def validate_valid_frames_request(config, has_destination: bool,
+                                  has_manifest: bool) -> str | None:
+    """Cheap shape check of a valid-frames request. Runs in server.py (422)
+    and at the top of normalize_job, before any download or transcode, so a
+    malformed request fails upfront instead of after burning a full GPU
+    transcode. Returns an error message, or None when the request is usable.
+    Stdlib-only on purpose: server.py calls this without importing
+    valid_frames (and its cv2/numpy/paddle weight)."""
+    if not isinstance(config, dict):
+        return "valid_frames_config must be an object"
+    if not has_destination:
+        return ("valid_frames_config given but no valid_frames_upload / "
+                "valid_frames_upload_url destination")
+    if not has_manifest:
+        return "valid_frames_config given but no manifest_upload_url"
+    corners = config.get("court_corners")
+    if not (isinstance(corners, list) and len(corners) == 4
+            and all(isinstance(p, (list, tuple)) and len(p) == 2 for p in corners)):
+        return "valid_frames_config.court_corners must be four [x,y] points"
+    for key in ("scoreboard_crop", "score_sub_crop"):
+        c = config.get(key)
+        if not (isinstance(c, dict)
+                and all(isinstance(c.get(k), (int, float)) for k in ("x", "y", "w", "h"))):
+            return f"valid_frames_config.{key} must be {{x, y, w, h}}"
+    if not isinstance(config.get("row_split_y"), (int, float)):
+        return "valid_frames_config.row_split_y must be a number"
+    names = config.get("player_names")
+    if not (isinstance(names, list) and names
+            and all(isinstance(n, str) and n.strip() for n in names)):
+        # an empty name list/string would compile to a match-everything regex,
+        # silently degrading validity to court-only
+        return "valid_frames_config.player_names must be a non-empty list of non-empty strings"
+    return None
+
+
 def normalize_job(input_url: str, output_upload_url: str | None = None,
                   output_upload: dict | None = None,
-                  thumbnail_upload_url: str | None = None) -> dict:
+                  thumbnail_upload_url: str | None = None,
+                  valid_frames_config: dict | None = None,
+                  valid_frames_upload_url: str | None = None,
+                  valid_frames_upload: dict | None = None,
+                  manifest_upload_url: str | None = None) -> dict:
     """Download -> normalize -> upload. Provider-neutral orchestrator.
 
     Output destination is either:
@@ -595,10 +649,29 @@ def normalize_job(input_url: str, output_upload_url: str | None = None,
     the result (`thumbnail_error`) but does not fail the job — the video is the
     deliverable and is already uploaded.
 
+    If `valid_frames_config` (see valid_frames.detect_valid_ranges for its
+    shape) is given, the normalized output is further filtered down to only
+    its "valid" frames (main court camera visible AND scoreboard present) and
+    uploaded to `valid_frames_upload`/`valid_frames_upload_url`, alongside an
+    old->new frame-index manifest CSV uploaded to `manifest_upload_url`. This
+    is NOT best-effort like the thumbnail: it's the requested deliverable, so
+    any failure (bad court_corners/scoreboard_crop, no valid frames found)
+    fails the whole job. The request shape is validated before anything is
+    downloaded or transcoded.
+
     Returns the output probe dict plus the source probe and elapsed time.
     Raises on any failure (the caller maps it to an HTTP error / job failure).
     """
     import tempfile
+
+    if valid_frames_config is not None:
+        err = validate_valid_frames_request(
+            valid_frames_config,
+            has_destination=bool(valid_frames_upload or valid_frames_upload_url),
+            has_manifest=bool(manifest_upload_url),
+        )
+        if err:
+            raise RuntimeError(err)
 
     out_redacted = _redact(output_upload["complete_url"]) if output_upload else _redact(output_upload_url)
     log.info("job(start): input=%s output=%s", _redact(input_url), out_redacted)
@@ -618,15 +691,16 @@ def normalize_job(input_url: str, output_upload_url: str | None = None,
         # NVENC speed. Raising here also makes the startup benchmark fail on a
         # GPU-broken host so the autoscaler discards it instead of running jobs
         # on the CPU. Remux-copy jobs (no re-encode) don't need the GPU.
+        force_cfr = valid_frames_config is not None
         if (os.environ.get("REQUIRE_GPU") == "1"
-                and needs_transcode(src_info) and not use_gpu()):
+                and (needs_transcode(src_info) or force_cfr) and not use_gpu()):
             raise RuntimeError(
                 "REQUIRE_GPU=1 but no usable NVIDIA GPU detected — refusing to "
                 "transcode on CPU (would waste a rented GPU instance)"
             )
 
-        cmd = build_ffmpeg_cmd(src, dst, src_info)
-        if not needs_transcode(src_info):
+        cmd = build_ffmpeg_cmd(src, dst, src_info, force_cfr=force_cfr)
+        if not needs_transcode(src_info) and not force_cfr:
             log.info("remux(copy): source already matches spec, no re-encode needed")
         else:
             log.info(
@@ -665,6 +739,43 @@ def normalize_job(input_url: str, output_upload_url: str | None = None,
                 result["thumbnail"] = None
                 result["thumbnail_error"] = detail.strip() if isinstance(detail, str) else str(e)
 
+        if valid_frames_config:
+            import valid_frames  # deferred: pulls in cv2/numpy (and paddle at
+            # detection time) only when the feature is requested, keeping the
+            # core normalize path free of them
+
+            ranges, total_frames = valid_frames.detect_valid_ranges(
+                dst, valid_frames_config, fps=dst_info["fps"],
+                width=dst_info["width"], height=dst_info["height"],
+            )
+            manifest = valid_frames.build_frame_manifest(ranges)
+            manifest_path = os.path.join(tmp, "frame_manifest.csv")
+            valid_frames.write_manifest_csv(manifest, manifest_path)
+
+            vf_path = os.path.join(tmp, "valid_frames.mp4")
+            vf_duration = len(manifest) / dst_info["fps"] if dst_info["fps"] else None
+            run_ffmpeg(
+                build_valid_frames_cmd(
+                    dst, vf_path, valid_frames.build_select_expr(ranges), use_gpu()),
+                vf_duration,
+            )
+            vf_info = probe(vf_path)
+            log.info("probe(valid_frames): %s", json.dumps(vf_info))
+
+            if valid_frames_upload:
+                upload_multipart(vf_path, valid_frames_upload)
+            else:
+                upload(vf_path, valid_frames_upload_url)
+            upload(manifest_path, manifest_upload_url)
+
+            result["valid_frames"] = {
+                **vf_info,
+                "source_frame_count": total_frames,
+                "valid_frame_count": len(manifest),
+                "num_ranges": len(ranges),
+                "manifest_file_size": os.path.getsize(manifest_path),
+            }
+
         elapsed = round(time.time() - t_start, 1)
         log.info("job(done): elapsed=%ss", elapsed)
         result["elapsed_sec"] = elapsed
@@ -681,8 +792,12 @@ if __name__ == "__main__":
     if len(sys.argv) > 1:
         job = json.loads(sys.argv[1])
         inp = job.get("input", job)
-        result = normalize_job(inp["input_url"], inp.get("output_upload_url"),
-                               inp.get("output_upload"), inp.get("thumbnail_upload_url"))
+        result = normalize_job(
+            inp["input_url"], inp.get("output_upload_url"),
+            inp.get("output_upload"), inp.get("thumbnail_upload_url"),
+            inp.get("valid_frames_config"), inp.get("valid_frames_upload_url"),
+            inp.get("valid_frames_upload"), inp.get("manifest_upload_url"),
+        )
         print(json.dumps(result, indent=2))
     else:
         sys.exit("usage: python normalize.py '{\"input_url\": \"file://...\", "
