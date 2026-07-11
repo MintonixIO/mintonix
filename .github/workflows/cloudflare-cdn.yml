@@ -1,0 +1,57 @@
+# CDN Worker pipeline: one artifact (the Worker script) to one runtime
+# (Cloudflare). PR → deploy to the dev Worker (mintonix-cdn-dev), master →
+# prod (mintonix-cdn). Runtime secrets (B2 keys, JWT public key, presign
+# service token) are NOT set here — they are `wrangler secret put` state on
+# the Worker itself (see workers/cloudflare/cdn/DEPLOYMENT.md); this workflow
+# only needs a Cloudflare API token scoped to Workers deploys.
+
+name: Cloudflare CDN Worker
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "workers/cloudflare/cdn/**"
+      - ".github/workflows/cloudflare-cdn.yml"
+  pull_request:
+    paths:
+      - "workers/cloudflare/cdn/**"
+      - ".github/workflows/cloudflare-cdn.yml"
+
+concurrency:
+  group: cloudflare-cdn-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    working-directory: workers/cloudflare/cdn
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ github.event_name == 'pull_request' && 'dev' || 'prod' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: workers/cloudflare/cdn/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          ENV="${{ github.event_name == 'pull_request' && 'dev' || 'prod' }}"
+          pnpm exec wrangler deploy --env "$ENV"

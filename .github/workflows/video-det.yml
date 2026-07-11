@@ -1,0 +1,35 @@
+name: Video Detection Worker
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "workers/vast/video-det/**"
+      - ".github/workflows/video-det.yml"
+      - ".github/workflows/vast-worker.yml"
+  pull_request:
+    paths:
+      - "workers/vast/video-det/**"
+      - ".github/workflows/video-det.yml"
+      - ".github/workflows/vast-worker.yml"
+
+concurrency:
+  group: video-det-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  image:
+    uses: ./.github/workflows/vast-worker.yml
+    permissions:
+      contents: read
+      packages: write
+    with:
+      directory: workers/vast/video-det
+      image: video-det
+      # The TensorRT base image is ~9 GB; reclaim runner disk first.
+      free_disk_space: true
+      # No GPU on CI runners: the TensorRT engine build and real inference stay
+      # a manual step (see workers/vast/video-det/ARCHITECTURE.md). This import
+      # smoke test still catches broken deps, syntax errors, and API drift in
+      # handler/detect/broadcast at image-build time.
+      test_command: python3 -c "import handler, worker"

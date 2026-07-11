@@ -377,6 +377,18 @@ deno_version = 2
 # [edge_runtime.secrets]
 # secret_key = "env(SECRET_VALUE)"
 
+# Per-function deploy config (supabase functions deploy reads this).
+# videos-ingest and jobs run with the platform JWT gate OFF because their
+# callers hold no Supabase JWT (system producers use x-pipeline-token; the
+# vast worker's callback uses the HMAC job token) — each route enforces its
+# own credential in-function. cdn-access keeps the default (verify_jwt=true):
+# its callers are real signed-in users.
+[functions.videos-ingest]
+verify_jwt = false
+
+[functions.jobs]
+verify_jwt = false
+
 [analytics]
 enabled = true
 port = 54327

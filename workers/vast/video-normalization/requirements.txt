@@ -3,6 +3,11 @@ fastapi
 uvicorn
 requests
 
+# youtube source kind: the worker acquires YouTube sources itself with yt-dlp
+# (the scraper on a GitHub runner only discovers URLs; it never moves video
+# bytes). Unpinned on purpose: YouTube routinely breaks old extractor versions.
+yt-dlp
+
 # valid_frames.py: court-visibility NCC detection (opencv/numpy) +
 # scoreboard-visibility OCR (paddleocr). CPU-only paddlepaddle -- OCR runs at
 # a ~7 min/85 min-match floor on CPU (measured in the sibling valid-frames

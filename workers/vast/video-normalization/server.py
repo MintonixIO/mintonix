@@ -7,8 +7,13 @@ Contract (the PyWorker's request_parser unwraps the outer {"input": ...}, so
 this server receives the inner object):
 
     POST /normalize/sync
-        { "input_url": "...",                # presigned GET (parallel ranges)
+        { "input_url": "...",                # presigned GET (parallel ranges),
+                                             # or a YouTube URL (worker fetches
+                                             # it itself with yt-dlp)
           "request_id": "...",
+          # optional, youtube sources: presigned PUT archiving the pristine
+          # download to B2 (required upload — B2 is canonical after this job)
+          "original_upload_url": "...",
           # exactly one output destination:
           "output_upload_url": "...",        # single presigned PUT, OR
           "output_upload": {                 # parallel multipart (preferred)
@@ -30,7 +35,16 @@ this server receives the inner object):
               "player_names": ["...", "..."] },
           "valid_frames_upload_url": "...",     # single presigned PUT, OR
           "valid_frames_upload": { "...": "... (same shape as output_upload)" },
-          "manifest_upload_url": "..." }        # presigned PUT for the frame manifest CSV
+          "manifest_upload_url": "...",         # presigned PUT for the frame manifest CSV
+          # optional async report channel: when given, the worker POSTs the
+          # result (success or failure, same shape as the HTTP response body,
+          # plus "status": "success"|"failed") to callback_url with
+          # `Authorization: Bearer <callback_token>` from inside the job
+          # thread — the dispatching client is long gone by the time a real
+          # job finishes. Failure payloads include "original_archived": true
+          # when the pristine-source archive made it to B2 before the error.
+          "callback_url": "...",
+          "callback_token": "..." }
       -> 200 { "request_id", "width", "height", "fps", "codec", "audio_codec",
                "pixel_fmt", "duration", "file_size", "source", "elapsed_sec",
                # when thumbnail_upload_url given (best-effort):
@@ -97,6 +111,13 @@ async def normalize_sync(request: Request) -> JSONResponse:
     valid_frames_upload_url = body.get("valid_frames_upload_url")
     valid_frames_upload = body.get("valid_frames_upload")
     manifest_upload_url = body.get("manifest_upload_url")
+    original_upload_url = body.get("original_upload_url")  # archive PUT for youtube sources
+    # Async report channel: the dispatcher disconnects long before a real job
+    # finishes (it runs in an edge function with a wall-clock limit), so when
+    # it provides callback_url the worker POSTs the result there itself,
+    # authing with the single-use callback_token from the envelope.
+    callback_url = body.get("callback_url")
+    callback_token = body.get("callback_token")
     if not input_url or not (output_upload_url or output_upload):
         return JSONResponse(
             {"request_id": request_id,
@@ -117,12 +138,34 @@ async def normalize_sync(request: Request) -> JSONResponse:
             )
 
     # normalize_job is blocking (ffmpeg, large I/O); run it off the event loop.
+    # The callback POST happens INSIDE the worker thread, not after the await:
+    # a disconnected client cancels this coroutine, but a threadpool thread
+    # always runs to completion — so the result is reported even when the
+    # dispatcher hung up an hour ago.
+    def run_and_report() -> dict:
+        progress: dict = {}
+        try:
+            result = normalize.normalize_job(
+                input_url, output_upload_url, output_upload,
+                thumbnail_upload_url, valid_frames_config,
+                valid_frames_upload_url, valid_frames_upload,
+                manifest_upload_url, original_upload_url, progress=progress,
+            )
+        except Exception as e:
+            if callback_url:
+                normalize.post_callback(callback_url, callback_token, {
+                    "request_id": request_id, "status": "failed",
+                    "error": str(e), **progress,
+                })
+            raise
+        if callback_url:
+            normalize.post_callback(callback_url, callback_token, {
+                "request_id": request_id, "status": "success", **result,
+            })
+        return result
+
     try:
-        result = await run_in_threadpool(
-            normalize.normalize_job, input_url, output_upload_url, output_upload,
-            thumbnail_upload_url, valid_frames_config, valid_frames_upload_url,
-            valid_frames_upload, manifest_upload_url,
-        )
+        result = await run_in_threadpool(run_and_report)
         return JSONResponse({"request_id": request_id, **result})
     except Exception as e:  # noqa: BLE001 — report any job failure as 500
         log.exception("normalize(failed): request_id=%s", request_id)

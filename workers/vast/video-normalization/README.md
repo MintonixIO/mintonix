@@ -1,8 +1,10 @@
 # video-normalization (vast.ai PyWorker)
 
 Normalizes arbitrary source video to a consistent delivery spec:
-**≤1920×1080, ≤30 fps, H.264 / yuv420p, AAC audio** — GPU-accelerated
-(NVDEC decode → `scale_cuda` → `h264_nvenc`) with a CPU `libx264` fallback.
+**≤1920×1080, ≤30 fps, H.264 / yuv420p, AAC audio** — GPU-only
+(NVDEC decode → `scale_cuda` → `h264_nvenc`). There is no CPU encode path: a
+job that lands on a host without a usable GPU fails fast and the queue retries
+it on a healthy one (remux-copy of already-conformant sources needs no GPU).
 
 Deployed on **vast.ai serverless** using the
 [PyWorker](https://github.com/vast-ai/pyworker) model.
@@ -60,7 +62,16 @@ POST /normalize/sync
     "row_split_y": 40,
     "player_names": ["SHI", "AXELSEN"] },
   "valid_frames_upload_url": "https://…/valid.mp4",   // or valid_frames_upload (multipart, same shape as output_upload)
-  "manifest_upload_url": "https://…/frame_manifest.csv" }
+  "manifest_upload_url": "https://…/frame_manifest.csv",
+  // optional async report channel: the worker POSTs the result (the same
+  // body as the HTTP response, plus "status": "success"|"failed") to
+  // callback_url with `Authorization: Bearer <callback_token>`, from inside
+  // the job thread — so it lands even though the dispatching edge function
+  // disconnected long ago. Failure payloads carry "original_archived": true
+  // when the pristine-source archive reached B2 before the error, so the
+  // dispatcher's retry sources from B2 instead of refetching YouTube.
+  "callback_url": "https://…/functions/v1/jobs/callback",
+  "callback_token": "<single-use HMAC job token>" }
 ```
 ```json
 200 { "request_id", "width", "height", "fps", "codec", "audio_codec",

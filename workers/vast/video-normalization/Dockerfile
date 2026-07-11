@@ -70,15 +70,12 @@ RUN mkdir -p /workspace/vast-pyworker \
 # Backend FastAPI server (server.py) + vast PyWorker (worker.py via start_server.sh).
 # Do NOT set BACKEND (start_server.sh would then require HF_TOKEN) or
 # USE_SYSTEM_PYTHON (that path installs `vastai` over our `vastai-sdk`).
-# REQUIRE_GPU=1 makes normalize.py refuse to transcode on CPU when no usable
-# NVIDIA GPU is present: on a rented GPU instance a libx264 fallback would burn
-# credit at a fraction of the speed, and a GPU-broken host should fail its
-# startup benchmark so the autoscaler discards it. CI overrides this with
-# `-e REQUIRE_GPU=0` to run the CPU e2e test on its GPU-less runner.
+# Transcodes are GPU-only (normalize.py has no CPU encode path): a job landing
+# on a GPU-broken host fails fast, the startup benchmark fails too so the
+# autoscaler discards the host, and the queue retries the job elsewhere.
 ENV MODEL_SERVER_PORT=18000 \
     MODEL_LOG=/var/log/portal/video-normalization.log \
     WORKSPACE_DIR=/workspace \
-    WORKER_PORT=3000 \
-    REQUIRE_GPU=1
+    WORKER_PORT=3000
 
 CMD ["bash", "entrypoint.sh"]

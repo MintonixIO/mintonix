@@ -7,6 +7,11 @@ Imported by:
   - test_handler.py (unit + e2e tests run without any serverless SDK installed)
 
 Normalization target: <=1920x1080, <=30 fps, h264 / yuv420p, AAC audio.
+
+Transcodes are GPU-only (NVDEC -> scale_cuda -> h264_nvenc). There is no CPU
+encode path: the worker runs exclusively on rented GPU instances, and a job
+that lands on a GPU-broken host fails fast so the queue retries it elsewhere.
+Remux-copy (already-conformant source) needs no GPU.
 """
 
 import concurrent.futures
@@ -85,6 +90,64 @@ def _download_stream(url: str, dest: str, sess: requests.Session) -> None:
     elapsed = time.time() - t0
     speed = (written / elapsed / 1024 / 1024) if elapsed else 0
     log.info("download(done,single): %d bytes in %.1fs (%.1f MB/s)", written, elapsed, speed)
+
+
+_YOUTUBE_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"}
+
+
+def is_youtube_url(url: str) -> bool:
+    """True for YouTube URLs — sources the worker acquires itself with yt-dlp.
+    The scraper only discovers URLs and enqueues jobs; nothing upstream of the
+    worker (a GitHub runner) ever moves video bytes."""
+    try:
+        p = urlparse(url)
+    except ValueError:
+        return False
+    return p.scheme in ("http", "https") and (p.hostname or "").lower() in _YOUTUBE_HOSTS
+
+
+def download_youtube(url: str, dest_dir: str) -> str:
+    """Fetch a YouTube source with yt-dlp (best video+audio, merged to MKV)
+    into `dest_dir` and return the downloaded file's path."""
+    import yt_dlp  # deferred: only youtube-sourced jobs need it
+
+    t0 = time.time()
+    last_emit = [0.0]
+
+    def hook(d: dict) -> None:
+        if d.get("status") != "downloading":
+            return
+        now = time.time()
+        if now - last_emit[0] < DOWNLOAD_PROGRESS_INTERVAL_SEC:
+            return
+        last_emit[0] = now
+        got = d.get("downloaded_bytes") or 0
+        total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
+        pct = f" ({got / total * 100:.1f}%)" if total else ""
+        speed = (d.get("speed") or 0) / 1024 / 1024
+        log.info("download(youtube): %.1f MB%s @ %.1f MB/s", got / 1024 / 1024, pct, speed)
+
+    opts = {
+        "format": "bv*+ba/b",
+        "merge_output_format": "mkv",
+        "outtmpl": {"default": os.path.join(dest_dir, "source.%(ext)s")},
+        "quiet": True,
+        "no_warnings": True,
+        "noprogress": True,
+        "progress_hooks": [hook],
+        "retries": 5,
+    }
+    log.info("download(youtube,start): %s", url)
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        ydl.download([url])
+    candidates = [os.path.join(dest_dir, f) for f in os.listdir(dest_dir)
+                  if f.startswith("source.") and not f.endswith(".part")]
+    if not candidates:
+        raise RuntimeError("yt-dlp reported success but produced no source file")
+    path = max(candidates, key=os.path.getsize)
+    log.info("download(youtube,done): %s (%.1f MB) in %.1fs", os.path.basename(path),
+             os.path.getsize(path) / 1024 / 1024, time.time() - t0)
+    return path
 
 
 def download(url: str, dest: str, connections: int | None = None) -> None:
@@ -257,6 +320,39 @@ def upload_multipart(local_path: str, spec: dict) -> None:
     speed = (size / elapsed / 1024 / 1024) if elapsed else 0
     log.info("upload(done,multipart): %d bytes in %.1fs (%.1f MB/s, %d parts, %d conns)",
              size, elapsed, speed, nparts, UL_CONNECTIONS)
+
+
+def post_callback(url: str, token: str | None, payload: dict,
+                  attempts: int = 5) -> int | None:
+    """POST a job result to the dispatcher's callback endpoint.
+
+    The token is the single-use HMAC capability the dispatcher put in the job
+    envelope — echoed back as a Bearer header, same capability-passing pattern
+    as the presigned URLs (the worker holds no long-lived credential). Must be
+    called from the job's own thread: the dispatching client disconnects long
+    before the job ends, and this is the only report that reaches the pipeline.
+
+    Retries 5xx/network errors with backoff — an unreported *successful* job
+    would otherwise be re-run wholesale when the queue's visibility timeout
+    expires. A 4xx is terminal (stale/rejected token; retrying can't fix it).
+    Returns the final HTTP status, or None if every attempt failed.
+    """
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    for i in range(attempts):
+        try:
+            resp = requests.post(url, json=payload, headers=headers, timeout=30)
+            if resp.status_code < 500:
+                level = log.info if resp.status_code < 400 else log.warning
+                level("callback(%s): HTTP %d %s", _redact(url),
+                      resp.status_code, resp.text[:300])
+                return resp.status_code
+            log.warning("callback(retry %d/%d): HTTP %d", i + 1, attempts,
+                        resp.status_code)
+        except requests.RequestException as e:
+            log.warning("callback(retry %d/%d): %s", i + 1, attempts, e)
+        time.sleep(min(2 ** i, 30))
+    log.error("callback(failed): gave up after %d attempts", attempts)
+    return None
 
 
 def extract_thumbnail(video_path: str, dest_path: str, duration: float) -> dict:
@@ -433,13 +529,14 @@ def needs_transcode(info: dict) -> bool:
             or needs_scale or needs_fps_cap or needs_pixfmt or needs_audio)
 
 
-def _video_encoder_args(gpu: bool) -> list[str]:
+def _video_encoder_args() -> list[str]:
     """The one h264 encoder configuration, shared by the normalize encode and
-    the valid-frames select encode."""
-    if gpu:
-        return ["-c:v", "h264_nvenc", "-preset", "p4", "-tune", "hq",
-                "-rc", "vbr", "-cq", "23", "-b:v", "0"]
-    return ["-c:v", "libx264", "-crf", "23", "-preset", "fast"]
+    the valid-frames select encode. NVENC only — this worker has no CPU encode
+    path: it runs exclusively on rented GPU instances, so a libx264 fallback
+    would silently burn credit at a fraction of NVENC speed. A job that lands
+    on a GPU-broken host fails instead, and the queue retries it elsewhere."""
+    return ["-c:v", "h264_nvenc", "-preset", "p4", "-tune", "hq",
+            "-rc", "vbr", "-cq", "23", "-b:v", "0"]
 
 
 def build_ffmpeg_cmd(input_path: str, output_path: str, info: dict,
@@ -447,7 +544,11 @@ def build_ffmpeg_cmd(input_path: str, output_path: str, info: dict,
     """force_cfr skips the remux-copy shortcut and always applies an `fps=`
     filter, so the output is constant-frame-rate: valid-frame extraction
     addresses frames by index and samples the scoreboard by timestamp, which
-    only agree under CFR (a remuxed VFR source would desync them)."""
+    only agree under CFR (a remuxed VFR source would desync them).
+
+    Transcodes are GPU-only (NVDEC → scale_cuda → h264_nvenc); normalize_job
+    fails the job up front when no usable GPU is present. Remux-copy needs no
+    GPU."""
     w, h, fps, audio_codec = info["width"], info["height"], info["fps"], info["audio_codec"]
     src_pixfmt = info.get("pixel_fmt", "")
 
@@ -461,17 +562,13 @@ def build_ffmpeg_cmd(input_path: str, output_path: str, info: dict,
             output_path,
         ]
 
-    gpu = use_gpu()
+    # --- input options: full GPU chain, NVDEC decode to CUDA hwframes ---
+    input_opts = ["-threads", "0",
+                  "-hwaccel", "cuda", "-hwaccel_output_format", "cuda",
+                  "-hwaccel_device", "0",
+                  "-i", input_path]
 
-    # --- input options ---
-    input_opts = ["-threads", "0"]
-
-    if gpu:
-        input_opts += ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda", "-hwaccel_device", "0"]
-
-    input_opts += ["-i", input_path]
-
-    video_enc = _video_encoder_args(gpu)
+    video_enc = _video_encoder_args()
 
     # --- video filter chain ---
     ratio = _scale_ratio(w, h)
@@ -481,24 +578,17 @@ def build_ffmpeg_cmd(input_path: str, output_path: str, info: dict,
     vf_parts: list[str] = []
 
     # The fps cap operates on the timestamp stream and passes CUDA hwframes
-    # through untouched, so it sits ahead of scale_cuda in a full GPU chain
-    # exactly as it does for the CPU chain.
+    # through untouched, so it sits ahead of scale_cuda.
     if fps > MAX_FPS:
         vf_parts.append(f"fps={MAX_FPS}")
     elif force_cfr:
         vf_parts.append(f"fps={fps or MAX_FPS}")
 
-    if gpu and has_scale_cuda():
-        if needs_scale:
-            new_w, new_h = _scaled_dims(w, h, ratio)
-            vf_parts.append(f"scale_cuda={new_w}:{new_h}:format=nv12")
-        elif needs_pixfmt:
-            vf_parts.append("scale_cuda=iw:ih:format=nv12")
-    else:
-        if needs_scale:
-            new_w, new_h = _scaled_dims(w, h, ratio)
-            vf_parts.append(f"scale={new_w}:{new_h}")
-        vf_parts.append(f"format={TARGET_PIXFMT}")
+    if needs_scale:
+        new_w, new_h = _scaled_dims(w, h, ratio)
+        vf_parts.append(f"scale_cuda={new_w}:{new_h}:format=nv12")
+    elif needs_pixfmt:
+        vf_parts.append("scale_cuda=iw:ih:format=nv12")
 
     # --- audio ---
     if audio_codec is None:
@@ -582,15 +672,16 @@ def run_ffmpeg(cmd: list[str], source_duration: float | None) -> None:
 
 
 def build_valid_frames_cmd(input_path: str, output_path: str,
-                           select_expr: str, gpu: bool) -> list[str]:
+                           select_expr: str) -> list[str]:
     """Single-pass select+re-encode: drop every frame outside the keep-ranges
     (valid_frames.build_select_expr), then reset timestamps to be contiguous.
     No audio -- dropping frames desyncs the audio track, and re-deriving
-    matching audio cuts is out of scope."""
+    matching audio cuts is out of scope. NVENC encode (software decode is fine
+    here: `select` needs system-memory frames anyway)."""
     vf = f"select='{select_expr}',setpts=N/FRAME_RATE/TB"
     return (
         ["ffmpeg", "-y", "-nostats", "-threads", "0", "-i", input_path, "-vf", vf]
-        + _video_encoder_args(gpu)
+        + _video_encoder_args()
         + ["-an", "-movflags", "+faststart", "-progress", "pipe:2", output_path]
     )
 
@@ -636,8 +727,18 @@ def normalize_job(input_url: str, output_upload_url: str | None = None,
                   valid_frames_config: dict | None = None,
                   valid_frames_upload_url: str | None = None,
                   valid_frames_upload: dict | None = None,
-                  manifest_upload_url: str | None = None) -> dict:
+                  manifest_upload_url: str | None = None,
+                  original_upload_url: str | None = None,
+                  progress: dict | None = None) -> dict:
     """Download -> normalize -> upload. Provider-neutral orchestrator.
+
+    `input_url` is either a presigned GET (source already in B2, e.g. user
+    uploads) or a YouTube URL, which the worker fetches itself with yt-dlp —
+    the scraper/dispatcher only hand over the URL. For youtube sources the
+    dispatcher also presigns `original_upload_url` so the pristine download is
+    archived to B2 (B2 is canonical: YouTube is never touched again after this
+    job). The archive is required, not best-effort — a retry after a takedown
+    would otherwise have no source.
 
     Output destination is either:
       - `output_upload` (dict): parallel multipart upload via presigned URLs, or
@@ -659,6 +760,12 @@ def normalize_job(input_url: str, output_upload_url: str | None = None,
     fails the whole job. The request shape is validated before anything is
     downloaded or transcoded.
 
+    `progress`, if given, is a caller-owned dict this job marks milestones in
+    (currently just `original_archived`). It exists for the failure path: an
+    exception can't carry what already succeeded, but the dispatcher needs to
+    know the original made it to B2 so the retry sources from there instead of
+    refetching YouTube.
+
     Returns the output probe dict plus the source probe and elapsed time.
     Raises on any failure (the caller maps it to an HTTP error / job failure).
     """
@@ -678,25 +785,35 @@ def normalize_job(input_url: str, output_upload_url: str | None = None,
 
     t_start = time.time()
     with tempfile.TemporaryDirectory() as tmp:
-        src = os.path.join(tmp, "source")
         dst = os.path.join(tmp, "normalized.mp4")
 
-        download(input_url, src)
+        if is_youtube_url(input_url):
+            src = download_youtube(input_url, tmp)
+        else:
+            src = os.path.join(tmp, "source")
+            download(input_url, src)
 
         src_info = probe(src)
         log.info("probe(source): %s gpu=%s", json.dumps(src_info), use_gpu())
 
-        # On a deployed worker (REQUIRE_GPU=1) refuse to transcode on CPU: a
-        # libx264 fallback on a rented GPU instance burns credit at a fraction of
-        # NVENC speed. Raising here also makes the startup benchmark fail on a
-        # GPU-broken host so the autoscaler discards it instead of running jobs
-        # on the CPU. Remux-copy jobs (no re-encode) don't need the GPU.
+        if original_upload_url:
+            upload(src, original_upload_url)
+            if progress is not None:
+                progress["original_archived"] = True
+            log.info("upload(original): archived pristine source (%d bytes)",
+                     os.path.getsize(src))
+
+        # Transcodes are GPU-only — there is no CPU encode path. Failing here
+        # (before any encode) also makes the startup benchmark fail on a
+        # GPU-broken host so the autoscaler discards it, and lets the queue
+        # retry the job on a healthy one. Remux-copy jobs (no re-encode) don't
+        # need the GPU.
         force_cfr = valid_frames_config is not None
-        if (os.environ.get("REQUIRE_GPU") == "1"
-                and (needs_transcode(src_info) or force_cfr) and not use_gpu()):
+        if (needs_transcode(src_info) or force_cfr) and not use_gpu():
             raise RuntimeError(
-                "REQUIRE_GPU=1 but no usable NVIDIA GPU detected — refusing to "
-                "transcode on CPU (would waste a rented GPU instance)"
+                "no usable NVIDIA GPU (h264_nvenc) detected — this worker has "
+                "no CPU transcode path; failing the job so the retry system "
+                "reschedules it on a working GPU host"
             )
 
         cmd = build_ffmpeg_cmd(src, dst, src_info, force_cfr=force_cfr)
@@ -704,10 +821,8 @@ def normalize_job(input_url: str, output_upload_url: str | None = None,
             log.info("remux(copy): source already matches spec, no re-encode needed")
         else:
             log.info(
-                "encoder: %s source: %s pixfmt=%s %s",
-                "h264_nvenc" if use_gpu() else "libx264",
-                src_info["codec"], src_info["pixel_fmt"],
-                "scale_cuda" if use_gpu() and has_scale_cuda() else "scale(CPU)",
+                "encoder: h264_nvenc source: %s pixfmt=%s scale_cuda=%s",
+                src_info["codec"], src_info["pixel_fmt"], has_scale_cuda(),
             )
         run_ffmpeg(cmd, src_info["duration"])
 
@@ -756,7 +871,7 @@ def normalize_job(input_url: str, output_upload_url: str | None = None,
             vf_duration = len(manifest) / dst_info["fps"] if dst_info["fps"] else None
             run_ffmpeg(
                 build_valid_frames_cmd(
-                    dst, vf_path, valid_frames.build_select_expr(ranges), use_gpu()),
+                    dst, vf_path, valid_frames.build_select_expr(ranges)),
                 vf_duration,
             )
             vf_info = probe(vf_path)
@@ -797,6 +912,7 @@ if __name__ == "__main__":
             inp.get("output_upload"), inp.get("thumbnail_upload_url"),
             inp.get("valid_frames_config"), inp.get("valid_frames_upload_url"),
             inp.get("valid_frames_upload"), inp.get("manifest_upload_url"),
+            inp.get("original_upload_url"),
         )
         print(json.dumps(result, indent=2))
     else:

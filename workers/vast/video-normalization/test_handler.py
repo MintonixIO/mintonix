@@ -13,16 +13,20 @@ VIDEO = str(Path(__file__).parent / "sample.mov")
 
 
 class TestBuildFfmpegCmd(unittest.TestCase):
+    """Command construction only — the transcode chain is GPU-only
+    (NVDEC → scale_cuda → h264_nvenc), so these assert the CUDA chain
+    regardless of what hardware the test host has."""
+
     def _cmd_str(self, info):
         return " ".join(h.build_ffmpeg_cmd("in", "out", info))
 
     def test_scales_down_4k(self):
         cmd = self._cmd_str({"width": 3840, "height": 2160, "fps": 30, "audio_codec": "aac"})
-        self.assertIn("scale=1920:1080", cmd)
+        self.assertIn("scale_cuda=1920:1080:format=nv12", cmd)
 
     def test_no_scale_when_under_1080p(self):
         cmd = self._cmd_str({"width": 1280, "height": 720, "fps": 30, "audio_codec": "aac"})
-        self.assertNotIn("scale=", cmd)
+        self.assertNotIn("scale_cuda", cmd)
 
     def test_caps_fps_above_30(self):
         cmd = self._cmd_str({"width": 1280, "height": 720, "fps": 60, "audio_codec": "aac"})
@@ -50,19 +54,28 @@ class TestBuildFfmpegCmd(unittest.TestCase):
         cmd = h.build_ffmpeg_cmd("in", "out", {"width": 1280, "height": 720, "fps": 30, "audio_codec": None})
         self.assertIn("-an", cmd)
 
-    def test_always_includes_yuv420p(self):
+    def test_always_uses_nvenc(self):
         cmd = self._cmd_str({"width": 1280, "height": 720, "fps": 30, "audio_codec": "aac"})
-        self.assertIn("format=yuv420p", cmd)
+        self.assertIn("h264_nvenc", cmd)
+        self.assertNotIn("libx264", cmd)
+
+    def test_pixfmt_conversion_via_scale_cuda(self):
+        # 10-bit source at target resolution: no scale needed, but the pixfmt
+        # conversion still routes through scale_cuda (format=nv12).
+        cmd = self._cmd_str({"width": 1920, "height": 1080, "fps": 30,
+                             "audio_codec": "aac", "codec": "hevc",
+                             "pixel_fmt": "yuv420p10le"})
+        self.assertIn("scale_cuda=iw:ih:format=nv12", cmd)
 
     def test_portrait_scales_correctly(self):
-        # 1080x1920 portrait 4K → should not upscale, already fits
+        # 1080x1920 portrait → should not upscale, already fits
         cmd = self._cmd_str({"width": 1080, "height": 1920, "fps": 30, "audio_codec": "aac"})
-        self.assertNotIn("scale=", cmd)
+        self.assertNotIn("scale_cuda", cmd)
 
     def test_portrait_4k_scales_down(self):
         # 2160x3840 portrait 4K → should scale down
         cmd = self._cmd_str({"width": 2160, "height": 3840, "fps": 30, "audio_codec": "aac"})
-        self.assertIn("scale=", cmd)
+        self.assertIn("scale_cuda=", cmd)
 
     def test_force_cfr_skips_copy_and_pins_fps(self):
         # A source that already matches spec would be remux-copied, but a
@@ -141,16 +154,11 @@ class TestValidFramesLogic(unittest.TestCase):
             _, area = vf._green_mask(corners, w, hgt)
             self.assertGreater(area, 0.99 * vf.SW * vf.SH, f"{w}x{hgt}")
 
-    def test_build_valid_frames_cmd_no_audio(self):
+    def test_build_valid_frames_cmd(self):
         cmd = h.build_valid_frames_cmd("in.mp4", "out.mp4",
-                                       vf.build_select_expr([(0, 5)]), gpu=False)
+                                       vf.build_select_expr([(0, 5)]))
         self.assertIn("-an", cmd)
         self.assertIn("select='between(n,0,5)',setpts=N/FRAME_RATE/TB", cmd)
-        self.assertIn("libx264", cmd)
-
-    def test_build_valid_frames_cmd_gpu_encoder(self):
-        cmd = h.build_valid_frames_cmd("in.mp4", "out.mp4",
-                                       vf.build_select_expr([(0, 5)]), gpu=True)
         self.assertIn("h264_nvenc", cmd)
 
 
@@ -191,6 +199,122 @@ class TestValidateValidFramesRequest(unittest.TestCase):
             self.assertIn(key, h.validate_valid_frames_request(cfg, True, True))
 
 
+class TestYoutubeSourceDetection(unittest.TestCase):
+    def test_youtube_urls(self):
+        for url in ("https://www.youtube.com/watch?v=nUKzwRPI68A",
+                    "https://youtube.com/watch?v=abc",
+                    "https://m.youtube.com/watch?v=abc",
+                    "https://youtu.be/nUKzwRPI68A",
+                    "http://www.youtube.com/shorts/abc"):
+            self.assertTrue(h.is_youtube_url(url), url)
+
+    def test_non_youtube_urls(self):
+        # presigned B2/S3 GETs and lookalike hosts must take the plain
+        # download path, never yt-dlp
+        for url in ("https://s3.us-west-004.backblazeb2.com/bucket/k?sig=x",
+                    "file:///tmp/source.mp4",
+                    "https://notyoutube.com/watch?v=abc",
+                    "https://evil.com/youtu.be/abc",
+                    "https://youtube.com.evil.com/watch?v=abc",
+                    ""):
+            self.assertFalse(h.is_youtube_url(url), url)
+
+
+class TestPostCallback(unittest.TestCase):
+    """post_callback against a real local HTTP server: the Bearer token and
+    JSON payload must arrive intact, and 4xx must not trigger the retry loop
+    (a rejected/stale token can't be fixed by retrying)."""
+
+    def _serve(self, status):
+        import http.server
+        import json as jsonlib
+        import threading
+
+        received = {}
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                received["auth"] = self.headers.get("Authorization")
+                received["body"] = jsonlib.loads(
+                    self.rfile.read(int(self.headers["Content-Length"])))
+                received["count"] = received.get("count", 0) + 1
+                self.send_response(status)
+                self.end_headers()
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.shutdown)
+        return f"http://127.0.0.1:{server.server_port}/callback", received
+
+    def test_success_delivers_token_and_payload(self):
+        url, received = self._serve(200)
+        status = h.post_callback(url, "tok123", {"request_id": "j1", "status": "success"})
+        self.assertEqual(status, 200)
+        self.assertEqual(received["auth"], "Bearer tok123")
+        self.assertEqual(received["body"]["request_id"], "j1")
+
+    def test_4xx_is_terminal_no_retries(self):
+        url, received = self._serve(403)
+        status = h.post_callback(url, "stale", {"request_id": "j1"}, attempts=3)
+        self.assertEqual(status, 403)
+        self.assertEqual(received["count"], 1)
+
+
+class TestRemuxPipeline(unittest.TestCase):
+    """End-to-end over the remux path, which needs no GPU: an
+    already-conformant source keeps the full orchestration (download → probe →
+    remux-copy → thumbnail → upload) testable on GPU-less hosts, i.e. CI
+    runners. Transcode e2e lives in TestFullPipeline and self-skips there."""
+
+    @classmethod
+    def setUpClass(cls):
+        import subprocess
+        cls._tmp = tempfile.TemporaryDirectory()
+        cls.src = os.path.join(cls._tmp.name, "conformant.mp4")
+        subprocess.run(
+            ["ffmpeg", "-y", "-loglevel", "error",
+             "-f", "lavfi", "-i", "testsrc2=duration=2:size=1280x720:rate=30",
+             "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
+             "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+             "-shortest", cls.src],
+            check=True)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp.cleanup()
+
+    def test_remux_pipeline_with_thumbnail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = os.path.join(tmp, "normalized.mp4")
+            thumb = os.path.join(tmp, "thumbnail.jpg")
+            result = h.normalize_job(
+                f"file://{self.src}", f"file://{out}",
+                thumbnail_upload_url=f"file://{thumb}",
+            )
+            self.assertTrue(os.path.exists(thumb))
+            self.assertGreater(os.path.getsize(thumb), 0)
+
+        self.assertEqual(result["codec"], "h264")
+        self.assertEqual(result["pixel_fmt"], "yuv420p")
+        self.assertEqual(result["audio_codec"], "aac")
+        self.assertAlmostEqual(result["duration"], result["source"]["duration"], delta=0.5)
+        self.assertIsNotNone(result.get("thumbnail"))
+        self.assertNotIn("thumbnail_error", result)
+        self.assertLessEqual(result["thumbnail"]["width"], h.THUMBNAIL_WIDTH)
+        # frame sampled from within the clip, never past the end
+        self.assertLess(result["thumbnail"]["timestamp_sec"], result["duration"])
+
+    def test_thumbnail_omitted_by_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = os.path.join(tmp, "normalized.mp4")
+            result = h.normalize_job(f"file://{self.src}", f"file://{out}")
+        self.assertNotIn("thumbnail", result)
+
+
+@unittest.skipUnless(h.use_gpu(), "transcode is GPU-only (h264_nvenc); no GPU on this host")
 class TestFullPipeline(unittest.TestCase):
     def test_full_pipeline(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -209,32 +333,6 @@ class TestFullPipeline(unittest.TestCase):
         # must match the source (regression guard for an input -r 30 that
         # reinterpreted >30fps sources to 2x duration).
         self.assertAlmostEqual(result["duration"], result["source"]["duration"], delta=0.5)
-
-    def test_full_pipeline_with_thumbnail(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            out = os.path.join(tmp, "normalized.mp4")
-            thumb = os.path.join(tmp, "thumbnail.jpg")
-            result = h.normalize_job(
-                f"file://{VIDEO}", f"file://{out}",
-                thumbnail_upload_url=f"file://{thumb}",
-            )
-            # the JPEG was produced and uploaded to the same dir
-            self.assertTrue(os.path.exists(thumb))
-            self.assertGreater(os.path.getsize(thumb), 0)
-
-        self.assertIsNotNone(result.get("thumbnail"))
-        self.assertNotIn("thumbnail_error", result)
-        self.assertLessEqual(result["thumbnail"]["width"], h.THUMBNAIL_WIDTH)
-        self.assertGreater(result["thumbnail"]["file_size"], 0)
-        # frame sampled from within the clip, never past the end
-        self.assertLess(result["thumbnail"]["timestamp_sec"], result["duration"])
-
-    def test_thumbnail_omitted_by_default(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            out = os.path.join(tmp, "normalized.mp4")
-            result = h.normalize_job(f"file://{VIDEO}", f"file://{out}")
-        # no thumbnail requested -> no thumbnail keys (backward compatible)
-        self.assertNotIn("thumbnail", result)
 
 
 if __name__ == "__main__":

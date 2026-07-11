@@ -30,7 +30,8 @@ jobs:
   scrape-and-load:
     runs-on: ubuntu-latest
     # PR → dev (diff only); push to master / schedule / manual → prod (apply).
-    # Each environment supplies its own SUPABASE_URL + SUPABASE_SERVICE_KEY.
+    # Each environment supplies vars.SUPABASE_PROJECT_REF (from which the API
+    # URL is derived) + secrets.SUPABASE_SERVICE_KEY.
     environment: ${{ github.event_name == 'pull_request' && 'dev' || 'prod' }}
     steps:
       - uses: actions/checkout@v4
@@ -61,8 +62,11 @@ jobs:
       #    applies to prod. The diff/apply log is mirrored to the run summary.
       - name: Load to Supabase
         env:
-          # URL is non-sensitive → environment variable; key stays a secret.
-          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          # Derived from the project ref (the single source of truth shared
+          # with supabase.yml) so the two can never drift and silently point
+          # this loader at a different project. Revisit only if the API ever
+          # moves behind a custom domain.
+          SUPABASE_URL: https://${{ vars.SUPABASE_PROJECT_REF }}.supabase.co
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: |
           set -eo pipefail
