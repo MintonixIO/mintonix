@@ -22,6 +22,12 @@ async def _load_models() -> None:
     _detector = VideoDetector(pose_engine=_POSE_ENGINE, shuttle_ckpt=_SHUTTLE_CKPT)
 
 
+@app.get("/health")
+async def health():
+    # PyWorker (worker.py) polls this to gate readiness.
+    return {"ok": True, "models_loaded": _detector is not None}
+
+
 @app.post("/process-video")
 async def process_video(payload: dict, bg: BackgroundTasks):
     bg.add_task(_run, payload)
