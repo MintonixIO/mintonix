@@ -3,6 +3,10 @@
 # top-level config, which has NO vars — keeping its name distinct from
 # [env.prod].name means a stray no-env deploy can't overwrite the prod Worker.
 name = "mintonix-cdn-base"
+# Pinned so wrangler never needs to discover the account via /memberships —
+# a user-scoped endpoint that account-owned API tokens (cfat_…, used by CI)
+# are not allowed to call. Not a secret; inherited by both environments.
+account_id = "2b7f66ed0076a0d5d8f15b83db3aa706"
 main = "src/index.ts"
 compatibility_date = "2024-09-23"
 # Ed25519 (used for JWT verification) requires the WebCrypto Ed25519 surface.
@@ -56,7 +60,9 @@ MCowBQYDK2VwAyEAjGpfIRgX5Hrmxbwahmrr1iefRt/XhMuzDHEevUce6iY=
 """
 CACHE_TTL_SECONDS = "86400"
 CORS_ALLOW_ORIGIN = "*"
-PRESIGN_MAX_EXPIRY_SECONDS = "3600"
+# Must cover the pipeline's presigned-URL lifetime (jobs fn PRESIGN_EXPIRY_SECONDS,
+# default 14400): a normalize job runs for hours and uploads at the end.
+PRESIGN_MAX_EXPIRY_SECONDS = "14400"
 
 # --- PROD --------------------------------------------------------------------
 [env.prod]
@@ -79,7 +85,9 @@ MCowBQYDK2VwAyEAxeCBt2Rl/aqNwuu1NO90cN4inWbfjXhY2UzN9SAL+LU=
 """
 CACHE_TTL_SECONDS = "86400"
 CORS_ALLOW_ORIGIN = "*"
-PRESIGN_MAX_EXPIRY_SECONDS = "3600"
+# Must cover the pipeline's presigned-URL lifetime (jobs fn PRESIGN_EXPIRY_SECONDS,
+# default 14400): a normalize job runs for hours and uploads at the end.
+PRESIGN_MAX_EXPIRY_SECONDS = "14400"
 
 # --- Secrets (DO NOT put here; set via `wrangler secret put --env <env>`) -----
 # The Worker is the SOLE holder of B2 credentials. Because /presign mints
