@@ -21,8 +21,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python-is-python3 \
     # opencv-python-headless (valid_frames.py court detection) and
     # paddlepaddle (scoreboard OCR) both link against these at import time
-    # even without a display.
-    libgomp1 libglib2.0-0 \
+    # even without a display. libgl1: paddleocr→paddlex pulls the full
+    # (GUI-linked) opencv wheel as its own dep, shadowing our headless pin,
+    # and its cv2 dlopens libGL.so.1 on import.
+    libgomp1 libglib2.0-0 libgl1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Ubuntu 22.04's apt ffmpeg is 4.4, whose scale_cuda filter has NO `format`

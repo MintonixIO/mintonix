@@ -31,5 +31,11 @@ jobs:
       # No GPU on CI runners: the TensorRT engine build and real inference stay
       # a manual step (see workers/vast/video-det/ARCHITECTURE.md). This import
       # smoke test still catches broken deps, syntax errors, and API drift in
-      # handler/detect/broadcast at image-build time.
-      test_command: python3 -c "import handler, worker"
+      # handler/detect/broadcast at image-build time. pycuda's extension module
+      # links libcuda.so.1 (the host driver, absent here), so point the loader
+      # at the CUDA toolkit's stub — importing works, initializing wouldn't
+      # (pose.py defers cuInit to first PoseEstimator construction).
+      test_command: >-
+        bash -c "ln -s /usr/local/cuda/lib64/stubs/libcuda.so
+        /usr/local/lib/libcuda.so.1 && ldconfig &&
+        python3 -c 'import handler, worker'"

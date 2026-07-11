@@ -4,7 +4,6 @@ import cv2
 import numpy as np
 import tensorrt as trt
 import pycuda.driver as cuda
-import pycuda.autoinit  # noqa: F401 — initializes CUDA driver on import
 import torch
 import torchvision
 
@@ -19,6 +18,11 @@ _INPUT_SIZE = 640
 
 class PoseEstimator:
     def __init__(self, engine_path: str | Path, batch_size: int = 16) -> None:
+        # Initialize the CUDA driver on first construction, not module import:
+        # the CI smoke test imports this module on a driverless runner (against
+        # the toolkit's stub libcuda), where cuInit would fail.
+        import pycuda.autoinit  # noqa: F401
+
         self.batch_size = batch_size
 
         with open(engine_path, "rb") as f:

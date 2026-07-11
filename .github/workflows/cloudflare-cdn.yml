@@ -33,9 +33,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # No explicit version: pnpm/action-setup reads the pinned `packageManager`
+      # from the repo-root package.json (specifying both is a hard error).
       - uses: pnpm/action-setup@v4
-        with:
-          version: 9
 
       - uses: actions/setup-node@v4
         with:
