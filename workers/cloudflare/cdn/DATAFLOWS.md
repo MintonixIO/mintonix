@@ -31,7 +31,7 @@ the Cloudflare Worker.** Everything else moves through one-time capabilities
 ## 1. Match-data collection  (GitHub Actions → Supabase DB)
 
 Pure metadata. No storage, no users. Runs weekly (cron) or on PR/push scoped to
-`workers/github/match-data/**`. PR → **dev DB, dry-run diff**; push to `master` /
+`workers/github/match-data/**`. PR → **dev DB apply**; push to `master` /
 schedule → **prod DB, apply**.
 
 ```mermaid
@@ -59,7 +59,7 @@ flowchart LR
     T3 --- T5
   end
 
-  L -->|service key<br/>PR=dry-run · master=apply| DB
+  L -->|service key<br/>PR=dev apply · master=prod apply| DB
 ```
 
 Loads are **idempotent** (`matches.id = sha256(match_key)`). Catalog only —

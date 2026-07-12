@@ -29,7 +29,7 @@ defaults:
 jobs:
   scrape-and-load:
     runs-on: ubuntu-latest
-    # PR → dev (diff only); push to master / schedule / manual → prod (apply).
+    # PR → dev (apply); push to master / schedule / manual → prod (apply).
     # Each environment supplies vars.SUPABASE_PROJECT_REF (from which the API
     # URL is derived) + secrets.SUPABASE_SERVICE_KEY.
     environment: ${{ github.event_name == 'pull_request' && 'dev' || 'prod' }}
@@ -53,13 +53,12 @@ jobs:
       - name: Fetch YouTube video metadata
         run: python3 fetch_bwf_videos.py flat
 
-      # 3. Match videos to scraped matches — pure local transform, no DB
+      # 3. Match videos to matches — pure local transform, no DB
       - name: Match videos to matches
         run: python3 find_youtube_videos.py --videos-file bwf_videos.json
 
-      # 4. Load to Supabase. On a PR this runs --dry-run: it reports the diff
-      #    against the dev DB and writes nothing. On push/schedule/manual it
-      #    applies to prod. The diff/apply log is mirrored to the run summary.
+      # 4. Load to Supabase (always apply). PR → dev; master/schedule/manual → prod.
+      #    Log is mirrored to the run summary.
       - name: Load to Supabase
         env:
           # Derived from the project ref (the single source of truth shared
@@ -70,17 +69,15 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: |
           set -eo pipefail
-          DRY=""
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            DRY="--dry-run"
-            echo "### Match-data dry run (diff vs dev DB)" >> "$GITHUB_STEP_SUMMARY"
+            echo "### Match-data load (applied to dev)" >> "$GITHUB_STEP_SUMMARY"
           else
             echo "### Match-data load (applied to prod)" >> "$GITHUB_STEP_SUMMARY"
           fi
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           for f in bwf_*_results.json; do
             echo "Loading $f ..." | tee -a "$GITHUB_STEP_SUMMARY"
-            python3 load_to_supabase.py --json-file "$f" --videos-file video_matches.json $DRY \
+            python3 load_to_supabase.py --json-file "$f" --videos-file video_matches.json \
               | tee -a "$GITHUB_STEP_SUMMARY"
           done
           echo '```' >> "$GITHUB_STEP_SUMMARY"

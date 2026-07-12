@@ -57,7 +57,7 @@ row in `matches` + objects in B2 under that match's constructable prefix**
 - **Match metadata** — the weekly GitHub Actions pipeline
   (`workers/github/match-data`) scrapes BWF World Tour results and upserts into
   `matches` (content-hash `id`, four player name columns + scores +
-  `source_url`). PRs dry-run against dev; master/schedule applies to prod. ✅
+  `source_url`). PRs apply to dev; master/schedule applies to prod. ✅
 - **Backlog** — existing footage is staged under `bwf/<match_id>/original.mp4`
   via service `/presign`, then `matches-ingest` enqueues normalize. 📐
 - **Steady state** — scraper sets `source_url` on `matches` and calls
@@ -352,7 +352,7 @@ in `wrangler.toml`).
 
 | Workflow | Trigger paths | PR (dev) | master (prod) | Status |
 |---|---|---|---|---|
-| `match-data.yml` | `workers/github/match-data/**` | scrape + `--dry-run` diff vs dev DB | apply to prod (+ weekly cron) | ✅ |
+| `match-data.yml` | `workers/github/match-data/**` | scrape + apply to dev DB | apply to prod (+ weekly cron) | ✅ |
 | `vast-worker.yml` | (reusable, `workflow_call`) | build + test + push SHA-tagged image to GHCR | promote the tested digest | ✅ |
 | `video-normalization.yml` | `workers/vast/video-normalization/**` | → `vast-worker.yml` (contract/unit + remux e2e; transcode is GPU-only and self-skips on the GPU-less runner — a bad host fails the job and the queue retries) | 〃 | ✅ |
 | `video-det.yml` | `workers/vast/video-det/**` | → `vast-worker.yml` (CPU-safe tests; TensorRT engine build stays a documented manual step) | 〃 | ✅ |
@@ -376,7 +376,7 @@ in `wrangler.toml`).
   `db push` is a real hazard; never cancel an applying prod run.
 - **PR-deploys-to-dev caveat**: fine while the repo is private; if it ever
   goes public, switch PR jobs to dry-run only (`wrangler versions upload`,
-  `supabase db diff`) as match-data already does, so fork PRs never run with
+  `supabase db diff`, match-data `--dry-run`) so fork PRs never run with
   dev secrets.
 
 ## 9. Open questions
