@@ -8,16 +8,17 @@
  *     view token. End-user delivery — proxied so it stays cached + free egress.
  *
  *   - Control plane (POST /presign): the Supabase orchestrator, authed by a
- *     shared service token, asks for a presigned B2 URL (GET or PUT). Used for
- *     write-once uploads and internal one-shot reads, which the client/worker
- *     then hits DIRECTLY against B2 (no cache benefit, correct to bypass).
+ *     shared service token, asks for a presigned B2 URL (GET | PUT | DELETE)
+ *     or a LIST of keys under a prefix. GET/PUT/DELETE URLs are hit DIRECTLY
+ *     against B2 by the client/worker; LIST is executed here (no useful
+ *     single-shot presign for paginated listing).
  *
  * Trust boundary:
  *   - Vast / RunPod compute workers hold NO credentials (unchanged).
  *   - The orchestrator (Supabase fn) holds NO B2 credentials — only the JWT
  *     *private* key (mints view tokens) and the service token to call /presign.
- *   - This Worker holds the only B2 key (read+write, needed to presign PUTs)
- *     plus the JWT *public* key (verify view tokens, can't mint them).
+ *   - This Worker holds the only B2 key (read+write+delete, needed to presign
+ *     PUTs/DELETEs) plus the JWT *public* key (verify view tokens, can't mint).
  *
  * View-token claims (EdDSA, minted by the orchestrator):
  *   { "key": "videos/<id>/normalized.mp4", "exp": <unix s>, "iat": <unix s> }
@@ -111,15 +112,21 @@ function timingSafeEqual(a: string, b: string): boolean {
 }
 
 /**
- * Control plane: mint a presigned B2 URL for the orchestrator.
+ * Control plane: mint a presigned B2 URL (or list keys) for the orchestrator.
  *
  * Auth: `Authorization: Bearer <PRESIGN_SERVICE_TOKEN>` (server-to-server).
- * Body: { "key": string, "op": "GET" | "PUT", "expiresIn"?: number }
- * The presign is scoped to exactly `key`, so one call can't grant access to
- * arbitrary objects. Content-Type is intentionally NOT signed: only `host` is,
- * so the uploading client can set any Content-Type without breaking the
- * signature (signing it would force a byte-exact echo and yield
+ * Body:
+ *   { "key": string, "op": "GET" | "PUT" | "DELETE", "expiresIn"?: number }
+ *   { "op": "LIST", "prefix": string, "maxKeys"?: number, "continuationToken"?: string }
+ *
+ * GET/PUT/DELETE presigns are scoped to exactly `key`, so one call can't grant
+ * access to arbitrary objects. Content-Type is intentionally NOT signed: only
+ * `host` is, so the uploading client can set any Content-Type without breaking
+ * the signature (signing it would force a byte-exact echo and yield
  * SignatureDoesNotMatch on most browser PUTs).
+ *
+ * LIST is executed in-Worker (paginated ListObjectsV2) — used by admin delete
+ * of a match prefix. The B2 app key needs listFiles + deleteFiles for these.
  */
 async function handlePresign(request: Request, env: Env): Promise<Response> {
   if (request.method !== "POST") return deny(405, "Method not allowed", env);
@@ -129,17 +136,31 @@ async function handlePresign(request: Request, env: Env): Promise<Response> {
     return deny(401, "Bad service token", env);
   }
 
-  let body: { key?: string; op?: string; expiresIn?: number };
+  let body: {
+    key?: string;
+    op?: string;
+    expiresIn?: number;
+    prefix?: string;
+    maxKeys?: number;
+    continuationToken?: string;
+  };
   try {
     body = await request.json();
   } catch {
     return deny(400, "Invalid JSON body", env);
   }
 
-  const key = body.key ?? "";
   const op = (body.op ?? "GET").toUpperCase();
+
+  if (op === "LIST") {
+    return handleList(body, env);
+  }
+
+  const key = body.key ?? "";
   if (!isValidKey(key)) return deny(400, "Invalid or missing key", env);
-  if (op !== "GET" && op !== "PUT") return deny(400, "op must be GET or PUT", env);
+  if (op !== "GET" && op !== "PUT" && op !== "DELETE") {
+    return deny(400, "op must be GET, PUT, DELETE, or LIST", env);
+  }
 
   const maxExpiry = Number(env.PRESIGN_MAX_EXPIRY_SECONDS ?? "3600");
   const expiresIn = Math.min(
@@ -161,6 +182,72 @@ async function handlePresign(request: Request, env: Env): Promise<Response> {
       method: op,
       key,
       expiresAt: new Date(Date.now() + expiresIn * 1000).toISOString(),
+    }),
+    { status: 200, headers: { "Content-Type": "application/json", ...corsHeaders(env) } },
+  );
+}
+
+/** S3 ListObjectsV2 under a prefix; service-token only (via handlePresign). */
+async function handleList(
+  body: { prefix?: string; maxKeys?: number; continuationToken?: string },
+  env: Env,
+): Promise<Response> {
+  const prefix = body.prefix ?? "";
+  // Prefixes often end with `/` (match folder). Empty prefix = whole bucket (ops only).
+  if (
+    prefix.length > 1024 ||
+    prefix.startsWith("/") ||
+    prefix.includes("..") ||
+    (prefix !== "" && !/^[A-Za-z0-9!_.*'()/\-]+$/.test(prefix))
+  ) {
+    return deny(400, "Invalid prefix", env);
+  }
+
+  const maxKeys = Math.min(Math.max(Number(body.maxKeys) || 1000, 1), 1000);
+  const listUrl = new URL(`${env.B2_S3_ENDPOINT}/${env.B2_BUCKET}`);
+  listUrl.searchParams.set("list-type", "2");
+  listUrl.searchParams.set("prefix", prefix);
+  listUrl.searchParams.set("max-keys", String(maxKeys));
+  if (body.continuationToken) {
+    listUrl.searchParams.set("continuation-token", body.continuationToken);
+  }
+
+  const signed = await getAws(env).sign(listUrl.toString(), {
+    method: "GET",
+    aws: { signQuery: true },
+  });
+  const resp = await fetch(signed.url, { method: "GET" });
+  if (!resp.ok) {
+    return deny(502, `ListObjects failed: ${resp.status}`, env);
+  }
+
+  const xml = await resp.text();
+  const keys = [...xml.matchAll(/<Key>([^<]*)<\/Key>/g)].map((m) =>
+    m[1]
+      .replace(/&amp;/g, "&")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&quot;/g, '"')
+      .replace(/&apos;/g, "'"),
+  );
+  const truncated = /<IsTruncated>\s*true\s*<\/IsTruncated>/i.test(xml);
+  const nextMatch = xml.match(/<NextContinuationToken>([^<]*)<\/NextContinuationToken>/);
+  const nextContinuationToken = nextMatch
+    ? nextMatch[1]
+      .replace(/&amp;/g, "&")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&quot;/g, '"')
+      .replace(/&apos;/g, "'")
+    : null;
+
+  return new Response(
+    JSON.stringify({
+      op: "LIST",
+      prefix,
+      keys,
+      isTruncated: truncated,
+      nextContinuationToken,
     }),
     { status: 200, headers: { "Content-Type": "application/json", ...corsHeaders(env) } },
   );

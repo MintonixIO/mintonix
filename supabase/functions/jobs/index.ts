@@ -13,49 +13,42 @@
  *     -> 200 { "dispatched": [ { job_id, stage, attempt } ] }
  *
  *   POST /functions/v1/jobs/callback    (vast worker; Bearer job-token auth)
- *     The worker's only way to report. Verifies the single-use HMAC token,
- *     then settles the stage through the complete_job RPC in one transaction:
- *     assets registered, job terminal (or re-queued for retry), videos rolled
- *     up, next stage enqueued. First terminal write wins — replays no-op.
+ *     The worker's only way to report. Verifies the single-use HMAC token
+ *     bound to (job_id, match_id, stage, attempt), requires jobs.status =
+ *     processing, then settles via complete_job. Stage advances IN PLACE;
+ *     first terminal write wins — replays no-op / reject.
  *
  * Deployed with verify_jwt=false (the worker has no Supabase JWT), so EACH
  * route enforces its own credential and unmatched paths 404.
  *
  * Trust model: the vast worker receives presigned URLs + this job token and
- * nothing else. The token is bound to (job_id, attempt): a callback from a
- * superseded attempt is rejected, which is what makes retry-safe single-use
- * work without a token table.
+ * nothing else. Superseded attempts / stages / non-processing status reject.
  *
- * The dispatch → vast call runs via EdgeRuntime.waitUntil because routing can
- * wait minutes for a GPU to spin up, and the job itself runs far longer than
- * any edge function. If this background task is killed mid-wait, nothing is
- * lost: the worker reports via callback on its own, and a job that never got
- * a worker reappears when its queue visibility timeout expires.
+ * B2 paths are constructable (not stored):
+ *   owner_id IS NULL  →  bwf/<match_id>/
+ *   owner_id set      →  users/<owner_id>/<match_id>/
+ *
+ * MVP: only the normalize stage is wired in STAGES; detect/analyze land when
+ * worker contracts are pinned. annotation.json → valid_frames_config is a
+ * follow-up (see SUPABASE.md).
  *
  * Secrets:
- *   PIPELINE_SERVICE_TOKEN  auth for /dispatch (shared with videos-ingest)
+ *   PIPELINE_SERVICE_TOKEN  auth for /dispatch (shared with matches-ingest)
  *   JOB_TOKEN_SECRET        HMAC secret for the callback token
  *   CDN_PRESIGN_URL         CDN Worker control plane (e.g. https://…/presign)
  *   PRESIGN_SERVICE_TOKEN   auth for /presign (shared with cdn-access)
  *   VAST_ENDPOINT_NAME      vast serverless endpoint name (exact string)
- *   VAST_API_KEY            vast ACCOUNT API key. The endpoint-scoped signed
- *                           key that /route/ actually authenticates with is
- *                           resolved from it at runtime (it expires weekly,
- *                           so it must never be stored as a secret)
+ *   VAST_API_KEY            vast ACCOUNT API key
  *   VAST_AUTOSCALER_URL     optional, default https://run.vast.ai
  *   VAST_TLS_CA             optional PEM: vast's self-signed worker CA
- *                           (jvastai_root.cer); without it the endpoint must
- *                           run with USE_SSL=false / UNSECURED=true
- *   PRESIGN_EXPIRY_SECONDS  optional, default 14400 — raise the CDN Worker's
- *                           PRESIGN_MAX_EXPIRY_SECONDS to match, or URLs
- *                           expire mid-job
+ *   PRESIGN_EXPIRY_SECONDS  optional, default 14400
  * SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY injected by the platform.
  */
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { jwtVerify, SignJWT } from "https://esm.sh/jose@5.9.6";
 
-const MAX_ATTEMPTS = 3; // dispatches per job before it's terminally failed
+const MAX_ATTEMPTS = 3; // dispatches per stage before terminally failed
 const TOKEN_AUD = "jobs-callback";
 const ROUTE_DEADLINE_MS = 240_000; // GPU cold start budget within waitUntil
 
@@ -66,13 +59,17 @@ function json(status: number, body: unknown): Response {
   });
 }
 
-function timingSafeEqual(a: string, b: string): boolean {
+/** Constant-time compare via SHA-256 so length mismatch does not short-circuit. */
+async function timingSafeEqual(a: string, b: string): Promise<boolean> {
   const enc = new TextEncoder();
-  const ab = enc.encode(a);
-  const bb = enc.encode(b);
-  if (ab.length !== bb.length) return false;
+  const [ha, hb] = await Promise.all([
+    crypto.subtle.digest("SHA-256", enc.encode(a)),
+    crypto.subtle.digest("SHA-256", enc.encode(b)),
+  ]);
+  const aa = new Uint8Array(ha);
+  const bb = new Uint8Array(hb);
   let diff = 0;
-  for (let i = 0; i < ab.length; i++) diff |= ab[i] ^ bb[i];
+  for (let i = 0; i < aa.length; i++) diff |= aa[i] ^ bb[i];
   return diff === 0;
 }
 
@@ -81,6 +78,19 @@ function serviceClient() {
     Deno.env.get("SUPABASE_URL")!,
     Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
   );
+}
+
+function isYoutubeUrl(raw: string | null | undefined): boolean {
+  if (!raw) return false;
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== "https:" && url.protocol !== "http:") return false;
+    const host = url.hostname.toLowerCase();
+    return host === "youtu.be" ||
+      ["youtube.com", "www.youtube.com", "m.youtube.com"].includes(host);
+  } catch {
+    return false;
+  }
 }
 
 // ---------------------------------------------------------------- presign
@@ -110,7 +120,8 @@ function tokenSecret(): Uint8Array {
 
 interface JobClaims {
   job_id: string;
-  video_id: string;
+  match_id: string;
+  stage: string;
   attempt: number;
 }
 
@@ -130,14 +141,17 @@ interface DispatchedJob {
   job_id: string;
   stage: string;
   attempt: number;
-  params: Record<string, unknown>;
   priority: number;
   queue: string;
-  video_id: string;
-  source_kind: string;
+  match_id: string;
+  owner_id: string | null;
   source_url: string | null;
   b2_prefix: string;
-  assets: Record<string, string>; // kind -> b2_key
+  tournament: string | null;
+  team1_player1: string | null;
+  team1_player2: string | null;
+  team2_player1: string | null;
+  team2_player2: string | null;
 }
 
 /** The worker's callback body: {request_id, status, error?, …stage result}. */
@@ -148,17 +162,14 @@ type CallbackBody = Record<string, unknown> & {
 };
 
 interface Settlement {
-  assets: Array<Record<string, unknown>>;
-  video: Record<string, unknown>;
-  next: { stage: string; params: Record<string, unknown> } | null;
+  match: Record<string, unknown>;
+  next: { stage: string } | null;
 }
 
 /**
- * The stage routing table — the one place that knows, per stage, how to turn
- * a job row into a worker envelope and a worker result into DB writes + the
- * next stage. detect and analyze slot in here once their worker contracts
- * are pinned; until then normalize is terminal and completing it makes the
- * video ready.
+ * Stage routing table. detect/analyze slot in once worker contracts land;
+ * until then normalize is terminal and completing it makes the match ready.
+ * Valid-frames / annotation.json loading is a follow-up.
  */
 const STAGES: Record<string, {
   route: string;
@@ -175,70 +186,32 @@ const STAGES: Record<string, {
         callback_url: `${Deno.env.get("SUPABASE_URL")}/functions/v1/jobs/callback`,
         callback_token: token,
       };
-      // Source: B2 is canonical the moment original.mkv exists (a retry never
-      // refetches YouTube); a first-attempt youtube job downloads via yt-dlp
-      // and MUST archive the pristine original before anything can fail.
-      if (job.assets.original) {
-        env.input_url = await presign(job.assets.original, "GET");
-      } else if (job.source_kind === "youtube" && job.source_url) {
+
+      // User-owned: original already in B2 as original.mp4 (matches-ingest).
+      // System/BWF with YouTube: always yt-dlp + archive PUT. Retries must not
+      // be B2-only — if original.mkv never landed, a GET would hard-fail forever.
+      // (Worker overwrites the same key on successful archive.)
+      // System/backlog without URL: original already under the prefix as mp4.
+      if (job.owner_id) {
+        env.input_url = await presign(`${prefix}original.mp4`, "GET");
+      } else if (isYoutubeUrl(job.source_url)) {
         env.input_url = job.source_url;
         env.original_upload_url = await presign(`${prefix}original.mkv`, "PUT");
       } else {
-        throw new Error("no input: no original asset registered and source is not youtube");
+        env.input_url = await presign(`${prefix}original.mp4`, "GET");
       }
+
       env.output_upload_url = await presign(`${prefix}normalized.mp4`, "PUT");
       env.thumbnail_upload_url = await presign(`${prefix}thumbnail.jpg`, "PUT");
-      const vfc = job.params?.valid_frames_config;
-      if (vfc) {
-        env.valid_frames_config = vfc;
-        env.valid_frames_upload_url = await presign(`${prefix}valid.mp4`, "PUT");
-        env.manifest_upload_url = await presign(`${prefix}frame_manifest.csv`, "PUT");
-      }
+
+      // TODO: load annotation.json (presign GET) → valid_frames_config for BWF.
       return env;
     },
 
-    settle(job, body, ok) {
-      const prefix = job.b2_prefix;
-      const assets: Array<Record<string, unknown>> = [];
-      // The original archive is real even when the job then failed (that's
-      // the GPU-gate design: archive first, so the retry sources from B2).
-      if (job.source_kind === "youtube" && (ok || body.original_archived === true)) {
-        assets.push({
-          kind: "original",
-          b2_key: job.assets.original ?? `${prefix}original.mkv`,
-          meta: body.source ? { probe: body.source } : {},
-        });
-      }
-      if (ok) {
-        const { width, height, fps, codec, audio_codec, pixel_fmt, duration, elapsed_sec } = body;
-        assets.push({
-          kind: "normalized",
-          b2_key: `${prefix}normalized.mp4`,
-          bytes: body.file_size,
-          meta: { width, height, fps, codec, audio_codec, pixel_fmt, duration, elapsed_sec },
-        });
-        if (body.thumbnail) {
-          assets.push({
-            kind: "thumbnail",
-            b2_key: `${prefix}thumbnail.jpg`,
-            bytes: (body.thumbnail as Record<string, unknown>).file_size,
-            meta: body.thumbnail,
-          });
-        }
-        if (body.valid_frames) {
-          const vf = body.valid_frames as Record<string, unknown>;
-          assets.push({ kind: "valid", b2_key: `${prefix}valid.mp4`, bytes: vf.file_size, meta: vf });
-          assets.push({
-            kind: "frame_manifest",
-            b2_key: `${prefix}frame_manifest.csv`,
-            bytes: vf.manifest_file_size,
-          });
-        }
-      }
-      // detect is next once its dispatcher contract lands; today normalize
-      // completing means the video is ready.
+    settle(_job, body, ok) {
+      // MVP: normalize is terminal. Wire detect next when the worker lands.
       const next = null;
-      const video = ok
+      const match = ok
         ? {
           status: next ? "processing" : "ready",
           duration_sec: body.duration,
@@ -247,16 +220,13 @@ const STAGES: Record<string, {
           fps: body.fps,
         }
         : {};
-      return { assets, video, next };
+      return { match, next };
     },
   },
 };
 
 // ---------------------------------------------------------------- vast
 
-// Vast workers serve TLS signed by vast's own CA. With VAST_TLS_CA set we
-// trust exactly that CA; otherwise fall back to the default fetch (which
-// requires the endpoint to run UNSECURED / USE_SSL=false).
 let vastClient: Deno.HttpClient | null | undefined;
 function getVastClient(): Deno.HttpClient | undefined {
   if (vastClient !== undefined) return vastClient ?? undefined;
@@ -274,10 +244,6 @@ function getVastClient(): Deno.HttpClient | undefined {
   return vastClient ?? undefined;
 }
 
-// /route/ authenticates with an ENDPOINT-scoped signed key, not the account
-// key — and vast rotates it (observed expiry: ~1 week), so it can't live in a
-// secret. Resolve it from the account key via the console API the way the
-// vastai SDK does, and cache it per isolate well under its lifetime.
 let endpointKeyCache: { name: string; key: string; fetchedAt: number } | null = null;
 
 async function resolveEndpointKey(endpointName: string, accountKey: string): Promise<string> {
@@ -301,17 +267,6 @@ async function resolveEndpointKey(endpointName: string, accountKey: string): Pro
   return match.api_key;
 }
 
-/**
- * The vast serverless protocol (vastai-sdk client.py/endpoint.py): poll
- * POST {autoscaler}/route/ {endpoint, api_key, cost, request_idx,
- * replay_timeout} until the response carries a worker `url` (that response
- * body IS the auth_data), then POST {url}{route} with
- * {auth_data, session_id: null, payload: {"input": envelope}}.
- *
- * We do not wait for the worker's response body — the job runs for many
- * minutes and reports through /jobs/callback from inside its own thread. An
- * early return here (4xx/5xx) is logged as it means the job never started.
- */
 async function invokeVast(route: string, envelope: Record<string, unknown>, jobId: string): Promise<void> {
   const endpoint = Deno.env.get("VAST_ENDPOINT_NAME");
   const accountKey = Deno.env.get("VAST_API_KEY");
@@ -330,7 +285,7 @@ async function invokeVast(route: string, envelope: Record<string, unknown>, jobI
       body: JSON.stringify({
         endpoint,
         api_key: apiKey,
-        cost: 10000, // matches the worker's NORMALIZE_WORKLOAD weight
+        cost: 10000,
         request_idx: requestIdx,
         replay_timeout: 60,
       }),
@@ -348,8 +303,6 @@ async function invokeVast(route: string, envelope: Record<string, unknown>, jobI
     delay = Math.min(delay * 2, 15_000);
   }
   if (!auth) {
-    // Not fatal for the job: the queue message reappears after the visibility
-    // timeout and the job is re-dispatched.
     throw new Error(`no vast worker became ready within ${ROUTE_DEADLINE_MS / 1000}s`);
   }
 
@@ -360,12 +313,53 @@ async function invokeVast(route: string, envelope: Record<string, unknown>, jobI
     body: JSON.stringify({ auth_data: auth, session_id: null, payload: { input: envelope } }),
     ...(getVastClient() ? { client: getVastClient() } : {}),
   } as RequestInit);
+  const workerBody = (await workerResp.text()).slice(0, 500);
   console.log(JSON.stringify({
     event: "dispatch.worker_responded",
     jobId,
     status: workerResp.status,
-    body: (await workerResp.text()).slice(0, 500),
+    body: workerBody,
   }));
+  // 4xx/5xx means the job never started — treat as invoke failure so we requeue.
+  if (!workerResp.ok) {
+    throw new Error(`vast worker ${route} failed: ${workerResp.status} ${workerBody}`);
+  }
+}
+
+async function failJob(
+  service: ReturnType<typeof serviceClient>,
+  job: DispatchedJob,
+  error: string,
+  retry: boolean,
+): Promise<void> {
+  // CAS on attempt+stage so a late invoke failure from attempt N cannot
+  // clobber attempt N+1 after VT reclaim re-dispatched the same job_id.
+  const { data, error: rpcError } = await service.rpc("complete_job", {
+    p_job_id: job.job_id,
+    p_status: "failed",
+    p_error: error,
+    p_retry: retry,
+    p_expected_attempt: job.attempt,
+    p_expected_stage: job.stage,
+  });
+  if (rpcError) {
+    console.error(JSON.stringify({
+      event: "complete_job.fail_path_error",
+      jobId: job.job_id,
+      attempt: job.attempt,
+      error: rpcError.message,
+    }));
+    return;
+  }
+  const settled = data as Record<string, unknown> | null;
+  if (settled?.rejected) {
+    console.log(JSON.stringify({
+      event: "complete_job.fail_path_stale",
+      jobId: job.job_id,
+      attempt: job.attempt,
+      result: settled,
+    }));
+  }
 }
 
 // ---------------------------------------------------------------- /dispatch
@@ -374,7 +368,7 @@ async function handleDispatch(request: Request): Promise<Response> {
   const serviceToken = Deno.env.get("PIPELINE_SERVICE_TOKEN");
   if (!serviceToken) return json(500, { error: "PIPELINE_SERVICE_TOKEN not configured" });
   const provided = request.headers.get("x-pipeline-token") ?? "";
-  if (!provided || !timingSafeEqual(provided, serviceToken)) {
+  if (!provided || !(await timingSafeEqual(provided, serviceToken))) {
     return json(401, { error: "Bad pipeline token" });
   }
 
@@ -397,30 +391,37 @@ async function handleDispatch(request: Request): Promise<Response> {
     if (!data) break;
     const job = data as DispatchedJob;
 
+    // attempt already incremented by the RPC; terminal-fail past the budget.
+    if (job.attempt > MAX_ATTEMPTS) {
+      await failJob(service, job, `attempt ${job.attempt} exceeds max ${MAX_ATTEMPTS}`, false);
+      dispatched.push({ job_id: job.job_id, stage: job.stage, error: "max attempts exceeded" });
+      continue;
+    }
+
     const spec = STAGES[job.stage];
     try {
       if (!spec) throw new Error(`no dispatcher for stage '${job.stage}'`);
       const token = await mintJobToken({
         job_id: job.job_id,
-        video_id: job.video_id,
+        match_id: job.match_id,
+        stage: job.stage,
         attempt: job.attempt,
       });
       const envelope = await spec.buildEnvelope(job, token);
-      const invocation = invokeVast(spec.route, envelope, job.job_id).catch((e) =>
-        console.error(JSON.stringify({ event: "dispatch.invoke_failed", jobId: job.job_id, error: String(e) }))
-      );
+      const invocation = invokeVast(spec.route, envelope, job.job_id).catch(async (e) => {
+        console.error(JSON.stringify({
+          event: "dispatch.invoke_failed",
+          jobId: job.job_id,
+          error: String(e),
+        }));
+        // Re-queue (or terminal-fail) so the job does not sit processing forever.
+        await failJob(service, job, `invoke: ${e}`, job.attempt < MAX_ATTEMPTS);
+      });
       // deno-lint-ignore no-explicit-any
       (globalThis as any).EdgeRuntime?.waitUntil?.(invocation);
       dispatched.push({ job_id: job.job_id, stage: job.stage, attempt: job.attempt });
     } catch (e) {
-      // Un-dispatchable (bad stage, no input, presign down): fail it now so it
-      // doesn't sit invisible until the visibility timeout.
-      await service.rpc("complete_job", {
-        p_job_id: job.job_id,
-        p_status: "failed",
-        p_error: `dispatch: ${e}`,
-        p_retry: job.attempt < MAX_ATTEMPTS,
-      });
+      await failJob(service, job, `dispatch: ${e}`, job.attempt < MAX_ATTEMPTS);
       dispatched.push({ job_id: job.job_id, stage: job.stage, error: String(e) });
     }
   }
@@ -460,69 +461,109 @@ async function handleCallback(request: Request): Promise<Response> {
     stage: string;
     status: string;
     attempt: number;
-    params: Record<string, unknown> | null;
     priority: number;
-    queue: string;
-    video_id: string;
-    videos: { source_kind: string; source_url: string | null; b2_prefix: string };
+    queue: string | null;
+    match_id: string;
+    matches: {
+      id: string;
+      owner_id: string | null;
+      source_url: string | null;
+      tournament: string | null;
+      team1_player1: string | null;
+      team1_player2: string | null;
+      team2_player1: string | null;
+      team2_player2: string | null;
+    };
   }
   const service = serviceClient();
   const { data, error } = await service
     .from("jobs")
     .select(
-      "id, stage, status, attempt, params, priority, queue, video_id, videos ( source_kind, source_url, b2_prefix )",
+      "id, stage, status, attempt, priority, queue, match_id, matches ( id, owner_id, source_url, tournament, team1_player1, team1_player2, team2_player1, team2_player2 )",
     )
     .eq("id", claims.job_id)
     .single();
   if (error || !data) return json(404, { error: `job ${claims.job_id} not found` });
   const job = data as unknown as JobRow;
 
-  // Bound to (job_id, attempt): a callback from an attempt that has since
-  // been re-dispatched is stale — the newer attempt owns this job now.
-  if (claims.attempt !== job.attempt) {
-    return json(409, { error: `stale callback: token attempt ${claims.attempt}, job attempt ${job.attempt}` });
+  // One-shot gates: status, attempt, stage, match_id.
+  if (job.status === "complete" || job.status === "failed" || job.status === "canceled") {
+    return json(200, { ok: true, already_terminal: true });
+  }
+  if (job.status !== "processing") {
+    return json(409, {
+      error: `job not processing (status=${job.status}); callback rejected`,
+    });
+  }
+  if (typeof claims.attempt !== "number" || claims.attempt !== job.attempt) {
+    return json(409, {
+      error: `stale callback: token attempt ${claims.attempt}, job attempt ${job.attempt}`,
+    });
+  }
+  if (!claims.stage || claims.stage !== job.stage) {
+    return json(409, {
+      error: `stale callback: token stage ${claims.stage ?? "(missing)"}, job stage ${job.stage}`,
+    });
+  }
+  if (!claims.match_id || claims.match_id !== job.match_id) {
+    return json(400, { error: "match_id does not match job token" });
   }
 
-  const video = job.videos;
+  const m = job.matches;
+  const ownerId = m.owner_id;
+  // Always construct prefix from committed match ownership (never from the client).
+  const b2Prefix = ownerId
+    ? `users/${ownerId}/${m.id}/`
+    : `bwf/${m.id}/`;
+
   const jobView: DispatchedJob = {
     job_id: job.id,
     stage: job.stage,
     attempt: job.attempt,
-    params: job.params ?? {},
     priority: job.priority,
-    queue: job.queue,
-    video_id: job.video_id,
-    source_kind: video.source_kind,
-    source_url: video.source_url,
-    b2_prefix: video.b2_prefix,
-    assets: {},
+    queue: job.queue ?? "jobs_bulk",
+    match_id: job.match_id,
+    owner_id: ownerId,
+    source_url: m.source_url,
+    b2_prefix: b2Prefix,
+    tournament: m.tournament,
+    team1_player1: m.team1_player1,
+    team1_player2: m.team1_player2,
+    team2_player1: m.team2_player1,
+    team2_player2: m.team2_player2,
   };
 
   const spec = STAGES[job.stage];
   if (!spec) return json(500, { error: `no settlement for stage '${job.stage}'` });
   const ok = body.status === "success";
-  const { assets, video: videoPatch, next } = spec.settle(jobView, body, ok);
+  const { match: matchPatch, next } = spec.settle(jobView, body, ok);
 
   const { data: result, error: rpcError } = await service.rpc("complete_job", {
     p_job_id: job.id,
     p_status: ok ? "complete" : "failed",
     p_error: ok ? null : String(body.error ?? "unknown worker error"),
-    p_assets: assets,
-    p_video: videoPatch,
+    p_match: matchPatch,
     p_retry: !ok && job.attempt < MAX_ATTEMPTS,
     p_next_stage: next?.stage ?? null,
-    p_next_params: next?.params ?? {},
+    p_expected_attempt: job.attempt,
+    p_expected_stage: job.stage,
   });
   if (rpcError) return json(500, { error: `complete_job: ${rpcError.message}` });
+
+  const settled = result as Record<string, unknown> | null;
+  if (settled?.rejected) {
+    return json(409, { error: "complete_job rejected", ...settled });
+  }
 
   console.log(JSON.stringify({
     event: ok ? "job.complete" : "job.failed",
     jobId: job.id,
+    matchId: job.match_id,
     stage: job.stage,
     attempt: job.attempt,
     result,
   }));
-  return json(200, { ok: true, ...(result as Record<string, unknown>) });
+  return json(200, { ok: true, ...(settled as Record<string, unknown>) });
 }
 
 // ---------------------------------------------------------------- router

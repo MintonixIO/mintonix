@@ -7,8 +7,9 @@ Two planes:
 - **Data plane** — `GET /<key>?t=<jwt>`: token-gated, cached delivery of private
   objects to end users. Proxied through the Worker so it stays cached.
 - **Control plane** — `POST /presign`: the Supabase orchestrator (service-token
-  authed) asks for a presigned **PUT** (uploads) or **GET** (internal reads),
-  which the client/worker then hits directly against B2.
+  authed) asks for a presigned **GET** / **PUT** / **DELETE**, or a **LIST** of
+  keys under a prefix. Signed URLs are hit directly against B2; LIST runs in
+  the Worker.
 
 Why Cloudflare in front of B2: Backblaze and Cloudflare are **Bandwidth Alliance**
 partners, so egress from B2 → Cloudflare is **free**. Users stream from Cloudflare's
@@ -23,12 +24,13 @@ exactly as `workers/vast/video-normalization/normalize.py` already works.
 | Component | Holds | Can it... |
 |---|---|---|
 | **Orchestrator** (`supabase/functions/cdn-access`) | JWT **private** key + `/presign` service token | mint view tokens ✔, touch B2 directly ✗ |
-| **This Worker** (CF edge) | B2 **read+write** key + JWT **public** key + service token | read/write B2 ✔, mint view tokens ✗ |
+| **This Worker** (CF edge) | B2 **read+write+delete** key + JWT **public** key + service token | read/write/delete/list B2 ✔, mint view tokens ✗ |
 | **Vast/ML/analysis workers** | nothing | — |
 
 The view token is **asymmetric**, so the orchestrator mints and the edge only
-verifies. The B2 key needs **read+write** because `/presign` issues presigned
-PUTs (a presigned URL inherits the signer's permissions).
+verifies. The B2 key needs **list+read+write+delete** because `/presign` issues
+presigned PUT/DELETE and runs LIST (presigned URLs inherit the signer's
+permissions).
 
 ## Request flow
 
@@ -53,9 +55,10 @@ neither can be replayed against another object.
 
 ### 1. B2 side
 - Create (or reuse) the **private** delivery bucket.
-- Create a B2 **application key restricted to that bucket with read+write**
-  capabilities (`listFiles`, `readFiles`, `writeFiles`). Write is required
-  because the Worker presigns PUT uploads. Still scoped to the one bucket.
+- Create a B2 **application key restricted to that bucket** with
+  `listFiles`, `readFiles`, `writeFiles`, and `deleteFiles`. Write is required
+  for presigned PUTs; delete for presigned DELETEs (user/admin cleanup); list
+  for prefix LIST used by match deletion. Still scoped to the one bucket.
 - Note your S3 endpoint + region, e.g. `https://s3.us-west-004.backblazeb2.com`
   and `us-west-004`.
 
@@ -119,8 +122,20 @@ Exercise the control plane directly:
 curl -sX POST https://cdn.mintonix.com/presign \
   -H "Authorization: Bearer $PRESIGN_SERVICE_TOKEN" \
   -H 'Content-Type: application/json' \
-  -d '{"key":"users/u1/raw/clip.mov","op":"PUT","contentType":"video/quicktime"}'
+  -d '{"key":"users/u1/m1/original.mp4","op":"PUT"}'
 # -> { "url": "https://s3.…?X-Amz-…", "method":"PUT", "key":"…", "expiresAt":"…" }
+
+curl -sX POST https://cdn.mintonix.com/presign \
+  -H "Authorization: Bearer $PRESIGN_SERVICE_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"key":"users/u1/m1/original.mp4","op":"DELETE"}'
+# -> { "url": "…", "method":"DELETE", "key":"…", "expiresAt":"…" }
+
+curl -sX POST https://cdn.mintonix.com/presign \
+  -H "Authorization: Bearer $PRESIGN_SERVICE_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"op":"LIST","prefix":"bwf/<match_id>/"}'
+# -> { "op":"LIST", "prefix":"…", "keys":[…], "isTruncated":false, … }
 ```
 
 ## Verify edge caching after first deploy (important)

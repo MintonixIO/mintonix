@@ -91,8 +91,9 @@ PRESIGN_MAX_EXPIRY_SECONDS = "14400"
 
 # --- Secrets (DO NOT put here; set via `wrangler secret put --env <env>`) -----
 # The Worker is the SOLE holder of B2 credentials. Because /presign mints
-# presigned PUTs (which inherit the signer's permissions), this key needs
-# read+write on the bucket — not read-only. Each env has its own bucket key.
+# presigned PUT/DELETE (which inherit the signer's permissions) and runs LIST,
+# this key needs listFiles + readFiles + writeFiles + deleteFiles on the bucket
+# — not read-only. Each env has its own bucket key.
 #   wrangler secret put B2_ACCESS_KEY_ID       --env dev|prod
 #   wrangler secret put B2_SECRET_ACCESS_KEY   --env dev|prod
 #   wrangler secret put PRESIGN_SERVICE_TOKEN  --env dev|prod

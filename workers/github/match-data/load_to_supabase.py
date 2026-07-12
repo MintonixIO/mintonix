@@ -1,19 +1,32 @@
 #!/usr/bin/env python3
 """
-Loads BWF scraped JSON into Supabase via the PostgREST API.
+Load BWF scraped JSON into Supabase `matches` (match-centric pipeline schema).
 
-Target schema: see schema.md (nations, players, matches, match_players).
-All writes are idempotent upserts keyed on a natural unique column, so
-re-running never duplicates rows.
+Canonical schema: repo root SUPABASE.md + migration
+`20260712000000_init_match_pipeline.sql`.
+
+- One row per finished match on `matches` (no nations / players / match_players).
+- `id` = sha256(utf-8 match_key).hexdigest() — stable re-scrape key; scores are
+  not part of the hash.
+- Internal `match_key` is loader-only (never a DB column):
+    season|tournament|discipline|section|round|match_idx
+- YouTube links from find_youtube_videos.py become `source_url` when coverage
+  is healthy; degraded mappings never wipe existing URLs.
+- Catalog upsert only. Does NOT call matches-ingest / enqueue GPU jobs
+  (ARCHITECTURE.md: metadata load vs pipeline enqueue are separate).
 
 Usage:
-    SUPABASE_URL=https://yourproject.supabase.co \
-    SUPABASE_SERVICE_KEY=your-service-role-key \
-    python3 load_to_supabase.py --json-file bwf_2026_results.json
+    SUPABASE_URL=https://yourproject.supabase.co \\
+    SUPABASE_SERVICE_KEY=your-service-role-key \\
+    python3 load_to_supabase.py --json-file bwf_2026_results.json \\
+        --videos-file video_matches.json
 
 The service role key bypasses RLS — never expose it to the frontend.
 """
+from __future__ import annotations
+
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -23,36 +36,68 @@ from datetime import date
 
 import requests
 
-SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
-SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
-
-if not SUPABASE_URL or not SUPABASE_KEY:
-    sys.exit("Set SUPABASE_URL and SUPABASE_SERVICE_KEY env vars")
-
-HEADERS = {
-    "apikey": SUPABASE_KEY,
-    "Authorization": f"Bearer {SUPABASE_KEY}",
-    "Content-Type": "application/json",
-}
+SUPABASE_URL = ""
+SUPABASE_KEY = ""
+HEADERS: dict[str, str] = {}
 
 # When True, every write primitive is a no-op: main() becomes a read-only pass
-# that reports what *would* change. Set from --dry-run in main(). Guarding the
-# two write seams (the POST below and the DELETE in reconcile) is what makes it
-# structurally impossible for a dry run to mutate the DB.
+# that reports what *would* change. Set from --dry-run in main().
 DRY_RUN = False
+
+
+def _configure_client() -> None:
+    global SUPABASE_URL, SUPABASE_KEY, HEADERS
+    SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
+    SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        sys.exit("Set SUPABASE_URL and SUPABASE_SERVICE_KEY env vars")
+    HEADERS = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": "application/json",
+    }
+
+# Writable match columns (omit status/probe fields so a re-scrape never clobbers
+# pipeline progress). source_url is applied only when video coverage is healthy.
+MATCH_UPSERT_COLS = (
+    "id",
+    "tournament",
+    "match_date",
+    "team1_player1",
+    "team1_player2",
+    "team2_player1",
+    "team2_player2",
+    "g1_t1", "g1_t2",
+    "g2_t1", "g2_t2",
+    "g3_t1", "g3_t2",
+    "source_url",
+)
+
+
+def bwf_match_id(match_key: str) -> str:
+    """Content-addressed PK: full sha256 hex of the stable scraper key."""
+    return hashlib.sha256(match_key.encode("utf-8")).hexdigest()
+
+
+def make_match_key(season, tournament, discipline, section, rnd, match_idx) -> str:
+    return f"{season}|{tournament}|{discipline}|{section}|{rnd}|{match_idx}"
+
+
+def youtube_url(video_id: str | None) -> str | None:
+    if not video_id:
+        return None
+    return f"https://www.youtube.com/watch?v={video_id}"
 
 
 def upsert(table, rows, on_conflict, batch_size=500):
     """Upsert rows in batches, retrying on rate-limit / server errors.
 
-    `on_conflict` names the unique column(s) PostgREST resolves duplicates on.
-    Only the columns present in each row are written, so columns omitted here
-    (e.g. avatar_url, flag_url) keep any value backfilled out-of-band.
+    Only columns present on each row are written (PostgREST merge-duplicates).
     """
     if not rows:
         return 0
     if DRY_RUN:
-        return 0  # read-only: caller computes the diff separately
+        return 0
     headers = {**HEADERS, "Prefer": "resolution=merge-duplicates,return=minimal"}
     params = {"on_conflict": on_conflict}
     total = 0
@@ -80,8 +125,7 @@ def upsert(table, rows, on_conflict, batch_size=500):
 
 
 def select(table, columns, order, params=None):
-    """Fetch all rows with pagination. `params` adds PostgREST filters (e.g.
-    {"season": "eq.2026"})."""
+    """Fetch all rows with pagination. `params` adds PostgREST filters."""
     rows = []
     offset = 0
     while True:
@@ -116,85 +160,17 @@ def count_rows(table, filters):
     return int(cr.split("/")[-1]) if "/" in cr else len(r.json())
 
 
-def reconcile_match_players(mp_rows, scope_mids, id_to_key=None):
-    """Delete match_players that exist in the DB but not in `mp_rows`.
-
-    `mp_rows` is the authoritative link set for the matches in the current load.
-    Reconciliation is restricted to `scope_mids` — the match_ids whose roster
-    came back complete this run — so a transient parse/lookup gap that drops a
-    player from an otherwise-loaded match can never delete that player's correct
-    link. `auth` is still built from the full `mp_rows` so a trusted match's
-    surviving pairs are recognised. Returns the number of stale links removed.
-    """
-    if not mp_rows or not scope_mids:
+def delete_matches(ids, batch_size=100):
+    """Delete match rows by id; jobs follow via ON DELETE CASCADE."""
+    if not ids:
         return 0
-    auth = {(r["match_id"], r["player_id"]) for r in mp_rows}
-    mids = sorted(scope_mids)
-    # current links for the loaded matches
-    existing = []
-    for i in range(0, len(mids), 200):
-        inlist = "(" + ",".join(str(m) for m in mids[i : i + 200]) + ")"
-        offset = 0
-        while True:
-            r = requests.get(
-                f"{SUPABASE_URL}/rest/v1/match_players",
-                headers=HEADERS,
-                params={"select": "match_id,player_id", "match_id": f"in.{inlist}",
-                        "limit": 1000, "offset": offset},
-                timeout=60,
-            )
-            r.raise_for_status()
-            chunk = r.json()
-            existing.extend(chunk)
-            if len(chunk) < 1000:
-                break
-            offset += 1000
-    stale = {}
-    for row in existing:
-        pair = (row["match_id"], row["player_id"])
-        if pair not in auth:
-            stale.setdefault(row["match_id"], []).append(row["player_id"])
     if DRY_RUN:
-        total = sum(len(p) for p in stale.values())
-        if total:
-            print(f"  [dry-run] would remove {total} stale match_players "
-                  f"across {len(stale)} match(es):")
-            for mid, pids in list(stale.items())[:10]:
-                label = (id_to_key or {}).get(mid, f"match_id={mid}")
-                print(f"      - {label}: {len(pids)} link(s)")
-        return total
+        return len(ids)
     removed = 0
-    for mid, pids in stale.items():
-        inlist = "(" + ",".join(str(p) for p in pids) + ")"
-        for attempt in range(6):
-            r = requests.delete(
-                f"{SUPABASE_URL}/rest/v1/match_players",
-                headers={**HEADERS, "Prefer": "return=minimal"},
-                params={"match_id": f"eq.{mid}", "player_id": f"in.{inlist}"},
-                timeout=60,
-            )
-            if r.status_code in (200, 204):
-                removed += len(pids)
-                break
-            if r.status_code in (429, 500, 502, 503) and attempt < 5:
-                time.sleep(2 ** attempt)
-                continue
-            r.raise_for_status()
-    return removed
-
-
-def delete_matches(mids, batch_size=100):
-    """Delete match rows by id; match_players follow via ON DELETE CASCADE.
-
-    Used by the finished-only purge to remove matches the current scrape sees as
-    cleanly unfinished (no winner, no scores). Returns the number deleted.
-    """
-    if not mids:
-        return 0
-    removed = 0
-    for i in range(0, len(mids), batch_size):
-        batch = mids[i : i + batch_size]
-        inlist = "(" + ",".join(str(m) for m in batch) + ")"
+    for i in range(0, len(ids), batch_size):
+        batch = ids[i : i + batch_size]
+        # PostgREST `in` for text PKs: quote each value.
+        inlist = "(" + ",".join(f'"{x}"' for x in batch) + ")"
         for attempt in range(6):
             r = requests.delete(
                 f"{SUPABASE_URL}/rest/v1/matches",
@@ -213,23 +189,30 @@ def delete_matches(mids, batch_size=100):
 
 
 def player_name(p):
-    """Canonical, dedup-stable name: wiki page title when present, else display."""
+    """Canonical name: wiki page title when present, else display."""
     return (p.get("wiki_name") or p.get("display_name") or "").strip()
 
 
-_MONTHS = {m.lower(): i for i, m in enumerate(
-    ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
-     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"], start=1)}
+def team_slots(team: dict) -> tuple[str | None, str | None]:
+    """Map a scraped team roster to (player1, player2); singles → player2 None."""
+    names = [player_name(p) for p in (team.get("players") or []) if player_name(p)]
+    p1 = names[0] if len(names) > 0 else None
+    p2 = names[1] if len(names) > 1 else None
+    return p1, p2
+
+
+_MONTHS = {
+    m.lower(): i
+    for i, m in enumerate(
+        ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+         "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"],
+        start=1,
+    )
+}
 
 
 def to_iso_date(raw, season):
-    """Normalize a scraped date to ISO 'YYYY-MM-DD' for the date column.
-
-    Accepts a date already in ISO form (newer scraper output) and passes it
-    through; converts a yearless wikitable date ('17 Dec', from older scraped
-    JSON) using the season year so it isn't silently bound to the load year.
-    Returns None if absent or unparseable.
-    """
+    """Normalize a scraped date to ISO 'YYYY-MM-DD' for the date column."""
     if not raw:
         return None
     raw = raw.strip()
@@ -250,9 +233,8 @@ def to_iso_date(raw, season):
 def games_to_columns(games):
     """Map the scraped games list to flat g{n}_t{side} score columns.
 
-    Returns (cols, games_won, (w1, w2)) where w1/w2 are games won per side,
-    so the caller can fall back to game counts when the markup didn't bold a
-    winner on the team field itself.
+    Returns (cols, (w1, w2)) where w1/w2 are games won per side (for winner
+    fallback when the markup didn't bold a team).
     """
     cols = {f"g{n}_t{s}": None for n in (1, 2, 3) for s in (1, 2)}
     w1 = w2 = 0
@@ -268,20 +250,32 @@ def games_to_columns(games):
             w1 += 1
         if (g.get("score2") or {}).get("is_winner"):
             w2 += 1
-    games_won = f"{w1}–{w2}" if (w1 or w2) else None
-    return cols, games_won, (w1, w2)
+    return cols, (w1, w2)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Load BWF JSON into Supabase")
-    parser.add_argument("--json-file", default="bwf_2026_results.json",
-                        help="Path to scraped results JSON file")
-    parser.add_argument("--videos-file", default=None,
-                        help="Optional video_matches.json from find_youtube_videos.py; "
-                             "folds video columns onto matches by match_key")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="Report the diff vs the current DB and write nothing")
+    parser = argparse.ArgumentParser(
+        description="Load BWF JSON into Supabase matches (flat pipeline schema)"
+    )
+    parser.add_argument(
+        "--json-file",
+        default="bwf_2026_results.json",
+        help="Path to scraped results JSON file",
+    )
+    parser.add_argument(
+        "--videos-file",
+        default=None,
+        help="Optional video_matches.json from find_youtube_videos.py; "
+        "sets source_url from YouTube id when coverage is healthy",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report the diff vs the current DB and write nothing",
+    )
     args = parser.parse_args()
+
+    _configure_client()
 
     global DRY_RUN
     DRY_RUN = args.dry_run
@@ -293,30 +287,23 @@ def main():
     resolve = lambda p: p if os.path.isabs(p) else os.path.join(here, p)
 
     json_path = resolve(args.json_file)
-    print(f"Loading {json_path} into Supabase...")
+    print(f"Loading {json_path} into Supabase matches...")
     data = json.load(open(json_path))
     season = data["season"]
-    scraped_at = data["scraped_at"]
+    # season is only used for match_key stability and dry-run messaging.
 
-    # Optional video mapping: match_key -> {video_id, video_title, confidence}
-    videos = {}
+    # Optional video mapping: match_key -> video_id
+    videos: dict[str, str] = {}
     if args.videos_file:
         vpath = resolve(args.videos_file)
         for v in json.load(open(vpath)):
-            videos[v["match_key"]] = {
-                "video_id": v.get("video_id"),
-                "video_title": v.get("video_title"),
-                "video_confidence": v.get("confidence"),
-            }
+            vid = v.get("video_id")
+            if vid:
+                videos[v["match_key"]] = vid
         print(f"Loaded {len(videos)} video links from {vpath}")
 
-    # --- 1. Collect nations, players, matches, links from the JSON ---
-    nations = {}          # code -> {"code", "name"}
-    players = {}          # name -> {"name", "country"}
-    match_rows = []       # match dicts
-    links = []            # {"_match_key", "name", "team_side"}
-    incomplete_keys = set()  # match_keys whose roster came back partial this run
-    unfinished_purge_keys = set()  # finished-only: cleanly-unfinished keys to purge
+    match_rows = []
+    unfinished_purge_keys = set()
 
     for t in data["tournaments"]:
         tournament = t.get("title") or t.get("page")
@@ -324,230 +311,181 @@ def main():
             discipline = m["discipline"]
             rnd = m["round"]
             match_idx = m.get("match_idx", 0)
-            # section_path distinguishes matches in split draws (Top half /
-            # Section 1, ...), where match_idx restarts within each section.
-            # Without it the key collides ~4x and isn't unique. See schema.md.
+            # section_path distinguishes matches in split draws where match_idx
+            # restarts within each section (Top half / Section 1, …).
             section = "/".join(m.get("section_path") or [])
-            match_key = f"{season}|{tournament}|{discipline}|{section}|{rnd}|{match_idx}"
+            match_key = make_match_key(
+                season, tournament, discipline, section, rnd, match_idx
+            )
 
-            score_cols, games_won, (w1, w2) = games_to_columns(m.get("games", []))
-            winner = 1 if m["team1"].get("is_winner") else (2 if m["team2"].get("is_winner") else None)
-            # Group-stage rows bold only the score column, not the team field, so
-            # fall back to the per-game win counts when neither team is flagged.
+            score_cols, (w1, w2) = games_to_columns(m.get("games", []))
+            winner = (
+                1
+                if m["team1"].get("is_winner")
+                else (2 if m["team2"].get("is_winner") else None)
+            )
             if winner is None and w1 != w2:
                 winner = 1 if w1 > w2 else 2
 
-            # Persist finished matches only. A match with no determined winner is
-            # an unplayed draw slot (TBD/placeholder roster → 'p' idx) or a not-
-            # yet-played fixture; skip it entirely — no match row, no player links.
-            # If it also carries no game scores it's *cleanly* unfinished, so flag
-            # the key to purge any stale copy already in the DB (below). A winner-
-            # less match that DOES have scores is in-progress, or a transient
-            # winner-parse gap on a real result — we neither insert nor purge it,
-            # so a genuinely finished row is never deleted on a flaky parse.
+            # Persist finished matches only (same policy as the old loader).
             if winner is None:
                 if not any(v is not None for v in score_cols.values()):
                     unfinished_purge_keys.add(match_key)
                 continue
 
+            t1p1, t1p2 = team_slots(m["team1"])
+            t2p1, t2p2 = team_slots(m["team2"])
+            # Compact catalog label; identity is the hashed match_key, not this.
+            tournament_label = f"{tournament} · {discipline} · {rnd}"
+
             row = {
-                "match_key": match_key,
-                "season": season,
-                "tournament": tournament,
-                "discipline": discipline,
-                "section": section,
-                "round": rnd,
-                "match_idx": match_idx,
+                "id": bwf_match_id(match_key),
+                "_match_key": match_key,  # stripped before write
+                "tournament": tournament_label,
                 "match_date": to_iso_date(m.get("date"), season),
-                "team1_seed": m.get("seed1"),
-                "team2_seed": m.get("seed2"),
-                "winner": winner,
-                "games_won": games_won,
-                "scraped_at": scraped_at,
-                # Video columns are applied later (see apply_videos) so a missing
-                # or degraded mapping can't wipe existing links; omitting them
-                # here preserves the DB value, like flag_url / avatar_url.
+                "team1_player1": t1p1,
+                "team1_player2": t1p2,
+                "team2_player1": t2p1,
+                "team2_player2": t2p2,
                 **score_cols,
             }
             match_rows.append(row)
 
-            for side, team_key in ((1, "team1"), (2, "team2")):
-                for p in m[team_key]["players"]:
-                    name = player_name(p)
-                    if not name:
-                        # A blank player name means the roster didn't fully parse;
-                        # don't let reconcile treat this match as authoritative.
-                        incomplete_keys.add(match_key)
-                        continue
-                    country = (p.get("country") or None)
-                    if country and country not in nations:
-                        nations[country] = {"code": country, "name": country}
-                    if name not in players:
-                        players[name] = {"name": name, "country": country}
-                    links.append({"_match_key": match_key, "name": name, "team_side": side})
-
-    # --- 2. Upsert nations (omit flag_url to preserve backfills) ---
-    print(f"{act} {len(nations)} nations...")
-    upsert("nations", list(nations.values()), on_conflict="code")
-
-    # --- 3. Upsert players (omit avatar_url to preserve backfills) ---
-    print(f"{act} {len(players)} players...")
-    upsert("players", list(players.values()), on_conflict="name")
-    p_map = {r["name"]: r["id"] for r in select("players", "id,name", "id")}
-
-    # --- 4. Upsert matches (dedup on match_key so a single batch never
-    #        carries the same conflict target twice) ---
-    seen_keys = set()
+    # Dedup on id (collision would mean duplicate match_key).
+    seen_ids = set()
     deduped = []
     for row in match_rows:
-        if row["match_key"] in seen_keys:
+        if row["id"] in seen_ids:
             continue
-        seen_keys.add(row["match_key"])
+        seen_ids.add(row["id"])
         deduped.append(row)
     if len(deduped) != len(match_rows):
-        print(f"  WARNING: dropped {len(match_rows) - len(deduped)} duplicate match_key rows")
+        print(
+            f"  WARNING: dropped {len(match_rows) - len(deduped)} "
+            "duplicate match id rows"
+        )
     match_rows = deduped
 
-    # Decide whether to (re)apply video columns. Omitting them — like flag_url /
-    # avatar_url — preserves whatever's already in the DB, so a missing or
-    # degraded video mapping can never wipe existing links. We only apply when a
-    # mapping is present, covers at least one of this season's matches, and isn't
-    # a drastic shrink versus what's already stored (a sign of a degraded fetch).
+    # Video / source_url guard: never wipe existing URLs on a degraded mapping.
     apply_videos = False
-    matched_now = sum(1 for r in match_rows if r["match_key"] in videos) if videos else 0
+    matched_now = (
+        sum(1 for r in match_rows if r["_match_key"] in videos) if videos else 0
+    )
     if videos:
-        existing_videos = count_rows("matches",
-                                     {"season": f"eq.{season}", "video_id": "not.is.null"})
-        if matched_now == 0 and existing_videos:
-            print(f"  WARNING: video mapping covers 0 of {season}'s matches but DB has "
-                  f"{existing_videos}; skipping video update to avoid wiping links")
-        elif existing_videos and matched_now < existing_videos * 0.5:
-            print(f"  WARNING: video coverage would drop {existing_videos}→{matched_now} "
-                  f"(>50%); skipping video update to avoid wiping links")
+        existing_urls = count_rows(
+            "matches",
+            {
+                # BWF only (owner_id null). Approximate via source_url present
+                # and owner_id null — PostgREST filter.
+                "owner_id": "is.null",
+                "source_url": "not.is.null",
+            },
+        )
+        if matched_now == 0 and existing_urls:
+            print(
+                f"  WARNING: video mapping covers 0 matches but DB has "
+                f"{existing_urls} BWF source_url rows; skipping source_url update"
+            )
+        elif existing_urls and matched_now < existing_urls * 0.5:
+            print(
+                f"  WARNING: source_url coverage would drop "
+                f"{existing_urls}→{matched_now} (>50%); skipping source_url update"
+            )
         else:
             apply_videos = True
     if apply_videos:
         for row in match_rows:
-            v = videos.get(row["match_key"])
-            row["video_id"] = v["video_id"] if v else None
-            row["video_title"] = v["video_title"] if v else None
-            row["video_confidence"] = v["video_confidence"] if v else None
-        print(f"  Applying {matched_now} video links")
+            vid = videos.get(row["_match_key"])
+            url = youtube_url(vid)
+            if url:
+                row["source_url"] = url
+        print(f"  Applying {matched_now} source_url links")
 
-    print(f"{act} {len(match_rows)} matches...")
-    upsert("matches", match_rows, on_conflict="match_key")
-    db_matches_rows = select("matches", "id,match_key,winner", "id")
-    m_map = {r["match_key"]: r["id"] for r in db_matches_rows}
-    # Keys whose DB row is itself resultless — the only rows the purge may delete.
-    db_unfinished_keys = {r["match_key"] for r in db_matches_rows if r["winner"] is None}
+    # Build write payloads (drop internal key; omit source_url when not applying).
+    write_rows = []
+    for row in match_rows:
+        out = {k: row[k] for k in MATCH_UPSERT_COLS if k in row and k != "source_url"}
+        if apply_videos and "source_url" in row:
+            out["source_url"] = row["source_url"]
+        # owner_id is always null for BWF; omit so upsert never reassigns.
+        write_rows.append(out)
 
-    # --- 5. Upsert match_players (dedup on match_id+player_id) ---
-    mp_seen = set()
-    mp_rows = []
-    for link in links:
-        mid = m_map.get(link["_match_key"])
-        pid = p_map.get(link["name"])
-        if not mid or not pid:
-            # Player resolved to no id (upsert/lookup miss): the match's roster is
-            # incomplete this run, so don't let reconcile delete its other links.
-            if mid and not pid:
-                incomplete_keys.add(link["_match_key"])
-            continue
-        key = (mid, pid)
-        if key in mp_seen:
-            continue
-        mp_seen.add(key)
-        mp_rows.append({"match_id": mid, "player_id": pid, "team_side": link["team_side"]})
+    print(f"{act} {len(write_rows)} matches...")
+    upsert("matches", write_rows, on_conflict="id")
 
-    print(f"{act} {len(mp_rows)} match_players...")
-    upsert("match_players", mp_rows, on_conflict="match_id,player_id")
-
-    # Reconcile: drop links that are no longer in the source for the matches we
-    # just loaded, so a corrected roster (or a re-keyed match) doesn't leave
-    # stale players attached. Bounded to this file's matches whose roster parsed
-    # completely — matches with a partial roster this run are skipped so a
-    # transient gap can't delete correct links. A no-op when rosters are unchanged.
-    incomplete_mids = {m_map[k] for k in incomplete_keys if k in m_map}
-    scope_mids = {r["match_id"] for r in mp_rows} - incomplete_mids
-    if incomplete_mids:
-        print(f"  Skipping reconcile for {len(incomplete_mids)} matches with partial rosters")
-    id_to_key = {v: k for k, v in m_map.items()} if DRY_RUN else None
-    stale = reconcile_match_players(mp_rows, scope_mids, id_to_key)
-    if stale and not DRY_RUN:
-        print(f"  Reconciled: removed {stale} stale match_players")
-
-    # Finished-only purge: drop matches the DB still holds that *both* this scrape
-    # and the DB agree are resultless (no winner, no scores). Clears legacy
-    # placeholder rows and draws loaded before a result existed. Requiring the DB
-    # row to also be winner-null — like reconcile's paranoia about transient gaps —
-    # means a genuinely finished row whose markup flakes to no-result this run is
-    # never deleted; that case is left for manual cleanup. match_players follow via
-    # ON DELETE CASCADE. In steady state the filter prevents new unfinished inserts,
-    # so this is a no-op once the DB is clean.
-    purge_mids = {m_map[k]: k for k in unfinished_purge_keys
-                  if k in m_map and k in db_unfinished_keys}
-    if DRY_RUN:
-        purged = len(purge_mids)
-        if purged:
-            print(f"  [dry-run] would purge {purged} unfinished match(es) from the DB:")
-            for k in list(purge_mids.values())[:10]:
-                print(f"      - {k}")
+    # Finished-only purge: keys the scrape sees as cleanly unfinished, if a
+    # leftover row with that id still exists (legacy placeholders). Jobs cascade.
+    purge_ids = [bwf_match_id(k) for k in unfinished_purge_keys]
+    if purge_ids:
+        # Only delete ids that actually exist (avoid huge empty deletes).
+        existing = {
+            r["id"]
+            for r in select("matches", "id", "id", params={"owner_id": "is.null"})
+        }
+        purge_ids = [i for i in purge_ids if i in existing]
+    if purge_ids:
+        if DRY_RUN:
+            print(f"  [dry-run] would purge {len(purge_ids)} unfinished match(es)")
+            for i in purge_ids[:10]:
+                print(f"      - {i[:16]}…")
+        else:
+            purged = delete_matches(purge_ids)
+            if purged:
+                print(f"  Purged {purged} unfinished matches from the DB")
     else:
-        purged = delete_matches(list(purge_mids.keys()))
-        if purged:
-            print(f"  Purged {purged} unfinished matches from the DB")
+        purged = 0
 
     if DRY_RUN:
-        # New entities fall out of the pre-write maps/selects: a collected key
-        # absent from p_map / m_map (built from a read of the un-mutated DB) is
-        # new. For keys already present, compare the writable columns to count
-        # field-level changes. scraped_at is excluded — it changes every run.
-        existing_codes = {r["code"] for r in select("nations", "code", "code")}
-        new_nations = [c for c in nations if c not in existing_codes]
-        new_players = [n for n in players if n not in p_map]
-
-        score_keys = [f"g{n}_t{s}" for n in (1, 2, 3) for s in (1, 2)]
-        cmp_cols = ["match_date", "team1_seed", "team2_seed", "winner",
-                    "games_won"] + score_keys
+        cmp_cols = [
+            "tournament",
+            "match_date",
+            "team1_player1",
+            "team1_player2",
+            "team2_player1",
+            "team2_player2",
+            "g1_t1", "g1_t2", "g2_t1", "g2_t2", "g3_t1", "g3_t2",
+        ]
         if apply_videos:
-            cmp_cols += ["video_id", "video_title", "video_confidence"]
-        db_matches = {r["match_key"]: r for r in select(
-            "matches", ",".join(["match_key"] + cmp_cols), "id",
-            params={"season": f"eq.{season}"})}
+            cmp_cols.append("source_url")
+        db_matches = {
+            r["id"]: r
+            for r in select(
+                "matches",
+                ",".join(["id"] + cmp_cols),
+                "id",
+                params={"owner_id": "is.null"},
+            )
+        }
         norm = lambda v: None if v is None else str(v)
         new_matches, changed = [], []
-        for row in match_rows:
-            db = db_matches.get(row["match_key"])
+        for row in write_rows:
+            db = db_matches.get(row["id"])
             if db is None:
-                new_matches.append(row["match_key"])
+                new_matches.append(row["id"])
                 continue
-            d = [c for c in cmp_cols if norm(row.get(c)) != norm(db.get(c))]
+            d = [c for c in cmp_cols if c in row and norm(row.get(c)) != norm(db.get(c))]
             if d:
-                changed.append((row["match_key"], d))
+                changed.append((row["id"], d))
 
         print(f"\n===== DRY RUN — diff vs current DB (season {season}) =====")
         print("Nothing was written.\n")
         print(f"  New matches:        {len(new_matches)}")
         for k in new_matches[:5]:
-            print(f"      + {k}")
+            print(f"      + {k[:24]}…")
         print(f"  Changed matches:    {len(changed)}")
         for k, d in changed[:5]:
-            print(f"      ~ {k}  ({', '.join(d)})")
-        print(f"  New players:        {len(new_players)}")
-        print(f"  New nations:        {len(new_nations)}")
+            print(f"      ~ {k[:24]}…  ({', '.join(d)})")
         if videos and apply_videos:
-            print(f"  Video links:        would set/refresh {matched_now} match(es)")
+            print(f"  source_url links:   would set/refresh {matched_now} match(es)")
         elif videos:
-            print(f"  Video links:        skipped by guard (see warning above)")
-        print(f"  Stale links removed:{stale}  (detail above, if any)")
-        print(f"  Unfinished purged:  {purged}  (detail above, if any)")
+            print("  source_url links:   skipped by guard (see warning above)")
+        print(f"  Unfinished purged:  {len(purge_ids)}")
         return
 
     print("\nDone!")
-    print(f"  Nations:            {len(nations)}")
-    print(f"  Players:            {len(players)}")
-    print(f"  Matches:            {len(match_rows)}")
-    print(f"  Match-Player links: {len(mp_rows)}")
+    print(f"  Matches upserted:   {len(write_rows)}")
+    if apply_videos:
+        print(f"  source_url applied: {matched_now}")
 
 
 if __name__ == "__main__":

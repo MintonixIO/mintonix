@@ -47,6 +47,10 @@ jobs:
 
       # Migrations are plain CREATE (no IF NOT EXISTS) by convention, so a
       # drifted database fails loudly here instead of silently diverging.
+      # Prod cutover from deleted pre-20260712 versions is a MANUAL runbook
+      # (SUPABASE.md § Prod migration runbook): repair history, then push.
+      # CI must not silently wipe prod — if remote still has unrepaired old
+      # versions, db push fails with "Remote migration versions not found".
       - name: Apply migrations
         run: supabase db push
 

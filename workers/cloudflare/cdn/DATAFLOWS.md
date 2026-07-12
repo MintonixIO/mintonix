@@ -44,7 +44,7 @@ flowchart LR
     S[scraper.py<br/>→ bwf_*_results.json]
     FV[fetch_bwf_videos.py<br/>→ bwf_videos.json]
     FY[find_youtube_videos.py<br/>match vids → video_matches.json]
-    L[load_to_supabase.py<br/>upsert on natural keys]
+    L[load_to_supabase.py<br/>upsert matches on hashed id]
     S --> FY
     FV --> FY
     FY --> L
@@ -54,22 +54,16 @@ flowchart LR
   YT --> FV
 
   subgraph DB["Supabase Postgres"]
-    T1[(nations)]
-    T2[(players)]
-    T3[(matches<br/>+ video_* cols)]
-    T4[(match_players)]
-    V[[match_full view]]
-    T1 --- T2 --- T3 --- T4
-    T3 --> V
-    T4 --> V
+    T3[(matches<br/>owner_id null = BWF)]
+    T5[(jobs)]
+    T3 --- T5
   end
 
   L -->|service key<br/>PR=dry-run · master=apply| DB
 ```
 
-Loads are **idempotent** (every table upserts on a natural unique key). The
-frontend reads `match_full` for match-centric render; player-centric queries hit
-`match_players` / `players` directly.
+Loads are **idempotent** (`matches.id = sha256(match_key)`). Catalog only —
+does not enqueue GPU jobs. See `workers/github/match-data/schema.md`.
 
 ---
 
@@ -95,8 +89,9 @@ sequenceDiagram
   Note over C,B: needs B2 bucket CORS allowing<br/>PUT from app origin
 ```
 
-Objects live at `users/<uid>/videos/<videoId>/{original.<ext>, normalized.mp4,
-thumbnail.jpg}`. Access control is a **prefix check**, no DB lookup.
+Objects live at `users/<uid>/<match_id>/{original.mp4, normalized.mp4,
+thumbnail.jpg, annotation.json, …}` (see SUPABASE.md). Access control is a
+**prefix check**, no DB lookup.
 
 ---
 
@@ -107,31 +102,27 @@ gets presigned URLs + an HMAC callback token in the job envelope.
 
 ```mermaid
 sequenceDiagram
-  participant C as Browser (user)
-  participant D as normalize-video<br/>(dispatcher fn)
+  participant Cron as jobs/dispatch<br/>(pipeline token)
   participant W as CF Worker /presign
   participant V as Vast worker<br/>(GPU, no creds)
   participant B as Backblaze B2
-  participant K as normalize-callback<br/>(receiver fn)
+  participant K as jobs/callback<br/>(HMAC job token)
 
-  C->>D: POST normalize-video {videoId, ext}<br/>user JWT
-  Note over D: getUser()→uid; keys under users/<uid>/videos/<videoId>/
-  D->>W: /presign ×3
-  W-->>D: input_url (GET original)<br/>output_upload_url (PUT normalized.mp4)<br/>thumbnail_upload_url (PUT thumbnail.jpg)
-  Note over D: mint HMAC job token<br/>{jobId,uid,videoId,…} aud=normalize-callback
-  D->>V: POST {input:{…urls…, callback_url, callback_token}}
-  V->>B: GET input_url (parallel ranges) → NVDEC/nvenc transcode
+  Cron->>Cron: dispatch_next_job RPC → claim job
+  Note over Cron: prefix = bwf/<match_id>/ or users/<uid>/<match_id>/
+  Cron->>W: /presign ×N (GET/PUT)
+  W-->>Cron: input_url, output_upload_url, thumbnail_upload_url
+  Note over Cron: mint HMAC job token<br/>{job_id,match_id,stage,attempt} aud=jobs-callback
+  Cron->>V: POST /normalize/sync envelope
+  V->>B: GET input_url → NVDEC/nvenc transcode
   V->>B: PUT normalized.mp4 + thumbnail.jpg (presigned)
-  V->>K: POST result + sha256<br/>Bearer callback_token
-  Note over K: verify HMAC token (aud, exp)<br/>record status + probe metadata
+  V->>K: POST result Bearer callback_token
+  Note over K: verify token + complete_job RPC
   K-->>V: 200 ack
 ```
 
-> **Current state:** the dispatcher invokes Vast **synchronously** (holds the
-> connection) — fine for short clips. The async `callback_url`/`callback_token`
-> fields are in the envelope but `server.py` doesn't POST them yet; and
-> `normalize-callback` logs/acks (`TODO(persist)`) rather than writing a
-> `video_jobs`/`videos` row.
+> **Current state:** `jobs` edge function routes normalize only in `STAGES`;
+> detect/analyze wire-up is a follow-up. Callback settles via `complete_job`.
 
 The transcode target: **≤1920×1080, ≤30 fps, H.264/yuv420p, AAC**.
 

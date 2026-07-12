@@ -48,79 +48,64 @@ URLs out, and an HMAC-scoped callback.
 
 ## 2. Ingestion — two sources, one canonical form
 
-Every video, regardless of origin, converges to the same canonical form: **a
-row in `videos` + objects in B2 under that video's prefix**. Downstream stages
-never care where a video came from.
+Every match, regardless of origin, converges to the same canonical form: **a
+row in `matches` + objects in B2 under that match's constructable prefix**
+(`bwf/<match_id>/` or `users/<uid>/<match_id>/`). Schema detail: **SUPABASE.md**.
 
 ### 2a. BWF broadcast footage ✅ (metadata) / 📐 (video ingest)
 
 - **Match metadata** — the weekly GitHub Actions pipeline
-  (`workers/github/match-data`) scrapes BWF World Tour results from Wikipedia,
-  matches each match to a BWF YouTube video, and upserts into
-  `matches`/`players`/`match_players`/`nations`. PRs dry-run against dev;
-  master/schedule applies to prod. ✅
-- **Backlog** — existing footage on the network server is ingested by a one-off
-  script that walks the archive, calls `/presign` (service token) for a PUT per
-  file into `matches/<match_id>/original.mp4`, and enqueues a `normalize` job.
-  It reuses the exact upload path users take — no special ingest lane. 📐
-- **Steady state** — the weekly scraper stores the YouTube URL on `matches`.
-  Ingestion of the actual video is a `normalize` job whose `input_url` IS the
-  YouTube URL: the worker fetches it itself (yt-dlp ✅) and archives the
-  pristine download to B2 via a presigned `original_upload_url`. The scraper
-  runs on a GitHub runner and never moves video bytes — it only discovers URLs
-  and enqueues. (enqueue/dispatch 📐)
+  (`workers/github/match-data`) scrapes BWF World Tour results and upserts into
+  `matches` (content-hash `id`, four player name columns + scores +
+  `source_url`). PRs dry-run against dev; master/schedule applies to prod. ✅
+- **Backlog** — existing footage is staged under `bwf/<match_id>/original.mp4`
+  via service `/presign`, then `matches-ingest` enqueues normalize. 📐
+- **Steady state** — scraper sets `source_url` on `matches` and calls
+  `matches-ingest`; normalize fetches YouTube (yt-dlp ✅) and archives to B2.
+  (enqueue ✅ / dispatch manual 📐)
 
 **Rule: B2 is canonical.** A YouTube URL is fetched exactly once, at
 normalize time; the normalized output lands in B2 and no later stage ever
-touches YouTube again. This isolates the pipeline from takedowns, rate limits,
-and re-fetch nondeterminism.
+touches YouTube again.
 
 ### 2b. User uploads ✅
 
-1. Client calls `cdn-access` (`op: "upload"`) with the user JWT → gets a
-   presigned PUT for `users/<uid>/videos/<videoId>/original.<ext>`.
-   Authorization is a pure prefix check (`users/<uid>/…`), no DB lookup.
+1. Client generates a stable `match_id`, calls `cdn-access` (`op: "upload"`)
+   with the user JWT → presigned PUT for
+   `users/<uid>/<match_id>/original.mp4`. Authorization is a pure prefix check
+   (`users/<uid>/…`), no DB lookup.
 2. Client PUTs directly to B2 (bucket CORS must allow the app origin).
-3. Client confirms the upload → a `videos` row is created and a `normalize`
-   job is enqueued. 📐 (today the enqueue step is manual)
+3. Client confirms via `matches-ingest` (user JWT, `{ id, upload: true }`) →
+   `matches` row with `owner_id`, `jobs` row, pgmq message. ✅
+   (dispatch itself is still manual 📐)
 
 ### 2c. Court annotation & player labeling ✅ (inference) / 📐 (persistence)
 
-Before (or after) processing, the user annotates:
+Before (or after) processing, the user annotates into a single B2 file
+`annotation.json` under the match prefix (shape: SUPABASE.md):
 
-- **Court corners** — 4 points, stored per video. Required for BWF valid-frame
-  extraction and for the 3D analysis stage (homography).
-- **Player identities** — the client runs point-prompted segmentation
-  **in-browser** (a distilled SAM — SlimSAM-class — via onnxruntime-web /
-  transformers.js, WebGPU with wasm fallback): the frame is encoded once, each
-  click prompts the mask decoder, the click is resolved to an instance, and
-  the user attaches a name. For BWF videos the name choices come from
-  `match_players`; for user videos they're free-form labels. Segmentation is
-  *all* the inference the labeling flow needs: its only job is resolving the
-  click to an instance and recording the evidence — so it runs client-side,
-  with no inference endpoint and no third-party API (the Roboflow-backed
-  `rfdetr-infer` edge function that previously did this is removed). Player
-  identity itself (appearance embeddings) is built server-side by `detect`
-  from its own tracks (§4 Stages) — one frame's mask can't model identity,
-  and it never feeds the embeddings.
+- **Court corners** — 4 points. Required for BWF valid-frame extraction and
+  for the 3D analysis stage (homography). Optional scoreboard crops for BWF.
+- **Player labels** — the client runs point-prompted segmentation **in-browser**
+  (SlimSAM-class via onnxruntime-web / transformers.js): click → mask → attach
+  a name. For BWF, name choices come from the match roster columns
+  (`team1_player1`…); for user matches they're free-form. Labels store click
+  evidence only; track resolution happens in `analyze`.
 
-Both persist as JSON files in the video's B2 prefix (`court_annotation.json`,
-`player_labels.json` — shapes in §3), written by the client via `cdn-access`
-presigned PUTs and registered in `video_assets`. For BWF broadcasts, scoreboard
-crop geometry repeats per tournament/broadcast layout — the DB keeps
-**annotation presets keyed by tournament** (`annotation_presets`), and ingest
-materializes the matching preset into the video's `court_annotation.json`.
+Written via `cdn-access` presigned PUTs (`users/<uid>/…` allowlist includes
+`annotation.json`). No `video_assets` registry and no `annotation_presets`
+table in the MVP schema — BWF geometry may later come from config/service code
+that materializes `annotation.json` under `bwf/<match_id>/`.
 
 ## 3. Storage layout (B2)
 
-Two namespaces, one shape:
+Two namespaces, one shape (see SUPABASE.md for full layout):
 
 ```
-users/<uid>/videos/<videoId>/          # user-owned; RLS = owner
-matches/<matchId>/                     # system-owned (BWF); RLS = public read
+users/<uid>/<match_id>/            # user-owned; RLS = owner
+bwf/<match_id>/                    # system-owned (BWF); readable to signed-in
   original.<ext>          raw source (upload or yt-dlp fetch)
-  court_annotation.json   court geometry                   (client PUT / preset)
-  player_labels.json      click-to-label evidence          (client PUT)
+  annotation.json         court geometry + player labels   (client / service)
   normalized.mp4          ≤1080p/30fps H.264/AAC           (normalize)
   thumbnail.jpg                                            (normalize)
   valid.mp4               valid-frames-only cut            (normalize, BWF)
@@ -128,44 +113,33 @@ matches/<matchId>/                     # system-owned (BWF); RLS = public read
   scores.csv              OCR score timeline               (normalize, BWF)
   detections.json         per-frame pose + shuttle tracks  (detect)
   analysis.json           3D positions, metrics, resolved  (analyze)
-                          label→track mapping
 ```
 
-User-authored data (court annotation, player labels) is **also just files** in
-the video's prefix, written by the client through the same `cdn-access`
-presigned-PUT path as the upload itself — the `users/<uid>/` prefix rule *is*
-the write authorization, and `matches/…` is unwritable by clients, so BWF
-annotations can only come from presets via service code. Shapes:
+User-authored data is files under the match prefix via `cdn-access`
+(`users/<uid>/…` prefix rule + upload basename allowlist). `bwf/…` is
+unwritable by clients. Canonical shape is `annotation.json` (SUPABASE.md):
 
 ```jsonc
-// court_annotation.json — consumed by normalize (valid frames) + analyze (homography)
-{ "corners": [[x,y],[x,y],[x,y],[x,y]],          // TL → TR → BR → BL
-  "scoreboard_crop": {"x":…,"y":…,"w":…,"h":…},  // BWF only
-  "score_sub_crop":  {"x":…,"y":…,"w":…,"h":…},  // BWF only
-  "row_split_y": …,                               // BWF only
-  "source": "user" | "preset", "preset_id": …, "updated_at": "…" }
-
-// player_labels.json — pure click evidence; track resolution happens in analyze
-{ "labels": [ { "frame_idx": …,                   // normalized timeline
-                "anchor": { "x": …, "y": …, "bbox": [x,y,w,h] },  // click + mask-derived box
-                "player_id": … /* BWF */ | "display_name": "…" /* user videos */,
-                "labeled_by": "<uid>", "created_at": "…" } ] }
+// annotation.json — court + labels (normalize valid-frames + analyze)
+{ "court": {
+    "corners": [[x,y],[x,y],[x,y],[x,y]],          // TL → TR → BR → BL
+    "scoreboard_crop": {"x":…,"y":…,"w":…,"h":…},  // BWF optional
+    "score_sub_crop":  {"x":…,"y":…,"w":…,"h":…},
+    "row_split_y": …
+  },
+  "labels": [ { "frame_idx": …,
+                "anchor": { "x": …, "y": …, "bbox": [x,y,w,h] },
+                "side": 1, "slot": 1 } ] }   // side/slot → roster columns
 ```
 
-Labels are resolved to pose-track ids by the **analyze** stage: the crop
-under the click anchor is embedded and nearest-neighbor-matched against the
-per-track appearance embeddings `detect` produces, with anchor ∩ track-bbox
-at `frame_idx` as the geometric prior and tiebreak. The label thus attaches
-to an appearance identity rather than one track id, so it survives track
-fragmentation across broadcast cuts. The mapping lands in `analysis.json` —
-never written back into `player_labels.json` — so re-running detect can't
-orphan a label.
+Labels are resolved to pose-track ids by **analyze** (appearance embeddings
+from `detect` + geometric prior). The mapping lands in `analysis.json` — never
+written back into `annotation.json` — so re-running detect can't orphan a label.
 
-Every derived object is registered in `video_assets` with its `kind`, key and
-sha256, so "what exists for this video" is a DB query, not a bucket listing.
-Delivery of any of these to a client is always a `cdn-access` delivery token →
-CDN Worker (cached, free egress). If an object is ever regenerated, version
-the key (`…/v2/…`) or purge the CDN cache.
+There is no asset-registry table — keys are constructable under the match
+prefix. Delivery is always a `cdn-access` delivery token → CDN Worker (cached,
+free egress). If an object is regenerated, version the key (`…/v2/…`) or purge
+the CDN cache.
 
 ## 4. The job pipeline
 
@@ -224,7 +198,7 @@ pattern promoted to a standard:
 |---|---|---|---|---|
 | `normalize` | `workers/vast/video-normalization` | ✅ (needs score-timeline output) | original / YouTube URL (worker yt-dlps ✅) | normalized.mp4, thumbnail.jpg; youtube: + original.mkv archive; BWF: + valid.mp4, frame_manifest.csv, scores.csv |
 | `detect` | `workers/vast/video-det` | 🚧 worker built; dispatcher/table + embedding module not | normalized (or valid) mp4 | detections.json (YOLO26x-pose TensorRT + TrackNetV5 shuttle track + per-track appearance embeddings), Realtime progress |
-| `analyze` | `workers/…/analysis` | 📐 | detections.json + court_annotations + player_labels | analysis.json: 3D shuttle trajectory (physics fit), player ground-plane positions (homography), metrics (TBD) |
+| `analyze` | `workers/…/analysis` | 📐 | detections.json + annotation.json | analysis.json: 3D shuttle trajectory (physics fit), player ground-plane positions (homography), metrics (TBD) |
 
 `analyze` is CPU-dominant (geometry + curve fitting, no NN inference) — it can
 run on cheap CPU serverless rather than a GPU pool, but it still speaks the
@@ -244,9 +218,10 @@ profiles across videos. Within one match, kit color nearly separates two
 players on its own — the embeddings earn their keep on fragmentation,
 occlusion at the net, and cross-shot/cross-video identity.
 
-BWF vs user is **not** a different pipeline — it's the same chain where BWF
-jobs carry `valid_frames_config` (from the tournament preset + `match_players`
-names) and user jobs don't.
+BWF vs user is **not** a different pipeline — it's the same chain. BWF may
+carry richer `valid_frames_config` built from `annotation.json` (court +
+scoreboard geometry) and roster names on `matches.team*_player*`; user jobs
+typically normalize without valid-frames. See SUPABASE.md.
 
 ## 5. Supabase: auth, tables, RLS
 
@@ -260,44 +235,26 @@ inside edge functions and the match-data loader.
 
 ### Tables
 
-Full DDL: `supabase/migrations/20260709000000_init_video_pipeline.sql`.
+**Canonical schema: SUPABASE.md** (migration
+`supabase/migrations/20260712000000_init_match_pipeline.sql`).
 
 ```
--- ✅ existing (match-data migrations; private, service-role only)
-nations, players, matches, match_players (+ match_full view)
-
--- 📐 pipeline (this migration)
-videos             canonical video entity: owner_id (null ⇒ system/BWF),
-                   source_kind (upload|youtube|backlog), b2_prefix (unique),
-                   coarse status rollup, probe metadata
-video_assets       (video_id, kind) → b2_key + sha256 + meta; the registry of
-                   everything in B2, including the client-authored
-                   court_annotation / player_labels files (§3)
-jobs               one row per stage run (normalize|detect|analyze): status,
-                   priority, attempt, params; ≤1 active per (video, stage).
-                   Queueing itself is pgmq: jobs_interactive + jobs_bulk
-annotation_presets per-tournament BWF broadcast geometry (court + scoreboard);
-                   stays a table because it's cross-video system data the
-                   dispatcher joins by tournament
-matches.footage_id → videos.id  (matches.video_id was taken — it's the YouTube id)
+matches   product object: id, owner_id (null ⇒ BWF), source_url, tournament,
+          match_date, four player name columns, game scores, status rollup,
+          probe fields (duration/width/height/fps)
+jobs      one pipeline run per match; stage advances in place
+          (normalize|detect|analyze); pgmq: jobs_interactive + jobs_bulk
 ```
 
-Court annotations and player labels are **not tables** — they're per-video
-JSON files in B2 (§3). Clients never write the DB at all: user-authored data
-goes through `cdn-access` presigned PUTs, and every DB write happens in edge
-functions as service_role. The tradeoff: no SQL over label contents (e.g.
-"every video where player X is labeled") — for BWF that query already exists
-via `match_players`, and for user videos labels are free-form and per-video,
-so nothing needed today depends on it.
+No `videos`, `video_assets`, or players graph. B2 paths are constructable;
+court geometry + labels live in `annotation.json` under the match prefix (§3 /
+SUPABASE.md). Clients never write the DB — user files go through `cdn-access`;
+DB writes are service_role via `ingest_match` / `complete_job`.
 
 ### RLS sketch
 
-- `videos` & children: `owner_id = auth.uid() OR owner_id IS NULL` for select;
-  all writes via edge functions (service role) — clients have no DB write
-  path at all (user-authored data is B2 files behind the prefix rule).
-- `matches`/`players`/…: public read (already private-schema’d per the
-  existing migrations — expose via the read-model view).
-- `jobs`: select own (`video → owner`); never client-writable.
+- `matches`: `owner_id = auth.uid() OR owner_id IS NULL` for select; no client writes.
+- `jobs`: select via parent match; never client-writable.
 
 ## 6. Frontends
 
@@ -334,14 +291,13 @@ mintonix/
 ├── packages/
 │   └── shared/                types + schemas 📐
 ├── supabase/
-│   ├── migrations/            schema (match-data ✅, pipeline 📐)
+│   ├── migrations/            match + jobs pipeline (SUPABASE.md) ✅
 │   ├── config.toml
 │   └── functions/
 │       ├── cdn-access/        ✅ delivery tokens + upload presign
-│       ├── videos-ingest/     ✅ front door: insert + enqueue (one RPC txn)
+│       ├── matches-ingest/    ✅ front door: match + job enqueue (one RPC)
 │       └── jobs/              ✅ /dispatch (queue→vast) + /callback (settle
-│                                 + enqueue next stage) — one function, they
-│                                 share the stage routing table + job token
+│                                 / advance stage in place)
 ├── workers/
 │   ├── cloudflare/cdn/        ✅ B2 delivery + /presign control plane
 │   ├── github/match-data/     ✅ weekly scrape → Supabase
@@ -352,12 +308,10 @@ mintonix/
 └── .github/workflows/
 ```
 
-Migration note: the `normalize-video`/`normalize-callback` drafts were the
-template for `videos-ingest`/`jobs` and have been deleted. The pipeline RPCs
-(`ingest_video`, `dispatch_next_job`, `complete_job`) live in the pipeline
-migration: edge functions decide policy, RPCs make the writes atomic (a video
-never exists without its queue message; a completed job never misses its
-next-stage message).
+Pipeline RPCs (`ingest_match`, `dispatch_next_job`, `complete_job`) live in
+the match-pipeline migration: edge functions decide policy, RPCs make the
+writes atomic (a match that needs processing never exists without its queue
+message; stage advance re-queues the same job row).
 
 ## 8. CI/CD
 

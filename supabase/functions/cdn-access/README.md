@@ -12,18 +12,22 @@ See `workers/cloudflare/cdn/README.md` for the full trust boundary.
 
 ```jsonc
 // Delivery — stream a normalized video through the cached CDN
-{ "op": "delivery", "key": "videos/abc/normalized.mp4" }
-// → { "op":"delivery", "url":"https://cdn.mintonix.com/videos/abc/normalized.mp4?t=…",
+{ "op": "delivery", "key": "users/<uid>/<match_id>/normalized.mp4" }
+// → { "op":"delivery", "url":"https://cdn.mintonix.com/users/…/normalized.mp4?t=…",
 //     "expiresAt":"…" }
 
 // Upload — get a presigned PUT (client uploads DIRECT to B2)
-{ "op": "upload", "key": "users/<uid>/raw/clip.mov" }
+{ "op": "upload", "key": "users/<uid>/<match_id>/original.mp4" }
 // → { "op":"upload", "url":"https://s3.…/…?X-Amz-…", "method":"PUT", "key":"…", "expiresAt":"…" }
+
+// Delete — get a presigned DELETE (client DELETEs DIRECT on B2)
+{ "op": "delete", "key": "users/<uid>/<match_id>/original.mp4" }
+// → { "op":"delete", "url":"https://s3.…/…?X-Amz-…", "method":"DELETE", "key":"…", "expiresAt":"…" }
 ```
 
-The client then `PUT`s the file to that `url`. Content-Type is **not** signed,
-so the client may set any `Content-Type` (or none) — it won't break the
-signature.
+The client then `PUT`s or `DELETE`s against that `url`. Content-Type is **not**
+signed on upload, so the client may set any `Content-Type` (or none) — it won't
+break the signature.
 
 ## Browser uploads need B2 bucket CORS ⚠️
 
@@ -41,11 +45,18 @@ Two checks, both required:
 
 1. **Authn** — `getUser()` must resolve a logged-in user (else `401`).
 2. **Namespace** — `key` must start with `users/<user.id>/` (else `403`).
+3. **Upload basename allowlist** — `op: "upload"` only allows `original.mp4` and
+   `annotation.json` under `users/<uid>/<match_id>/…`. Pipeline outputs
+   (`normalized.mp4`, etc.) are service-presigned by the job dispatcher, not
+   clients.
+4. **Delete** — `op: "delete"` allows any basename under
+   `users/<uid>/<match_id>/…` (no allowlist) so a user can remove pipeline
+   outputs when deleting a match. Still namespace-scoped.
 
-Every object lives under `users/<uid>/videos/<videoId>/…` (`original.<ext>`,
-`normalized.mp4`, `thumbnail.jpg`, …), so access control is a prefix check with
-no DB lookup. This gates the **write** path (can't presign a PUT over another
-user's object) and the **read** path (can't mint a delivery token for one).
+Every user object lives under `users/<uid>/<match_id>/…` (see SUPABASE.md).
+Access control is a prefix check with no DB lookup. System/BWF keys under
+`bwf/<match_id>/` are not writable here (admin/BWF cleanup uses the CDN
+Worker `/presign` with the service token, e.g. via `scripts/manage.py delete`).
 
 Compute-worker outputs (`normalized.mp4`, `thumbnail.jpg`) are **not** minted
 here — the service-authed job dispatcher writes them into the owner's prefix.
