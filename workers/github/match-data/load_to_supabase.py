@@ -93,34 +93,42 @@ def upsert(table, rows, on_conflict, batch_size=500):
     """Upsert rows in batches, retrying on rate-limit / server errors.
 
     Only columns present on each row are written (PostgREST merge-duplicates).
+    Rows are grouped by key set first — PostgREST rejects mixed-key arrays
+    with PGRST102 ("All object keys must match").
     """
     if not rows:
         return 0
     if DRY_RUN:
         return 0
+    # Group by identical key sets so each POST body is homogeneous.
+    by_keys: dict[frozenset[str], list] = {}
+    for row in rows:
+        by_keys.setdefault(frozenset(row.keys()), []).append(row)
+
     headers = {**HEADERS, "Prefer": "resolution=merge-duplicates,return=minimal"}
     params = {"on_conflict": on_conflict}
     total = 0
-    for i in range(0, len(rows), batch_size):
-        batch = rows[i : i + batch_size]
-        for attempt in range(6):
-            r = requests.post(
-                f"{SUPABASE_URL}/rest/v1/{table}",
-                headers=headers,
-                params=params,
-                json=batch,
-                timeout=60,
-            )
-            if r.status_code in (200, 201, 204):
-                total += len(batch)
-                break
-            if r.status_code in (429, 500, 502, 503) and attempt < 5:
-                wait = 2 ** attempt
-                print(f"  {table}: {r.status_code}, retry in {wait}s...")
-                time.sleep(wait)
-                continue
-            print(f"  {table}: {r.status_code} {r.text[:300]}")
-            r.raise_for_status()
+    for group in by_keys.values():
+        for i in range(0, len(group), batch_size):
+            batch = group[i : i + batch_size]
+            for attempt in range(6):
+                r = requests.post(
+                    f"{SUPABASE_URL}/rest/v1/{table}",
+                    headers=headers,
+                    params=params,
+                    json=batch,
+                    timeout=60,
+                )
+                if r.status_code in (200, 201, 204):
+                    total += len(batch)
+                    break
+                if r.status_code in (429, 500, 502, 503) and attempt < 5:
+                    wait = 2 ** attempt
+                    print(f"  {table}: {r.status_code}, retry in {wait}s...")
+                    time.sleep(wait)
+                    continue
+                print(f"  {table}: {r.status_code} {r.text[:300]}")
+                r.raise_for_status()
     return total
 
 
@@ -401,17 +409,23 @@ def main():
                 row["source_url"] = url
         print(f"  Applying {matched_now} source_url links")
 
-    # Build write payloads (drop internal key; omit source_url when not applying).
-    write_rows = []
-    for row in match_rows:
-        out = {k: row[k] for k in MATCH_UPSERT_COLS if k in row and k != "source_url"}
-        if apply_videos and "source_url" in row:
-            out["source_url"] = row["source_url"]
-        # owner_id is always null for BWF; omit so upsert never reassigns.
-        write_rows.append(out)
+    # Build write payloads with a fixed key set (PostgREST PGRST102: every
+    # object in a bulk body must share the same keys). Catalog columns only;
+    # source_url is a second pass so we never send null and wipe existing URLs.
+    # owner_id is always omitted so upsert never reassigns BWF rows.
+    base_cols = tuple(c for c in MATCH_UPSERT_COLS if c != "source_url")
+    write_rows = [{k: row[k] for k in base_cols} for row in match_rows]
+    source_url_rows = [
+        {"id": row["id"], "source_url": row["source_url"]}
+        for row in match_rows
+        if apply_videos and "source_url" in row
+    ]
 
     print(f"{act} {len(write_rows)} matches...")
     upsert("matches", write_rows, on_conflict="id")
+    if source_url_rows:
+        print(f"{act} {len(source_url_rows)} source_url values...")
+        upsert("matches", source_url_rows, on_conflict="id")
 
     # Finished-only purge: keys the scrape sees as cleanly unfinished, if a
     # leftover row with that id still exists (legacy placeholders). Jobs cascade.
