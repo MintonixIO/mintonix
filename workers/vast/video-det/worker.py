@@ -12,7 +12,25 @@ benchmark sample — lands together with the detect stage contract.
 import os
 import uuid
 
+import aiohttp.web
+
 from vastai import Worker, WorkerConfig, HandlerConfig, LogActionConfig, BenchmarkConfig
+
+# Same patch as the normalization worker (see its comment for the live failure
+# it fixes): the SDK's AppRunner(handler_cancellation=True) turns a dispatcher
+# disconnect into a request cancel, which zeroes reported load and lets the
+# autoscaler stop the instance while the job is still running. Jobs report via
+# callback; the HTTP response is disposable — keep the request (and the load
+# accounting) alive until the job finishes.
+
+
+class _DetachedAppRunner(aiohttp.web.AppRunner):
+    def __init__(self, app, **kwargs):
+        kwargs["handler_cancellation"] = False
+        super().__init__(app, **kwargs)
+
+
+aiohttp.web.AppRunner = _DetachedAppRunner
 
 # Backend model server (handler.py / FastAPI). Must match how the entrypoint
 # launches it once the detect stage is wired up.

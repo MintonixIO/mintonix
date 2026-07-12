@@ -18,7 +18,29 @@ Request envelope (the SDK delivers {"input": {...}}; request_parser unwraps it):
 import os
 import uuid
 
+import aiohttp.web
+
 from vastai import Worker, WorkerConfig, HandlerConfig, LogActionConfig, BenchmarkConfig
+
+# The SDK hardcodes AppRunner(handler_cancellation=True), so a client that
+# disconnects mid-request cancels the in-flight handler. Our dispatcher is a
+# Supabase edge function whose fetch dies at the runtime's wall clock (~150s),
+# while a normalize job runs for many minutes: on disconnect the job itself
+# survives (server.py runs it in a thread and reports via /jobs/callback), but
+# the cancel zeroes this PyWorker's reported load and the autoscaler then stops
+# the instance mid-transcode (observed live: instance killed at 21% ffmpeg).
+# The HTTP response is disposable in our protocol — the request must stay
+# alive purely so the load accounting keeps the instance alive until the job
+# finishes. Force handler_cancellation off.
+
+
+class _DetachedAppRunner(aiohttp.web.AppRunner):
+    def __init__(self, app, **kwargs):
+        kwargs["handler_cancellation"] = False
+        super().__init__(app, **kwargs)
+
+
+aiohttp.web.AppRunner = _DetachedAppRunner
 
 # Backend model server (server.py). Must match MODEL_SERVER_HOST/PORT there.
 MODEL_SERVER_URL = os.environ.get("MODEL_SERVER_URL", "http://127.0.0.1")
