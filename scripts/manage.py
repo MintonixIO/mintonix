@@ -1,51 +1,28 @@
 #!/usr/bin/env python3
-"""Backend ops CLI for the Mintonix match pipeline (DEV).
+"""Interactive backend ops CLI for the Mintonix match pipeline (DEV).
 
-Subcommands:
+Run with no args for a menu-driven session:
 
-  ingest   Interactive annotate + create job (delegates to annotate_and_ingest.py)
-  queue    Enqueue GPU work for scraper-loaded BWF catalog matches (one or all)
-  delete   Remove a match's B2 objects and/or DB row (jobs cascade)
-  dispatch Kick the jobs dispatcher (pipeline token)
-  list     List matches from the DB (filter by origin / status)
+    python3 scripts/manage.py
 
-Catalog load (scraper → `matches` rows) does NOT enqueue pipeline jobs
-(ARCHITECTURE.md / load_to_supabase.py). Use `queue` after a scrape to start
-normalize for matches that already have a `source_url`.
+Catalog load (scraper → `matches` rows) does NOT enqueue pipeline jobs.
+Use Queue after a scrape to start normalize for matches that have a
+`source_url`.
 
 Secrets (~/.mintonix/dev-secrets.env, or environment):
 
   PIPELINE_SERVICE_TOKEN     matches-ingest + jobs/dispatch
   SUPABASE_URL               default: dev project
-  SUPABASE_SERVICE_ROLE_KEY  or SUPABASE_SERVICE_KEY — PostgREST (list/delete/queue)
+  SUPABASE_SERVICE_ROLE_KEY  or SUPABASE_SERVICE_KEY — PostgREST
   CDN_PRESIGN_URL            e.g. https://cdn-dev.mintonix.com/presign
   PRESIGN_SERVICE_TOKEN      CDN Worker control plane (storage list/delete)
 
-  For `ingest` (user upload lane) also need the annotate script secrets:
+  For user-upload ingest also need:
   SUPABASE_ANON_KEY, SUPABASE_TEST_EMAIL, SUPABASE_TEST_PASSWORD
-
-Examples:
-
-  # Annotate a YouTube BWF clip and enqueue (+ optional dispatch)
-  python3 scripts/manage.py ingest --url 'https://youtu.be/…' \\
-      --tournament '2025 Worlds-MS-Final' --dispatch
-
-  # Queue every BWF catalog row that has a source_url and no live job
-  python3 scripts/manage.py queue --all
-
-  # Queue one match by id
-  python3 scripts/manage.py queue --id <match_id>
-
-  # Delete B2 prefix + DB row (asks for confirmation unless --yes)
-  python3 scripts/manage.py delete --id <match_id> --yes
-
-  # Dry-run storage+DB cleanup
-  python3 scripts/manage.py delete --id <match_id> --dry-run
 """
 
 from __future__ import annotations
 
-import argparse
 import json
 import os
 import subprocess
@@ -53,14 +30,12 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any
+from typing import Any, Callable
 
 SECRETS_FILE = os.path.expanduser("~/.mintonix/dev-secrets.env")
 DEFAULT_SUPABASE_URL = "https://xaxyuytvgcdbdnndhgwj.supabase.co"
 DEFAULT_CDN_PRESIGN = "https://cdn-dev.mintonix.com/presign"
 
-# Canonical basenames under a match prefix (SUPABASE.md). Used as a fallback
-# when LIST is unavailable; real cleanup prefers LIST from the CDN worker.
 KNOWN_BASENAMES = (
     "original.mp4",
     "original.mov",
@@ -74,6 +49,139 @@ KNOWN_BASENAMES = (
     "detections.json",
     "analysis.json",
 )
+
+MATCH_SELECT = (
+    "id,owner_id,source_url,tournament,match_date,status,created_at,"
+    "team1_player1,team1_player2,team2_player1,team2_player2,"
+    "g1_t1,g1_t2,g2_t1,g2_t2,g3_t1,g3_t2"
+)
+
+METADATA_COLS = (
+    "source_url",
+    "tournament",
+    "match_date",
+    "team1_player1",
+    "team1_player2",
+    "team2_player1",
+    "team2_player2",
+    "g1_t1",
+    "g1_t2",
+    "g2_t1",
+    "g2_t2",
+    "g3_t1",
+    "g3_t2",
+)
+
+
+# ---------------------------------------------------------------- prompts
+
+
+class Cancel(Exception):
+    """User cancelled the current action (return to menu)."""
+
+
+def _stdin_line(prompt: str) -> str:
+    try:
+        return input(prompt)
+    except (EOFError, KeyboardInterrupt):
+        print()
+        raise Cancel from None
+
+
+def ask(prompt: str, *, default: str | None = None) -> str:
+    """Free-text prompt. Empty input → default if set, else re-prompt.
+    Enter 'q' / 'quit' / 'back' to cancel to the main menu."""
+    suffix = f" [{default}]" if default is not None else ""
+    while True:
+        raw = _stdin_line(f"{prompt}{suffix}: ").strip()
+        if raw.lower() in ("q", "quit", "back"):
+            raise Cancel
+        if raw:
+            return raw
+        if default is not None:
+            return default
+        print("  (required — or q to go back)")
+
+
+def ask_optional(prompt: str, *, default: str = "") -> str:
+    """Optional free-text; empty returns default. 'q' still cancels."""
+    suffix = f" [{default}]" if default else " [enter to skip]"
+    raw = _stdin_line(f"{prompt}{suffix}: ").strip()
+    if raw.lower() in ("q", "quit", "back"):
+        raise Cancel
+    return raw if raw else default
+
+
+def ask_yes_no(prompt: str, *, default: bool = False) -> bool:
+    hint = "Y/n" if default else "y/N"
+    while True:
+        raw = _stdin_line(f"{prompt} [{hint}]: ").strip().lower()
+        if raw in ("q", "quit", "back"):
+            raise Cancel
+        if not raw:
+            return default
+        if raw in ("y", "yes"):
+            return True
+        if raw in ("n", "no"):
+            return False
+        print("  enter y or n (or q to go back)")
+
+
+def ask_int(prompt: str, *, default: int | None = None, min_v: int | None = None) -> int:
+    while True:
+        raw = ask(prompt, default=None if default is None else str(default))
+        try:
+            n = int(raw)
+        except ValueError:
+            print("  enter an integer")
+            continue
+        if min_v is not None and n < min_v:
+            print(f"  must be ≥ {min_v}")
+            continue
+        return n
+
+
+def ask_choice(prompt: str, choices: list[tuple[str, str]], *, default: str | None = None) -> str:
+    """choices: list of (key, label). Returns key. default is a key."""
+    print(prompt)
+    key_set = {k for k, _ in choices}
+    for i, (key, label) in enumerate(choices, 1):
+        mark = " *" if default is not None and key == default else ""
+        print(f"  {i}) {label}{mark}")
+    while True:
+        raw = _stdin_line("  choice (number or key, q=back): ").strip().lower()
+        if raw in ("q", "quit", "back"):
+            raise Cancel
+        if not raw and default is not None:
+            return default
+        if raw in key_set:
+            return raw
+        if raw.isdigit():
+            idx = int(raw)
+            if 1 <= idx <= len(choices):
+                return choices[idx - 1][0]
+        print("  invalid choice")
+
+
+def pause() -> None:
+    try:
+        _stdin_line("\n[enter] back to menu  ")
+    except Cancel:
+        pass
+
+
+def banner(secrets: dict[str, str]) -> None:
+    url = supabase_url(secrets)
+    host = url.replace("https://", "").replace("http://", "").split("/")[0]
+    print()
+    print("┌─────────────────────────────────────────────┐")
+    print("│  Mintonix backend  ·  interactive ops CLI   │")
+    print("└─────────────────────────────────────────────┘")
+    print(f"  project  {host}")
+    print(f"  secrets  {SECRETS_FILE}")
+    print(f"  cdn      {cdn_presign_url(secrets)}")
+    print("  tip      type q at any prompt to cancel")
+    print()
 
 
 # ---------------------------------------------------------------- secrets / HTTP
@@ -90,18 +198,21 @@ def load_secrets() -> dict[str, str]:
                     secrets[k.strip()] = v.strip().strip('"').strip("'")
     except FileNotFoundError:
         pass
-    # Environment wins over the file (CI / one-off overrides).
     for k, v in os.environ.items():
         if v:
             secrets[k] = v
     return secrets
 
 
+def missing_secrets(secrets: dict[str, str], *keys: str) -> list[str]:
+    return [k for k in keys if not secrets.get(k)]
+
+
 def require(secrets: dict[str, str], *keys: str) -> None:
-    missing = [k for k in keys if not secrets.get(k)]
-    if missing:
-        sys.exit(
-            f"missing secret(s): {', '.join(missing)}\n"
+    miss = missing_secrets(secrets, *keys)
+    if miss:
+        raise RuntimeError(
+            f"missing secret(s): {', '.join(miss)}\n"
             f"  set in {SECRETS_FILE} or the environment"
         )
 
@@ -125,7 +236,7 @@ def service_key(secrets: dict[str, str]) -> str:
 def rest_headers(secrets: dict[str, str]) -> dict[str, str]:
     key = service_key(secrets)
     if not key:
-        sys.exit(
+        raise RuntimeError(
             "need SUPABASE_SERVICE_ROLE_KEY or SUPABASE_SERVICE_KEY "
             f"in {SECRETS_FILE} (service role; bypasses RLS)"
         )
@@ -173,11 +284,7 @@ def cdn_presign_url(secrets: dict[str, str]) -> str:
     return (secrets.get("CDN_PRESIGN_URL") or DEFAULT_CDN_PRESIGN).rstrip("/")
 
 
-def cdn_control(
-    secrets: dict[str, str],
-    body: dict,
-    timeout: float = 60,
-) -> dict:
+def cdn_control(secrets: dict[str, str], body: dict, timeout: float = 60) -> dict:
     require(secrets, "PRESIGN_SERVICE_TOKEN")
     return http_json(
         "POST",
@@ -192,7 +299,6 @@ def cdn_control(
 
 
 def list_prefix_keys(secrets: dict[str, str], prefix: str) -> list[str]:
-    """List all object keys under prefix via CDN Worker op=LIST (paginated)."""
     keys: list[str] = []
     token: str | None = None
     while True:
@@ -210,7 +316,6 @@ def list_prefix_keys(secrets: dict[str, str], prefix: str) -> list[str]:
 
 
 def delete_b2_key(secrets: dict[str, str], key: str, dry_run: bool) -> str:
-    """Presign DELETE and execute it. Returns status label."""
     if dry_run:
         return "would-delete"
     signed = cdn_control(secrets, {"op": "DELETE", "key": key})
@@ -233,36 +338,7 @@ def match_b2_prefix(owner_id: str | None, match_id: str) -> str:
     return f"bwf/{match_id}/"
 
 
-# ---------------------------------------------------------------- subcommands
-
-
-def cmd_ingest(args: argparse.Namespace, secrets: dict[str, str]) -> None:
-    """Delegate to annotate_and_ingest.py (interactive court/player UI)."""
-    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "annotate_and_ingest.py")
-    if not os.path.isfile(script):
-        sys.exit(f"annotate_and_ingest.py not found next to manage.py ({script})")
-    cmd = [sys.executable, script]
-    if args.url:
-        cmd += ["--url", args.url]
-    if args.file:
-        cmd += ["--file", args.file]
-    if args.tournament:
-        cmd += ["--tournament", args.tournament]
-    if args.queue:
-        cmd += ["--queue", args.queue]
-    if args.dispatch:
-        cmd.append("--dispatch")
-    if args.dry_run:
-        cmd.append("--dry-run")
-    print(f"[info] exec: {' '.join(cmd)}")
-    raise SystemExit(subprocess.call(cmd))
-
-
-MATCH_SELECT = (
-    "id,owner_id,source_url,tournament,match_date,status,created_at,"
-    "team1_player1,team1_player2,team2_player1,team2_player2,"
-    "g1_t1,g1_t2,g2_t1,g2_t2,g3_t1,g3_t2"
-)
+# ---------------------------------------------------------------- data access
 
 
 def fetch_matches(
@@ -298,15 +374,12 @@ def fetch_matches(
 
 
 def live_job_match_ids(secrets: dict[str, str], match_ids: list[str]) -> set[str]:
-    """Return match_ids that already have a queued/processing job."""
     if not match_ids:
         return set()
-    # PostgREST `in` filter; chunk to stay under URL limits.
     live: set[str] = set()
     chunk = 50
     for i in range(0, len(match_ids), chunk):
         part = match_ids[i : i + chunk]
-        # ids are hex/uuid — safe for unquoted in.(…)
         ids = ",".join(part)
         url = (
             f"{supabase_url(secrets)}/rest/v1/jobs"
@@ -317,70 +390,237 @@ def live_job_match_ids(secrets: dict[str, str], match_ids: list[str]) -> set[str
     return live
 
 
-def cmd_queue(args: argparse.Namespace, secrets: dict[str, str]) -> None:
-    require(secrets, "PIPELINE_SERVICE_TOKEN")
-    if bool(args.id) == bool(args.all):
-        sys.exit("queue: pass exactly one of --id or --all")
+def print_matches(matches: list[dict], *, numbered: bool = False) -> None:
+    if not matches:
+        print("  (no rows)")
+        return
+    for i, m in enumerate(matches, 1):
+        origin = "user" if m.get("owner_id") else "bwf"
+        src = m.get("source_url") or ""
+        if len(src) > 44:
+            src = src[:41] + "…"
+        mid = m["id"]
+        short = mid if len(mid) <= 16 else mid[:16]
+        prefix = f"  {i:3}) " if numbered else "  "
+        print(
+            f"{prefix}{short:16}  {origin:4}  {m.get('status') or '?':10}  "
+            f"{(m.get('tournament') or '')[:36]:36}  {src}"
+        )
+    print(f"\n  {len(matches)} row(s)")
 
-    if args.id:
-        matches = fetch_matches(secrets, match_id=args.id)
-        if not matches:
-            sys.exit(f"no match with id={args.id}")
+
+def pick_match_from_list(matches: list[dict], *, prompt: str = "Select match") -> dict:
+    print_matches(matches, numbered=True)
+    while True:
+        raw = ask(f"{prompt} (number or full id)")
+        if raw.isdigit():
+            idx = int(raw)
+            if 1 <= idx <= len(matches):
+                return matches[idx - 1]
+            print(f"  pick 1–{len(matches)}")
+            continue
+        for m in matches:
+            if m["id"] == raw or m["id"].startswith(raw):
+                return m
+        print("  no match for that id / prefix")
+
+
+# ---------------------------------------------------------------- actions
+
+
+def do_list(secrets: dict[str, str]) -> None:
+    print("\n── List matches ──")
+    origin = ask_choice(
+        "Origin filter:",
+        [
+            ("all", "All matches"),
+            ("bwf", "BWF / system only"),
+            ("user", "User-owned only"),
+        ],
+        default="all",
+    )
+    status = ask_optional("Status filter (pending|processing|ready|failed)")
+    with_source = ask_yes_no("Only rows with source_url?", default=False)
+    limit = ask_int("Limit", default=50, min_v=1)
+
+    matches = fetch_matches(
+        secrets,
+        bwf_only=origin == "bwf",
+        user_only=origin == "user",
+        with_source=with_source,
+        status=status or None,
+        limit=limit,
+    )
+    print()
+    print_matches(matches)
+
+
+def do_ingest(secrets: dict[str, str]) -> None:
+    print("\n── Ingest video ──")
+    print("  Opens the annotation UI (annotate_and_ingest.py).")
+    lane = ask_choice(
+        "Source lane:",
+        [
+            ("bwf", "YouTube / BWF (system lane — worker downloads)"),
+            ("upload", "Local file (user-upload lane)"),
+            ("both", "YouTube URL + local file as scrub proxy"),
+        ],
+        default="bwf",
+    )
+
+    url = file_path = tournament = None
+    if lane in ("bwf", "both"):
+        url = ask("YouTube URL")
+        tournament = ask("Tournament label (e.g. 2025 Worlds-MS-Final)")
+    if lane in ("upload", "both"):
+        file_path = ask("Path to local video file")
+        if not os.path.isfile(file_path):
+            raise RuntimeError(f"file not found: {file_path}")
+
+    queue = "jobs_bulk"
+    if lane != "upload":
+        queue = ask_choice(
+            "Queue:",
+            [
+                ("jobs_bulk", "jobs_bulk (BWF backlog)"),
+                ("jobs_interactive", "jobs_interactive"),
+            ],
+            default="jobs_bulk",
+        )
+
+    dispatch = ask_yes_no("Dispatch a job after ingest?", default=False)
+    dry_run = ask_yes_no("Dry-run (annotate only, write nothing)?", default=False)
+
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "annotate_and_ingest.py")
+    if not os.path.isfile(script):
+        raise RuntimeError(f"annotate_and_ingest.py not found ({script})")
+
+    cmd = [sys.executable, script]
+    if url:
+        cmd += ["--url", url]
+    if file_path:
+        cmd += ["--file", file_path]
+    if tournament:
+        cmd += ["--tournament", tournament]
+    if lane != "upload":
+        cmd += ["--queue", queue]
+    if dispatch:
+        cmd.append("--dispatch")
+    if dry_run:
+        cmd.append("--dry-run")
+
+    print(f"\n[info] exec: {' '.join(cmd)}\n")
+    code = subprocess.call(cmd)
+    if code != 0:
+        print(f"[warn] annotate_and_ingest exited {code}")
+
+
+def do_queue(secrets: dict[str, str]) -> None:
+    print("\n── Queue matches ──")
+    print("  Enqueue normalize for scraper catalog rows (matches-ingest).")
+    require(secrets, "PIPELINE_SERVICE_TOKEN")
+
+    mode = ask_choice(
+        "Queue scope:",
+        [
+            ("one", "One match (by id or pick from list)"),
+            ("all", "All BWF matches with source_url"),
+        ],
+        default="all",
+    )
+
+    matches: list[dict]
+    if mode == "one":
+        pick = ask_choice(
+            "How to choose the match:",
+            [
+                ("id", "Enter match id"),
+                ("list", "Browse recent BWF with source_url"),
+            ],
+            default="list",
+        )
+        if pick == "id":
+            mid = ask("Match id")
+            matches = fetch_matches(secrets, match_id=mid)
+            if not matches:
+                raise RuntimeError(f"no match with id={mid}")
+        else:
+            recent = fetch_matches(secrets, bwf_only=True, with_source=True, limit=30)
+            if not recent:
+                print("  no BWF matches with source_url")
+                return
+            matches = [pick_match_from_list(recent)]
     else:
+        status = ask_optional("Only status (pending|processing|ready|failed)")
+        limit_raw = ask_optional("Limit (empty = no limit)")
+        limit = int(limit_raw) if limit_raw else None
         matches = fetch_matches(
             secrets,
             bwf_only=True,
             with_source=True,
-            status=args.status,
-            limit=args.limit,
+            status=status or None,
+            limit=limit,
         )
         if not matches:
-            print("no BWF matches with source_url to queue")
+            print("  no BWF matches with source_url to queue")
             return
+        print(f"\n  candidates: {len(matches)}")
+        print_matches(matches[:15])
+        if len(matches) > 15:
+            print(f"  … and {len(matches) - 15} more")
 
-    if args.skip_live:
+    skip_live = ask_yes_no("Skip matches that already have a live job?", default=True)
+    if skip_live:
         live = live_job_match_ids(secrets, [m["id"] for m in matches])
         before = len(matches)
         matches = [m for m in matches if m["id"] not in live]
         skipped = before - len(matches)
         if skipped:
-            print(f"[info] skipped {skipped} already live (queued/processing)")
+            print(f"  skipped {skipped} already live (queued/processing)")
 
     if not matches:
-        print("nothing to queue")
+        print("  nothing to queue")
+        return
+
+    queue = ask_choice(
+        "Target queue:",
+        [
+            ("jobs_bulk", "jobs_bulk"),
+            ("jobs_interactive", "jobs_interactive"),
+        ],
+        default="jobs_bulk",
+    )
+    priority = ask_int("Priority (lower runs first)", default=100, min_v=0)
+    dry_run = ask_yes_no("Dry-run (print only)?", default=False)
+    dispatch = False
+    dispatch_max = 1
+    if not dry_run:
+        dispatch = ask_yes_no("Dispatch after queueing?", default=False)
+        if dispatch:
+            dispatch_max = ask_int("How many jobs to dispatch?", default=1, min_v=1)
+
+    if not dry_run and not ask_yes_no(
+        f"Enqueue {len(matches)} match(es) on {queue}?", default=True
+    ):
+        print("  aborted")
         return
 
     hdr = {"x-pipeline-token": secrets["PIPELINE_SERVICE_TOKEN"]}
     queued = already = failed = 0
+    print()
     for m in matches:
         mid = m["id"]
-        if args.dry_run:
-            print(f"[dry-run] would queue {mid}  source={m.get('source_url')!r}")
+        if dry_run:
+            print(f"  [dry-run] would queue {mid}  source={m.get('source_url')!r}")
             queued += 1
             continue
         body: dict[str, Any] = {
             "id": mid,
             "upsert": True,
-            "queue": args.queue,
-            "priority": args.priority,
+            "queue": queue,
+            "priority": priority,
         }
-        # Re-supply metadata when present so a missing row can still be created
-        # (idempotent upsert coalesce keeps existing columns when null).
-        for col in (
-            "source_url",
-            "tournament",
-            "match_date",
-            "team1_player1",
-            "team1_player2",
-            "team2_player1",
-            "team2_player2",
-            "g1_t1",
-            "g1_t2",
-            "g2_t1",
-            "g2_t2",
-            "g3_t1",
-            "g3_t2",
-        ):
+        for col in METADATA_COLS:
             if m.get(col) is not None:
                 body[col] = m[col]
         try:
@@ -395,99 +635,131 @@ def cmd_queue(args: argparse.Namespace, secrets: dict[str, str]) -> None:
             failed += 1
             print(f"  FAILED          {mid}  {e}", file=sys.stderr)
 
-    print(f"\ndone: queued={queued} already={already} failed={failed}")
+    print(f"\n  done: queued={queued} already={already} failed={failed}")
 
-    if args.dispatch and not args.dry_run:
-        cmd_dispatch(
-            argparse.Namespace(max=args.dispatch_max, vt=None, max_running=None),
-            secrets,
+    if dispatch and not dry_run:
+        print()
+        run_dispatch(secrets, max_jobs=dispatch_max)
+
+
+def do_delete(secrets: dict[str, str]) -> None:
+    print("\n── Delete match ──")
+    print("  Removes B2 objects under the match prefix and/or the DB row.")
+
+    pick = ask_choice(
+        "How to choose the match:",
+        [
+            ("id", "Enter match id"),
+            ("list", "Browse recent matches"),
+        ],
+        default="id",
+    )
+    if pick == "list":
+        recent = fetch_matches(secrets, limit=30)
+        if not recent:
+            print("  no matches in DB")
+            return
+        row = pick_match_from_list(recent)
+        match_id = row["id"]
+    else:
+        match_id = ask("Match id")
+        rows = fetch_matches(secrets, match_id=match_id)
+        row = rows[0] if rows else None
+
+    if not row:
+        print(f"  no DB row for id={match_id}")
+        if not ask_yes_no("Continue with storage-only delete?", default=False):
+            return
+        scope = "storage"
+        prefix_override = ask_optional(
+            "B2 prefix override (empty = bwf/<id>/)",
+            default=f"bwf/{match_id}/",
         )
+    else:
+        print()
+        print(f"  match_id : {match_id}")
+        print(f"  owner_id : {row.get('owner_id') or '(BWF/system)'}")
+        print(f"  status   : {row.get('status')}")
+        print(f"  source   : {row.get('source_url')}")
+        print(f"  prefix   : {match_b2_prefix(row.get('owner_id'), match_id)}")
+        scope = ask_choice(
+            "What to delete:",
+            [
+                ("both", "B2 objects + DB row (jobs cascade)"),
+                ("storage", "B2 objects only"),
+                ("db", "DB row only"),
+            ],
+            default="both",
+        )
+        prefix_override = ""
 
-
-def cmd_delete(args: argparse.Namespace, secrets: dict[str, str]) -> None:
-    if not args.id:
-        sys.exit("delete: --id is required")
-    if args.db_only and args.storage_only:
-        sys.exit("delete: pass at most one of --db-only / --storage-only")
-
-    rows = fetch_matches(secrets, match_id=args.id)
-    row = rows[0] if rows else None
-    if not row and not args.storage_only:
-        sys.exit(f"no match with id={args.id}")
+    dry_run = ask_yes_no("Dry-run (print only)?", default=False)
 
     owner_id = (row or {}).get("owner_id")
-    # Allow forcing a prefix when the DB row is already gone.
-    if args.prefix:
-        prefix = args.prefix if args.prefix.endswith("/") else args.prefix + "/"
+    if prefix_override:
+        prefix = prefix_override if prefix_override.endswith("/") else prefix_override + "/"
     else:
-        prefix = match_b2_prefix(owner_id, args.id)
+        prefix = match_b2_prefix(owner_id, match_id)
 
-    print(f"match_id : {args.id}")
-    if row:
-        print(f"owner_id : {owner_id or '(BWF/system)'}")
-        print(f"status   : {row.get('status')}")
-        print(f"source   : {row.get('source_url')}")
-    else:
-        print("owner_id : (no DB row)")
-    print(f"b2_prefix: {prefix}")
+    do_storage = scope in ("both", "storage")
+    do_db = scope in ("both", "db") and bool(row)
 
-    do_storage = not args.db_only
-    do_db = not args.storage_only and bool(row)
-
-    if not args.dry_run and not args.yes:
-        bits = []
-        if do_storage:
-            bits.append(f"B2 under {prefix}")
-        if do_db:
-            bits.append(f"DB matches.id={args.id} (jobs cascade)")
-        if bits:
-            confirm = input(f"Delete {' + '.join(bits)}? [y/N] ").strip().lower()
-            if confirm not in ("y", "yes"):
-                print("aborted")
-                return
+    bits = []
+    if do_storage:
+        bits.append(f"B2 under {prefix}")
+    if do_db:
+        bits.append(f"DB matches.id={match_id}")
+    print(f"\n  plan: {' + '.join(bits) or 'nothing'}")
+    if dry_run:
+        print("  mode: dry-run")
+    elif not ask_yes_no("Proceed with delete?", default=False):
+        print("  aborted")
+        return
 
     if do_storage:
         require(secrets, "PRESIGN_SERVICE_TOKEN")
         try:
             keys = list_prefix_keys(secrets, prefix)
         except Exception as e:
-            print(f"[warn] LIST failed ({e}); falling back to known basenames")
+            print(f"  [warn] LIST failed ({e}); falling back to known basenames")
             keys = [prefix + name for name in KNOWN_BASENAMES]
 
         if not keys:
-            print("[info] no B2 objects under prefix (or LIST empty)")
+            print("  no B2 objects under prefix")
         else:
-            print(f"[info] {len(keys)} object(s) under prefix")
+            print(f"  {len(keys)} object(s):")
             for key in keys:
                 try:
-                    status = delete_b2_key(secrets, key, args.dry_run)
-                    print(f"  {status:16} {key}")
+                    status = delete_b2_key(secrets, key, dry_run)
+                    print(f"    {status:16} {key}")
                 except Exception as e:
-                    print(f"  FAILED           {key}  {e}", file=sys.stderr)
+                    print(f"    FAILED           {key}  {e}", file=sys.stderr)
 
     if do_db:
-        if args.dry_run:
-            print(f"[dry-run] would DELETE matches id={args.id} (jobs cascade)")
+        if dry_run:
+            print(f"  [dry-run] would DELETE matches id={match_id} (jobs cascade)")
         else:
             url = (
                 f"{supabase_url(secrets)}/rest/v1/matches"
-                f"?id=eq.{urllib.parse.quote(args.id, safe='')}"
+                f"?id=eq.{urllib.parse.quote(match_id, safe='')}"
             )
             http_json("DELETE", url, rest_headers(secrets))
-            print(f"[info] deleted matches row {args.id} (jobs cascaded)")
-    elif not args.storage_only and not row:
-        print("[info] no DB row to delete")
+            print(f"  deleted matches row {match_id} (jobs cascaded)")
 
 
-def cmd_dispatch(args: argparse.Namespace, secrets: dict[str, str]) -> None:
+def run_dispatch(
+    secrets: dict[str, str],
+    *,
+    max_jobs: int = 1,
+    vt: int | None = None,
+    max_running: int | None = None,
+) -> None:
     require(secrets, "PIPELINE_SERVICE_TOKEN")
-    body: dict[str, Any] = {}
-    if args.max is not None:
-        body["max"] = args.max
-    if getattr(args, "vt", None) is not None:
-        body["vt"] = args.vt
-    if getattr(args, "max_running", None) is not None:
-        body["max_running"] = args.max_running
+    body: dict[str, Any] = {"max": max_jobs}
+    if vt is not None:
+        body["vt"] = vt
+    if max_running is not None:
+        body["max_running"] = max_running
     result = post_fn(
         secrets,
         "/jobs/dispatch",
@@ -497,146 +769,135 @@ def cmd_dispatch(args: argparse.Namespace, secrets: dict[str, str]) -> None:
     print(json.dumps(result, indent=2))
 
 
-def cmd_list(args: argparse.Namespace, secrets: dict[str, str]) -> None:
-    matches = fetch_matches(
+def do_dispatch(secrets: dict[str, str]) -> None:
+    print("\n── Dispatch jobs ──")
+    print("  Claim queued jobs and send them to vast.")
+    max_jobs = ask_int("Max jobs to claim", default=1, min_v=1)
+    max_running = ask_optional("Max concurrent processing (empty = server default)")
+    vt = ask_optional("Visibility timeout seconds (empty = server default)")
+    run_dispatch(
         secrets,
-        bwf_only=args.bwf,
-        user_only=args.user,
-        with_source=args.with_source,
-        status=args.status,
-        limit=args.limit,
+        max_jobs=max_jobs,
+        vt=int(vt) if vt else None,
+        max_running=int(max_running) if max_running else None,
     )
-    if not matches:
-        print("(no rows)")
-        return
-    for m in matches:
-        origin = "user" if m.get("owner_id") else "bwf"
-        src = m.get("source_url") or ""
-        if len(src) > 48:
-            src = src[:45] + "…"
+
+
+def do_status(secrets: dict[str, str]) -> None:
+    print("\n── Pipeline snapshot ──")
+    for status in ("pending", "processing", "ready", "failed"):
+        rows = fetch_matches(secrets, status=status, limit=1)
+        # Count via a second query with Prefer count — keep simple: fetch up to 500
+        all_s = fetch_matches(secrets, status=status, limit=500)
+        n = len(all_s)
+        extra = "+" if n == 500 else ""
+        print(f"  matches.{status:10}  {n}{extra}")
+
+    # Live jobs
+    url = (
+        f"{supabase_url(secrets)}/rest/v1/jobs"
+        f"?select=id,match_id,status,stage,queue,attempt"
+        f"&status=in.(queued,processing)&order=created_at.desc&limit=20"
+    )
+    jobs = http_json("GET", url, rest_headers(secrets)) or []
+    print(f"\n  live jobs: {len(jobs)}")
+    for j in jobs:
         print(
-            f"{m['id'][:16]:16}  {origin:4}  {m.get('status') or '?':10}  "
-            f"{(m.get('tournament') or '')[:40]:40}  {src}"
+            f"    {j.get('status'):10}  stage={j.get('stage'):10}  "
+            f"q={j.get('queue') or '?':16}  attempt={j.get('attempt')}  "
+            f"match={str(j.get('match_id'))[:16]}"
         )
-    print(f"\n{len(matches)} row(s)")
 
 
-# ---------------------------------------------------------------- CLI
+# ---------------------------------------------------------------- main menu
 
 
-def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(
-        description=__doc__.split("\n\n")[0],
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    sub = p.add_subparsers(dest="cmd", required=True)
+MENU: list[tuple[str, str, Callable[[dict[str, str]], None]]] = [
+    ("1", "List matches", do_list),
+    ("2", "Ingest video (annotate + create job)", do_ingest),
+    ("3", "Queue matches (scraper catalog → pipeline)", do_queue),
+    ("4", "Delete match (B2 and/or DB)", do_delete),
+    ("5", "Dispatch jobs", do_dispatch),
+    ("6", "Pipeline snapshot", do_status),
+]
 
-    # ingest
-    pi = sub.add_parser(
-        "ingest",
-        help="annotate + ingest (wraps annotate_and_ingest.py)",
-        description="Interactive annotation UI; creates match + job.",
-    )
-    pi.add_argument("--url", help="YouTube URL (BWF / system lane)")
-    pi.add_argument("--file", help="local video (user-upload lane, or scrub proxy with --url)")
-    pi.add_argument("--tournament", help="tournament label (BWF lane)")
-    pi.add_argument(
-        "--queue",
-        default="jobs_bulk",
-        choices=["jobs_bulk", "jobs_interactive"],
-        help="BWF queue (default jobs_bulk)",
-    )
-    pi.add_argument("--dispatch", action="store_true", help="POST /jobs/dispatch after ingest")
-    pi.add_argument("--dry-run", action="store_true", help="annotate only; write nothing")
-    pi.set_defaults(func=cmd_ingest)
 
-    # queue
-    pq = sub.add_parser(
-        "queue",
-        help="enqueue pipeline jobs for scraper catalog matches",
-        description=(
-            "Call matches-ingest for BWF rows that already exist (from the "
-            "scraper). Does not re-scrape; only enqueues normalize when no "
-            "live job exists."
-        ),
-    )
-    g = pq.add_mutually_exclusive_group(required=True)
-    g.add_argument("--id", help="single match id")
-    g.add_argument("--all", action="store_true", help="all BWF matches with source_url")
-    pq.add_argument(
-        "--skip-live",
-        action="store_true",
-        default=True,
-        help="skip matches that already have queued/processing jobs (default)",
-    )
-    pq.add_argument(
-        "--include-live",
-        action="store_true",
-        help="do not skip live jobs (ingest still returns already_queued)",
-    )
-    pq.add_argument("--status", help="only matches with this status (e.g. pending)")
-    pq.add_argument("--limit", type=int, help="max matches when using --all")
-    pq.add_argument(
-        "--queue",
-        default="jobs_bulk",
-        choices=["jobs_bulk", "jobs_interactive"],
-        help="target queue (default jobs_bulk)",
-    )
-    pq.add_argument("--priority", type=int, default=100, help="job priority (default 100)")
-    pq.add_argument("--dispatch", action="store_true", help="dispatch after queueing")
-    pq.add_argument("--dispatch-max", type=int, default=1, help="max jobs to dispatch")
-    pq.add_argument("--dry-run", action="store_true")
-    pq.set_defaults(func=cmd_queue)
+def check_startup(secrets: dict[str, str]) -> None:
+    """Warn about missing secrets without hard-failing (ops are optional per action)."""
+    warnings: list[str] = []
+    if not service_key(secrets):
+        warnings.append("SUPABASE_SERVICE_ROLE_KEY / SUPABASE_SERVICE_KEY (list/queue/delete)")
+    if not secrets.get("PIPELINE_SERVICE_TOKEN"):
+        warnings.append("PIPELINE_SERVICE_TOKEN (queue/dispatch/ingest BWF)")
+    if not secrets.get("PRESIGN_SERVICE_TOKEN"):
+        warnings.append("PRESIGN_SERVICE_TOKEN (B2 list/delete)")
+    if warnings:
+        print("  missing secrets (some actions will fail):")
+        for w in warnings:
+            print(f"    · {w}")
+        print()
 
-    # delete
-    pd = sub.add_parser(
-        "delete",
-        help="delete B2 objects under the match prefix and/or the DB row",
-    )
-    pd.add_argument("--id", required=True, help="match id")
-    pd.add_argument(
-        "--prefix",
-        help="override B2 prefix (default: construct from owner_id + id)",
-    )
-    pd.add_argument("--db-only", action="store_true", help="only delete the matches row")
-    pd.add_argument(
-        "--storage-only",
-        action="store_true",
-        help="only delete B2 objects (keep DB row)",
-    )
-    pd.add_argument("--yes", "-y", action="store_true", help="skip DB delete confirmation")
-    pd.add_argument("--dry-run", action="store_true")
-    pd.set_defaults(func=cmd_delete)
 
-    # dispatch
-    pdi = sub.add_parser("dispatch", help="POST /jobs/dispatch")
-    pdi.add_argument("--max", type=int, default=1, help="max jobs to claim (default 1)")
-    pdi.add_argument("--vt", type=int, help="visibility timeout seconds")
-    pdi.add_argument("--max-running", type=int, help="cap concurrent processing jobs")
-    pdi.set_defaults(func=cmd_dispatch)
+def interactive_loop(secrets: dict[str, str]) -> None:
+    banner(secrets)
+    check_startup(secrets)
 
-    # list
-    pl = sub.add_parser("list", help="list matches")
-    pl.add_argument("--bwf", action="store_true", help="system/BWF only")
-    pl.add_argument("--user", action="store_true", help="user-owned only")
-    pl.add_argument("--with-source", action="store_true", help="require source_url")
-    pl.add_argument("--status", help="filter by status")
-    pl.add_argument("--limit", type=int, default=50)
-    pl.set_defaults(func=cmd_list)
+    while True:
+        print("What do you want to do?")
+        for key, label, _ in MENU:
+            print(f"  {key}) {label}")
+        print("  q) Quit")
+        try:
+            raw = _stdin_line("\n> ").strip().lower()
+        except Cancel:
+            print("bye")
+            return
 
-    return p
+        if raw in ("q", "quit", "exit"):
+            print("bye")
+            return
+        if raw == "":
+            continue
+
+        action = next((fn for key, _label, fn in MENU if raw == key), None)
+        if action is None:
+            print("  unknown choice — enter a number or q\n")
+            continue
+
+        try:
+            action(secrets)
+        except Cancel:
+            print("  (cancelled)\n")
+            continue
+        except Exception as e:
+            print(f"\n  error: {e}\n", file=sys.stderr)
+            continue
+
+        pause()
+        print()
 
 
 def main() -> None:
-    parser = build_parser()
-    args = parser.parse_args()
     secrets = load_secrets()
+    # Optional one-shot: `manage.py --once` is unused; always interactive.
+    # Keep a tiny non-interactive escape hatch for help.
+    if len(sys.argv) > 1 and sys.argv[1] in ("-h", "--help"):
+        print(__doc__)
+        print("\nUsage:  python3 scripts/manage.py")
+        print("  Starts an interactive menu. Type q at any prompt to go back/quit.")
+        return
+    if len(sys.argv) > 1:
+        print(
+            "This is an interactive CLI — run with no arguments:\n"
+            "  python3 scripts/manage.py\n",
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
-    # --include-live flips the default skip_live for queue
-    if args.cmd == "queue" and getattr(args, "include_live", False):
-        args.skip_live = False
-
-    args.func(args, secrets)
+    try:
+        interactive_loop(secrets)
+    except KeyboardInterrupt:
+        print("\nbye")
 
 
 if __name__ == "__main__":
