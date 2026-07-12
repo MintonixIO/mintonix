@@ -31,8 +31,9 @@
  * the TODO(sharing) in the handler and the README.
  */
 
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
-import { importPKCS8, SignJWT } from "https://esm.sh/jose@5.9.6";
+// npm: (not esm.sh) — CI/deploy bundle must not depend on a live CDN (522s).
+import { createClient } from "npm:@supabase/supabase-js@2.45.4";
+import { importPKCS8, SignJWT } from "npm:jose@5.9.6";
 
 interface RequestBody {
   op?: "delivery" | "upload" | "delete";

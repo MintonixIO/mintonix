@@ -48,7 +48,8 @@
  * SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY / SUPABASE_ANON_KEY injected.
  */
 
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+// npm: (not esm.sh) — CI/deploy bundle must not depend on a live CDN (522s).
+import { createClient } from "npm:@supabase/supabase-js@2.45.4";
 
 function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {

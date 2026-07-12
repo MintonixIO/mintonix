@@ -45,8 +45,9 @@
  * SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY injected by the platform.
  */
 
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
-import { jwtVerify, SignJWT } from "https://esm.sh/jose@5.9.6";
+// npm: (not esm.sh) — CI/deploy bundle must not depend on a live CDN (522s).
+import { createClient } from "npm:@supabase/supabase-js@2.45.4";
+import { jwtVerify, SignJWT } from "npm:jose@5.9.6";
 
 const MAX_ATTEMPTS = 3; // dispatches per stage before terminally failed
 const TOKEN_AUD = "jobs-callback";
