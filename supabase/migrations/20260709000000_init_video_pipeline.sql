@@ -139,7 +139,7 @@ create table annotation_presets (
 -- court_annotation.json and player_labels.json live in B2, not here — see the
 -- header comment. Their shapes are documented in ARCHITECTURE.md §3. Notably
 -- player_labels.json stores only the click *evidence* (frame_idx + anchor
--- from the RF-DETR click); resolution to pose track ids happens in the
+-- from the labeling click); resolution to pose track ids happens in the
 -- analyze stage and lands in analysis.json, so re-running detect never
 -- orphans a label.
 

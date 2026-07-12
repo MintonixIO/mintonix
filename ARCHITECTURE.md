@@ -90,11 +90,19 @@ Before (or after) processing, the user annotates:
 
 - **Court corners** — 4 points, stored per video. Required for BWF valid-frame
   extraction and for the 3D analysis stage (homography).
-- **Player identities** — the client sends a frame to `rfdetr-infer`
-  (Roboflow-hosted RF-DETR segmentation); a click is resolved against the
-  returned person masks to pick an instance, and the user attaches a name.
-  For BWF videos the name choices come from `match_players`; for user videos
-  they're free-form labels.
+- **Player identities** — the client runs point-prompted segmentation
+  **in-browser** (a distilled SAM — SlimSAM-class — via onnxruntime-web /
+  transformers.js, WebGPU with wasm fallback): the frame is encoded once, each
+  click prompts the mask decoder, the click is resolved to an instance, and
+  the user attaches a name. For BWF videos the name choices come from
+  `match_players`; for user videos they're free-form labels. Segmentation is
+  *all* the inference the labeling flow needs: its only job is resolving the
+  click to an instance and recording the evidence — so it runs client-side,
+  with no inference endpoint and no third-party API (the Roboflow-backed
+  `rfdetr-infer` edge function that previously did this is removed). Player
+  identity itself (appearance embeddings) is built server-side by `detect`
+  from its own tracks (§4 Stages) — one frame's mask can't model identity,
+  and it never feeds the embeddings.
 
 Both persist as JSON files in the video's B2 prefix (`court_annotation.json`,
 `player_labels.json` — shapes in §3), written by the client via `cdn-access`
@@ -139,15 +147,19 @@ annotations can only come from presets via service code. Shapes:
 
 // player_labels.json — pure click evidence; track resolution happens in analyze
 { "labels": [ { "frame_idx": …,                   // normalized timeline
-                "anchor": { "x": …, "y": …, "bbox": [x,y,w,h] },  // click + RF-DETR box
+                "anchor": { "x": …, "y": …, "bbox": [x,y,w,h] },  // click + mask-derived box
                 "player_id": … /* BWF */ | "display_name": "…" /* user videos */,
                 "labeled_by": "<uid>", "created_at": "…" } ] }
 ```
 
-Labels are resolved to pose-track ids by the **analyze** stage (intersect
-anchor with track bboxes at `frame_idx`) and the mapping lands in
-`analysis.json` — never written back into `player_labels.json` — so re-running
-detect can't orphan a label.
+Labels are resolved to pose-track ids by the **analyze** stage: the crop
+under the click anchor is embedded and nearest-neighbor-matched against the
+per-track appearance embeddings `detect` produces, with anchor ∩ track-bbox
+at `frame_idx` as the geometric prior and tiebreak. The label thus attaches
+to an appearance identity rather than one track id, so it survives track
+fragmentation across broadcast cuts. The mapping lands in `analysis.json` —
+never written back into `player_labels.json` — so re-running detect can't
+orphan a label.
 
 Every derived object is registered in `video_assets` with its `kind`, key and
 sha256, so "what exists for this video" is a DB query, not a bucket listing.
@@ -211,12 +223,26 @@ pattern promoted to a standard:
 | Stage | Worker | Status | In | Out |
 |---|---|---|---|---|
 | `normalize` | `workers/vast/video-normalization` | ✅ (needs score-timeline output) | original / YouTube URL (worker yt-dlps ✅) | normalized.mp4, thumbnail.jpg; youtube: + original.mkv archive; BWF: + valid.mp4, frame_manifest.csv, scores.csv |
-| `detect` | `workers/vast/video-det` | 🚧 worker built; dispatcher/table not | normalized (or valid) mp4 | detections.json (YOLO26x-pose TensorRT + TrackNetV5 shuttle track), Realtime progress |
+| `detect` | `workers/vast/video-det` | 🚧 worker built; dispatcher/table + embedding module not | normalized (or valid) mp4 | detections.json (YOLO26x-pose TensorRT + TrackNetV5 shuttle track + per-track appearance embeddings), Realtime progress |
 | `analyze` | `workers/…/analysis` | 📐 | detections.json + court_annotations + player_labels | analysis.json: 3D shuttle trajectory (physics fit), player ground-plane positions (homography), metrics (TBD) |
 
 `analyze` is CPU-dominant (geometry + curve fitting, no NN inference) — it can
 run on cheap CPU serverless rather than a GPU pool, but it still speaks the
 same job envelope.
+
+**Re-ID embedding module** (in `detect`, 📐): every person track gets an
+appearance embedding — crops sampled every N frames, batched through a small
+re-ID or foundation model (OSNet, or DINOv2-small if cross-video profile
+matching becomes a goal), reduced to a per-track centroid in
+`detections.json`. Marginal GPU cost: the crops are tiny next to pose +
+shuttle inference on the same device. Crops are tightened using the pose
+keypoints detect already has (suppressing background/opponent pixels); the
+annotation-time mask is never an input — it *names* a track, it doesn't
+model identity. Three consumers: the tracker (re-linking track fragments
+across camera cuts), analyze's label resolution (§3), and later player
+profiles across videos. Within one match, kit color nearly separates two
+players on its own — the embeddings earn their keep on fragmentation,
+occlusion at the net, and cross-shot/cross-video identity.
 
 BWF vs user is **not** a different pipeline — it's the same chain where BWF
 jobs carry `valid_frames_config` (from the tournament preset + `match_players`
@@ -294,7 +320,8 @@ Schema exported from them.
 
 Client data flow: subscribe to `job:<id>` Realtime channels for live progress;
 fetch assets via `cdn-access` delivery tokens; upload via presigned PUT;
-label players via `rfdetr-infer` + click-resolution against masks.
+label players via in-browser point-prompted segmentation (§2c) — click →
+mask → name, no server round-trip.
 
 ## 7. Repository layout (target)
 
@@ -312,10 +339,9 @@ mintonix/
 │   └── functions/
 │       ├── cdn-access/        ✅ delivery tokens + upload presign
 │       ├── videos-ingest/     ✅ front door: insert + enqueue (one RPC txn)
-│       ├── jobs/              ✅ /dispatch (queue→vast) + /callback (settle
-│       │                         + enqueue next stage) — one function, they
-│       │                         share the stage routing table + job token
-│       └── rfdetr-infer/      ✅ click-to-label person segmentation
+│       └── jobs/              ✅ /dispatch (queue→vast) + /callback (settle
+│                                 + enqueue next stage) — one function, they
+│                                 share the stage routing table + job token
 ├── workers/
 │   ├── cloudflare/cdn/        ✅ B2 delivery + /presign control plane
 │   ├── github/match-data/     ✅ weekly scrape → Supabase
@@ -416,6 +442,10 @@ in `wrangler.toml`).
    stay service-only until launch.
 
 Decided (2026-07): all footage is **single-camera** (shuttle 3D comes from
-physics-fit trajectories; no multi-view tables anywhere), and **rfdetr-infer
-stays on Roboflow's hosted API** (per-call billing; labels are resolved
-client-side and only the click evidence is persisted).
+physics-fit trajectories; no multi-view tables anywhere). Also decided
+(2026-07): **client-side labeling inference is segmentation-only; appearance
+embeddings live in `detect`** — the click names an instance, detect's own
+tracks build the identity (§4 re-ID embedding module), analyze joins the two.
+That segmentation runs **in the browser** (SlimSAM-class point-prompted SAM,
+§2c); the Roboflow-backed `rfdetr-infer` edge function is removed — no
+inference endpoint, no per-call billing, only the click evidence is persisted.
