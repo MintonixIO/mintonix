@@ -1,0 +1,45 @@
+/* ============================================================
+   MINTONIX · SPACING, RADII, SIZING
+   4px base grid. Compact by default — this is a dense analytics UI.
+   ============================================================ */
+
+:root {
+  /* ---- Spacing scale (4px base) ---- */
+  --space-0:  0;
+  --space-1:  4px;
+  --space-2:  8px;
+  --space-3:  12px;
+  --space-4:  16px;
+  --space-5:  20px;
+  --space-6:  24px;
+  --space-8:  32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+  --space-20: 80px;
+  --space-24: 96px;
+  --space-32: 128px;
+
+  /* ---- Radii ---- */
+  --radius-xs:   4px;
+  --radius-sm:   6px;
+  --radius-md:   9px;
+  --radius-lg:   13px;
+  --radius-xl:   18px;
+  --radius-2xl:  26px;
+  --radius-pill: 999px;
+
+  /* ---- Control heights ---- */
+  --control-sm: 30px;
+  --control-md: 38px;
+  --control-lg: 46px;
+
+  /* ---- Layout ---- */
+  --sidebar-w:    248px;
+  --sidebar-w-sm: 64px;
+  --topbar-h:     60px;
+  --container-max: 1320px;
+
+  /* ---- Hairline ---- */
+  --border-width: 1px;
+}

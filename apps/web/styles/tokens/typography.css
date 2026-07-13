@@ -1,0 +1,57 @@
+/* ============================================================
+   MINTONIX · TYPOGRAPHY TOKENS
+   Space Grotesk — display & headings (geometric, techy).
+   Geist — UI & body (clean, neutral, modern).
+   Geist Mono — data, stats, scores, code (tabular).
+   ============================================================ */
+
+
+:root {
+  /* ---- Families ---- */
+  --font-display: 'Space Grotesk', 'Geist', system-ui, sans-serif;
+  --font-sans:    'Geist', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono:    'Geist Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
+
+  /* ---- Weights ---- */
+  --fw-light:     300; /* @kind font */
+  --fw-regular:   400; /* @kind font */
+  --fw-medium:    500; /* @kind font */
+  --fw-semibold:  600; /* @kind font */
+  --fw-bold:      700; /* @kind font */
+
+  /* ---- Type scale (1.250 major-third-ish, tightened for UI) ---- */
+  --text-2xs:  11px;
+  --text-xs:   12px;
+  --text-sm:   13px;
+  --text-base: 15px;
+  --text-md:   17px;
+  --text-lg:   20px;
+  --text-xl:   24px;
+  --text-2xl:  30px;
+  --text-3xl:  38px;
+  --text-4xl:  48px;
+  --text-5xl:  62px;
+  --text-6xl:  80px;
+
+  /* ---- Line heights ---- */
+  --leading-none:  1;
+  --leading-tight: 1.12;
+  --leading-snug:  1.28;
+  --leading-normal:1.5;
+  --leading-relaxed: 1.65;
+
+  /* ---- Letter spacing ---- */
+  --tracking-tighter: -0.03em;
+  --tracking-tight:   -0.015em;
+  --tracking-normal:  0;
+  --tracking-wide:    0.02em;
+  --tracking-wider:   0.06em;
+  --tracking-caps:    0.12em; /* eyebrows / overlines */
+
+  /* ---- Numeric helper ---- */
+  /* tabular numbers for stats */
+  --num-features: 'tnum' 1, 'ss01' 1; /* @kind font */
+}
+
+/* Tabular numerals for any data figure */
+.mx-tnum { font-variant-numeric: tabular-nums; }

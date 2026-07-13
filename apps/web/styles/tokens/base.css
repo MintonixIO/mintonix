@@ -1,0 +1,57 @@
+/* ============================================================
+   MINTONIX · base resets & primitives
+   Imported after tokens. Sets the dark canvas + base typography.
+   ============================================================ */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  line-height: var(--leading-normal);
+  font-weight: var(--fw-regular);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+::selection { background: var(--brand-ring); color: var(--text-strong); }
+
+h1,h2,h3,h4,h5 {
+  font-family: var(--font-display);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-tight);
+  line-height: var(--leading-tight);
+  color: var(--text-strong);
+  margin: 0;
+}
+
+a { color: var(--text-link); text-decoration: none; }
+a:hover { color: var(--blue-300); }
+
+code, kbd, pre { font-family: var(--font-mono); }
+
+/* Eyebrow / overline utility */
+.mx-eyebrow {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  color: var(--text-muted);
+  font-weight: var(--fw-medium);
+}
+
+/* Thin custom scrollbar to match the dark techy aesthetic */
+* { scrollbar-width: thin; scrollbar-color: var(--ink-550) transparent; }
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-thumb {
+  background: var(--ink-550);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover { background: var(--ink-500); background-clip: content-box; }

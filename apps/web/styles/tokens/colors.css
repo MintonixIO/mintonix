@@ -1,0 +1,99 @@
+/* ============================================================
+   MINTONIX · COLOR TOKENS
+   Dark-first analytics palette. Logo blue is the spine; a cool
+   navy neutral ramp carries surfaces; mint signals positive.
+   ============================================================ */
+
+:root {
+  /* ---- Brand blue (logo: #3693FF) ---- */
+  --blue-50:  #eaf3ff;
+  --blue-100: #d2e5ff;
+  --blue-200: #a6cbff;
+  --blue-300: #79b0ff;
+  --blue-400: #5ba8ff;
+  --blue-500: #3693ff; /* primary */
+  --blue-600: #1e7bf0;
+  --blue-700: #1763c7;
+  --blue-800: #154e9c;
+  --blue-900: #143f78;
+
+  /* ---- Accent cyan (data highlights, live signals) ---- */
+  --cyan-400: #7ce8ff;
+  --cyan-500: #50deff;
+  --cyan-600: #1fc4ec;
+
+  /* ---- Near-black neutral ramp (whisper of cool) ---- */
+  --ink-950: #070809;
+  --ink-900: #0a0b0e; /* app base */
+  --ink-850: #0d0e12;
+  --ink-800: #101116; /* panel base */
+  --ink-750: #14151b;
+  --ink-700: #17191f; /* surface */
+  --ink-650: #1c1e25;
+  --ink-600: #20222a; /* elevated surface */
+  --ink-550: #282b34;
+  --ink-500: #323641; /* hairline strong */
+  --ink-400: #454a57;
+  --ink-300: #5f6571;
+  --ink-200: #8b9099;
+  --ink-100: #bdc1c8;
+  --ink-50:  #e9eaed;
+  --white:   #ffffff;
+
+  /* ---- Semantic neutrals (mapped, dark theme) ---- */
+  --bg-base:        var(--ink-900);
+  --bg-sunken:      var(--ink-950);
+  --surface-1:      var(--ink-800);
+  --surface-2:      var(--ink-700);
+  --surface-3:      var(--ink-600);
+  --surface-hover:  var(--ink-650);
+  --border-subtle:  #1a1c22;
+  --border:         #2a2d36;
+  --border-strong:  #3a3e49;
+  --border-focus:   var(--blue-500);
+
+  /* ---- Text ---- */
+  --text-strong:    #f4f5f7;
+  --text-primary:   #e6e7ea;
+  --text-secondary: #a0a3ab;
+  --text-muted:     #6b6e78;
+  --text-faint:     #494c56;
+  --text-on-blue:   #ffffff;
+  --text-link:      var(--blue-400);
+
+  /* ---- Brand semantic ---- */
+  --brand:          var(--blue-500);
+  --brand-hover:    var(--blue-400);
+  --brand-active:   var(--blue-600);
+  --brand-subtle:   rgba(54, 147, 255, 0.12);
+  --brand-ring:     rgba(54, 147, 255, 0.40);
+
+  /* ---- Status (mint = positive, nods to the name) ---- */
+  --success-500:  #2dd4a7;
+  --success-400:  #4ee3bb;
+  --success-bg:   rgba(45, 212, 167, 0.12);
+  --warning-500:  #fbbf24;
+  --warning-400:  #fcd34d;
+  --warning-bg:   rgba(251, 191, 36, 0.12);
+  --danger-500:   #f4515c;
+  --danger-400:   #ff7a83;
+  --danger-bg:    rgba(244, 81, 92, 0.12);
+  --info-500:     var(--blue-500);
+  --info-bg:      var(--brand-subtle);
+
+  /* ---- Data-viz sequence (rally / shot charts) ---- */
+  --viz-1: #3693ff;
+  --viz-2: #50deff;
+  --viz-3: #2dd4a7;
+  --viz-4: #fbbf24;
+  --viz-5: #b07bff;
+  --viz-6: #f4515c;
+
+  /* ---- Player A / B accents (match comparisons) ---- */
+  --player-a: #3693ff;
+  --player-b: #fbbf24;
+
+  /* ---- Glows ---- */
+  --glow-blue: 0 0 24px rgba(54, 147, 255, 0.35);
+  --glow-cyan: 0 0 24px rgba(80, 222, 255, 0.30);
+}
