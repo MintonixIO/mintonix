@@ -1,5 +1,3 @@
-"use client";
-
 import * as React from "react";
 import { cn } from "@/lib/utils";
 
@@ -8,7 +6,8 @@ export interface IconButtonProps
   variant?: "ghost" | "solid" | "primary";
   size?: "sm" | "md" | "lg";
   active?: boolean;
-  label?: string;
+  /** Accessible name for icon-only controls. */
+  label: string;
 }
 
 export function IconButton({

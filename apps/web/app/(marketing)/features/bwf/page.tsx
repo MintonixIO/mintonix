@@ -156,7 +156,7 @@ export default function FeatureBwfPage() {
                 <Link href="/bwf">
                   <Button size="lg">Explore the library</Button>
                 </Link>
-                <Link href="/compare">
+                <Link href="/dashboard/compare">
                   <Button variant="outline" size="lg">
                     Compare two players
                   </Button>

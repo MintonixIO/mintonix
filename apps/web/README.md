@@ -24,7 +24,7 @@ Open [http://localhost:3000](http://localhost:3000).
 |------|--------|
 | Marketing | `/`, `/pricing`, `/about`, `/blog`, `/docs`, `/changelog`, `/features/*`, `/privacy`, `/terms` |
 | Auth | `/auth` |
-| App shell | `/dashboard`, `/library`, `/analysis`, `/highlights`, `/settings`, `/help-support`, `/compare` |
+| App shell | `/dashboard`, `/dashboard/library`, `/dashboard/analysis`, `/dashboard/highlights`, `/dashboard/settings`, `/dashboard/help-support`, `/dashboard/compare` |
 | Tools | `/bwf`, `/video-analysis`, `/calibration` |
 
 ## Design tokens

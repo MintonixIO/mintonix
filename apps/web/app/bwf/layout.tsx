@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { BwfShell } from "@/components/bwf/shell";
 
 export const metadata: Metadata = {
   title: "BWF match library",
@@ -7,5 +8,5 @@ export const metadata: Metadata = {
 };
 
 export default function Layout({ children }: { children: React.ReactNode }) {
-  return children;
+  return <BwfShell>{children}</BwfShell>;
 }

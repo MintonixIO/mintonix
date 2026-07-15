@@ -74,23 +74,40 @@ export function Heatmap({
       >
         {cells.map((cell, i) => {
           const k = cellColors(cell.value, scale);
-          return (
-            <button
-              key={i}
-              type="button"
-              className="mx-heatmap__cell"
-              data-clickable={cell.onClick ? "" : undefined}
-              title={cell.title}
-              onClick={cell.onClick}
-              style={{ background: k.bg, borderColor: k.bd }}
-            >
+          const content = (
+            <>
               <span className="mx-heatmap__big" style={{ color: k.fg }}>
                 {cell.big}
               </span>
               {cell.small != null && cell.small !== "" ? (
                 <span className="mx-heatmap__small">{cell.small}</span>
               ) : null}
-            </button>
+            </>
+          );
+          if (cell.onClick) {
+            return (
+              <button
+                key={i}
+                type="button"
+                className="mx-heatmap__cell"
+                data-clickable=""
+                title={cell.title}
+                onClick={cell.onClick}
+                style={{ background: k.bg, borderColor: k.bd }}
+              >
+                {content}
+              </button>
+            );
+          }
+          return (
+            <div
+              key={i}
+              className="mx-heatmap__cell"
+              title={cell.title}
+              style={{ background: k.bg, borderColor: k.bd }}
+            >
+              {content}
+            </div>
           );
         })}
       </div>

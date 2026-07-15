@@ -52,24 +52,57 @@ export const footerLegal = [
   { label: "Status", href: "#" },
 ];
 
-export const appSidebarSections = [
+export const appSidebarSections: {
+  label: string;
+  items: { key: string; label: string; icon: string; href: string }[];
+}[] = [
   {
     label: "Workspace",
     items: [
       { key: "dashboard", label: "Dashboard", icon: "dashboard", href: "/dashboard" },
-      { key: "library", label: "Library", icon: "library", href: "/library" },
-      { key: "analysis", label: "Analysis", icon: "analysis", href: "/analysis" },
-      { key: "highlights", label: "Highlights", icon: "highlights", href: "/highlights" },
+      { key: "library", label: "Library", icon: "library", href: "/dashboard/library" },
+      { key: "analysis", label: "Analysis", icon: "analysis", href: "/dashboard/analysis" },
+      { key: "highlights", label: "Highlights", icon: "highlights", href: "/dashboard/highlights" },
     ],
   },
   {
     label: "Account",
     items: [
-      { key: "settings", label: "Settings", icon: "settings", href: "/settings" },
-      { key: "help", label: "Help & support", icon: "help", href: "/help-support" },
+      { key: "settings", label: "Settings", icon: "settings", href: "/dashboard/settings" },
+      { key: "help", label: "Help & support", icon: "help", href: "/dashboard/help-support" },
     ],
   },
 ];
+
+/** Path prefixes that should light a different sidebar key (e.g. compare lives under analysis). */
+export const appNavActiveAliases: { prefix: string; key: string }[] = [
+  { prefix: "/dashboard/compare", key: "analysis" },
+];
+
+/**
+ * Resolve sidebar active key from pathname.
+ * Longest matching item href wins; exact `/dashboard` only matches home.
+ */
+export function activeSidebarKeyFromPath(pathname: string): string {
+  for (const alias of appNavActiveAliases) {
+    if (pathname === alias.prefix || pathname.startsWith(`${alias.prefix}/`)) {
+      return alias.key;
+    }
+  }
+  const items = appSidebarSections.flatMap((s) => [...s.items]);
+  let best: { key: string; len: number } | null = null;
+  for (const it of items) {
+    const href = it.href;
+    const match =
+      href === "/dashboard"
+        ? pathname === "/dashboard" || pathname === "/dashboard/"
+        : pathname === href || pathname.startsWith(`${href}/`);
+    if (match && (!best || href.length > best.len)) {
+      best = { key: it.key, len: href.length };
+    }
+  }
+  return best?.key ?? "dashboard";
+}
 
 export const appUser = {
   name: "Viktor Koster",
@@ -94,7 +127,7 @@ export const appWorkspaces = [
 ];
 
 export const appMenu = [
-  { label: "View profile", icon: "user", href: "/settings" },
-  { label: "Account settings", icon: "sliders", href: "/settings" },
-  { label: "Billing & plan", icon: "card", href: "/settings", trailing: "$29 / mo" },
+  { label: "View profile", icon: "user" as const, href: "/dashboard/settings" },
+  { label: "Account settings", icon: "sliders" as const, href: "/dashboard/settings" },
+  { label: "Billing & plan", icon: "card" as const, href: "/dashboard/settings", trailing: "$29 / mo" },
 ];

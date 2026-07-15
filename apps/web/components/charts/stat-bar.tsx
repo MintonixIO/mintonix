@@ -5,7 +5,7 @@ import { cn } from "@/lib/utils";
 
 const BAR_H = { xs: 3, sm: 6, md: 24 } as const;
 
-const SEG_COLORS: Record<string, string> = {
+const SEG_COLORS = {
   success: "var(--success-500, #2dd4a7)",
   "success-soft": "rgba(45,212,167,0.6)",
   "success-faint": "rgba(45,212,167,0.3)",
@@ -13,21 +13,24 @@ const SEG_COLORS: Record<string, string> = {
   "danger-soft": "rgba(244,81,92,0.6)",
   "danger-faint": "rgba(244,81,92,0.3)",
   accent: "var(--accent, #3693ff)",
-};
+} as const;
 
-const FILL_COLORS: Record<string, string> = {
+const FILL_COLORS = {
   accent: "var(--accent, #3693ff)",
   success: "var(--success-500, #2dd4a7)",
   danger: "var(--danger-500, #f4515c)",
   warning: "var(--warning-500, #fbbf24)",
   neutral: "var(--ink-300, #647391)",
-};
+} as const;
+
+export type StatBarTone = keyof typeof FILL_COLORS | "auto";
+export type StatBarSegTone = keyof typeof SEG_COLORS;
 
 const clamp = (x: number) => Math.max(0, Math.min(100, Number(x) || 0));
 
 export interface StatBarSegment {
   pct: number;
-  tone?: string;
+  tone?: StatBarSegTone;
   title?: string;
 }
 
@@ -36,7 +39,7 @@ export interface StatBarProps extends React.HTMLAttributes<HTMLElement> {
   labelWidth?: string;
   pct?: number;
   baseline?: number | null;
-  tone?: string;
+  tone?: StatBarTone;
   value?: string | number;
   n?: string | number;
   size?: keyof typeof BAR_H;
@@ -83,10 +86,7 @@ export function StatBar({
 
   const h = BAR_H[size] ?? 6;
   const p = clamp(pct);
-  const b =
-    baseline == null || baseline === ("" as unknown as number)
-      ? null
-      : clamp(baseline);
+  const b = baseline == null ? null : clamp(baseline);
   let t = tone;
   if (t === "auto") {
     const d = p - (b == null ? p : b);

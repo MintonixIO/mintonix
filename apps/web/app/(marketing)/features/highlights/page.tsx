@@ -125,7 +125,7 @@ export default function FeatureHighlightsPage() {
             <Link href="/auth">
               <Button size="lg">Build a reel</Button>
             </Link>
-            <Link href="/highlights">
+            <Link href="/dashboard/highlights">
               <Button variant="outline" size="lg">
                 See the reel library
               </Button>

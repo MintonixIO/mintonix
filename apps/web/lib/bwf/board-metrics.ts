@@ -1,0 +1,66 @@
+import {
+  Footprints,
+  Repeat,
+  Swords,
+  Target,
+  Trophy,
+  Zap,
+} from "lucide-react";
+import type { Player } from "./types";
+
+export const BOARD_METRICS = [
+  {
+    key: "fastestSmash",
+    label: "Fastest smash",
+    short: "Smash speed",
+    unit: " km/h",
+    icon: Zap,
+    color: "var(--danger-500)",
+    get: (p: Player) => p.fastestSmash,
+  },
+  {
+    key: "movementSpeed",
+    label: "Top court speed",
+    short: "Court speed",
+    unit: " km/h",
+    icon: Footprints,
+    color: "var(--cyan-500, #50deff)",
+    get: (p: Player) => p.movementSpeed,
+  },
+  {
+    key: "attackPct",
+    label: "Attack rate",
+    short: "Attack rate",
+    unit: "%",
+    icon: Swords,
+    color: "var(--accent)",
+    get: (p: Player) => p.attackPct,
+  },
+  {
+    key: "netWinPct",
+    label: "Net winners",
+    short: "Net play",
+    unit: "%",
+    icon: Target,
+    color: "var(--success-500)",
+    get: (p: Player) => p.netWinPct,
+  },
+  {
+    key: "enduranceWinPct",
+    label: "Rally endurance",
+    short: "Endurance",
+    unit: "%",
+    icon: Repeat,
+    color: "var(--viz-5, #b07bff)",
+    get: (p: Player) => p.enduranceWinPct,
+  },
+  {
+    key: "winRate",
+    label: "Win rate",
+    short: "Win rate",
+    unit: "%",
+    icon: Trophy,
+    color: "var(--warning-400, #fcd34d)",
+    get: (p: Player) => p.winRate,
+  },
+] as const;

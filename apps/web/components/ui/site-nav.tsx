@@ -3,7 +3,17 @@
 import * as React from "react";
 import Link from "next/link";
 import Image from "next/image";
+import { usePathname } from "next/navigation";
 import { cn, initials } from "@/lib/utils";
+
+function marketingActiveFromPath(pathname: string): string | undefined {
+  if (pathname.startsWith("/pricing")) return "Pricing";
+  if (pathname.startsWith("/blog")) return "Blog";
+  if (pathname.startsWith("/about")) return "About";
+  if (pathname.startsWith("/bwf") || pathname.startsWith("/features/bwf"))
+    return "BWF";
+  return undefined;
+}
 
 const ICONS = {
   trophy: (
@@ -97,8 +107,8 @@ export function SiteNav({
   ctaHref = "/auth",
   user,
   menu = [
-    { label: "Account", href: "/settings", icon: "user" },
-    { label: "Settings", href: "/settings", icon: "settings" },
+    { label: "Account", href: "/dashboard/settings", icon: "user" },
+    { label: "Settings", href: "/dashboard/settings", icon: "settings" },
     { divider: true },
     { label: "Sign out", href: "/auth", icon: "logout" },
   ],
@@ -107,6 +117,10 @@ export function SiteNav({
   style,
   ...rest
 }: SiteNavProps) {
+  const pathname = usePathname();
+  const resolvedActive =
+    active ??
+    (mode === "marketing" ? marketingActiveFromPath(pathname) : undefined);
   const list = items || [];
   const itemRefs = React.useRef<(HTMLAnchorElement | null)[]>([]);
   const [hover, setHover] = React.useState<number | null>(null);
@@ -116,11 +130,13 @@ export function SiteNav({
   const acctRef = React.useRef<HTMLDivElement>(null);
 
   const activeIdx = list.findIndex(
-    (it) => it.label === active || (it.href && it.href === active),
+    (it) =>
+      it.label === resolvedActive || (it.href && it.href === resolvedActive),
   );
   const featActive =
     !!featured &&
-    (featured.label === active || (featured.href && featured.href === active));
+    (featured.label === resolvedActive ||
+      (featured.href && featured.href === resolvedActive));
 
   const measure = React.useCallback(() => {
     const idx = hover != null ? hover : activeIdx;

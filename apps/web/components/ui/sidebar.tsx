@@ -3,9 +3,11 @@
 import * as React from "react";
 import Link from "next/link";
 import Image from "next/image";
+import { usePathname } from "next/navigation";
+import { activeSidebarKeyFromPath } from "@/lib/nav";
 import { cn, initials } from "@/lib/utils";
 
-const ICONS: Record<string, React.ReactNode> = {
+const ICONS = {
   dashboard: (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
       <rect x="3" y="3" width="7" height="9" rx="1" />
@@ -94,7 +96,9 @@ const ICONS: Record<string, React.ReactNode> = {
       <path d="m6 9 6 6 6-6" />
     </svg>
   ),
-};
+} as const;
+
+export type SidebarIcon = keyof typeof ICONS;
 
 function pct(used: number, limit: number) {
   return Math.max(0, Math.min(100, Math.round((used / (limit || 1)) * 100)));
@@ -102,7 +106,7 @@ function pct(used: number, limit: number) {
 
 export interface SidebarSection {
   label?: string;
-  items: { key: string; label: string; icon: string; href: string }[];
+  items: { key: string; label: string; icon: SidebarIcon | string; href: string }[];
 }
 
 export interface SidebarUser {
@@ -130,7 +134,7 @@ export interface SidebarProps {
     storageUnit?: string;
   } | null;
   workspaces?: { id: string; initials: string; name: string; accent?: boolean }[];
-  menu?: { label: string; icon: string; href: string; trailing?: string }[];
+  menu?: { label: string; icon: SidebarIcon | string; href: string; trailing?: string }[];
   signOutHref?: string;
   width?: number;
   className?: string;
@@ -162,17 +166,18 @@ export function Sidebar({
     { id: "national", initials: "NT", name: "National Team — U19" },
   ],
   menu = [
-    { label: "View profile", icon: "user", href: "/settings" },
-    { label: "Account settings", icon: "sliders", href: "/settings" },
-    { label: "Billing & plan", icon: "card", href: "/settings", trailing: "$29 / mo" },
+    { label: "View profile", icon: "user", href: "/dashboard/settings" },
+    { label: "Account settings", icon: "sliders", href: "/dashboard/settings" },
+    { label: "Billing & plan", icon: "card", href: "/dashboard/settings", trailing: "$29 / mo" },
   ],
   signOutHref = "/auth",
   width = 244,
   className = "",
 }: SidebarProps) {
+  const pathname = usePathname();
+  const resolvedActive = active ?? activeSidebarKeyFromPath(pathname);
   const [open, setOpen] = React.useState(false);
   const [ws, setWs] = React.useState(workspaces[0]?.id);
-  const [theme, setTheme] = React.useState<"dark" | "light">("dark");
 
   React.useEffect(() => {
     if (!open) return;
@@ -199,7 +204,7 @@ export function Sidebar({
               <div className="mx-side__seclabel">{sec.label}</div>
             ) : null}
             {sec.items.map((it) => {
-              const on = it.key && it.key === active;
+              const on = it.key && it.key === resolvedActive;
               return (
                 <Link
                   key={it.key}
@@ -207,7 +212,7 @@ export function Sidebar({
                   href={it.href || "#"}
                   aria-current={on ? "page" : undefined}
                 >
-                  {ICONS[it.icon] || null}
+                  {ICONS[it.icon as SidebarIcon]}
                   {it.label}
                 </Link>
               );
@@ -296,7 +301,7 @@ export function Sidebar({
                     href={m.href || "#"}
                     role="menuitem"
                   >
-                    {ICONS[m.icon] || null}
+                    {ICONS[m.icon as SidebarIcon]}
                     <span style={{ flex: 1, minWidth: 0 }}>{m.label}</span>
                     {m.trailing ? (
                       <span
@@ -344,31 +349,6 @@ export function Sidebar({
               ) : null}
 
               <div className="mx-side__menugrp">
-                <div className="mx-side__themerow">
-                  <span className="mx-side__themelabel">Theme</span>
-                  <div className="mx-side__themeseg">
-                    <button
-                      type="button"
-                      className={cn(
-                        "mx-side__themebtn",
-                        theme === "dark" && "is-on",
-                      )}
-                      onClick={() => setTheme("dark")}
-                    >
-                      {ICONS.moon}Dark
-                    </button>
-                    <button
-                      type="button"
-                      className={cn(
-                        "mx-side__themebtn",
-                        theme === "light" && "is-on",
-                      )}
-                      onClick={() => setTheme("light")}
-                    >
-                      {ICONS.sun}Light
-                    </button>
-                  </div>
-                </div>
                 <Link
                   className="mx-side__menuitem mx-side__menuitem--danger"
                   href={signOutHref}

@@ -6,7 +6,7 @@ import * as React from "react";
 export function Reveal({
   children,
   className,
-  as = "div",
+  as: Tag = "div",
   style,
   ...rest
 }: React.HTMLAttributes<HTMLElement> & {
@@ -42,34 +42,15 @@ export function Reveal({
     return () => io.disconnect();
   }, []);
 
-  const setRef = (node: HTMLElement | null) => {
-    ref.current = node;
-  };
-
-  if (as === "section") {
-    return (
-      <section ref={setRef} data-reveal className={className} style={style} {...rest}>
-        {children}
-      </section>
-    );
-  }
-  if (as === "article") {
-    return (
-      <article ref={setRef} data-reveal className={className} style={style} {...rest}>
-        {children}
-      </article>
-    );
-  }
-  if (as === "span") {
-    return (
-      <span ref={setRef} data-reveal className={className} style={style} {...rest}>
-        {children}
-      </span>
-    );
-  }
   return (
-    <div ref={setRef} data-reveal className={className} style={style} {...rest}>
+    <Tag
+      ref={ref as React.Ref<HTMLDivElement>}
+      data-reveal
+      className={className}
+      style={style}
+      {...rest}
+    >
       {children}
-    </div>
+    </Tag>
   );
 }

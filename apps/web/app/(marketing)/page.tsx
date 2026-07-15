@@ -40,7 +40,8 @@ export default function HomePage() {
         />
 
         <div className="relative mx-auto max-w-[1320px] px-8 pb-0 pt-[104px] text-center">
-          <h1 className="mx-auto max-w-[20ch] text-center font-display text-[clamp(38px,5.4vw,68px)] font-semibold leading-[1.05] tracking-[-0.03em] text-[var(--text-strong)] text-balance">
+          {/* Hard line break matches design; avoid text-balance (fights the <br />). */}
+          <h1 className="mx-auto max-w-[20ch] text-center font-display text-[clamp(38px,5.4vw,68px)] font-semibold leading-[1.05] tracking-[-0.03em] text-[var(--text-strong)]">
             See every rally.
             <br />
             Understand every match.
@@ -113,17 +114,20 @@ export default function HomePage() {
             <Reveal
               key={p.title}
               as="article"
-              className="mx-pillar rounded-[13px] border border-[var(--border)] bg-[var(--surface-1)] p-[26px] shadow-[var(--shadow-edge)]"
+              className="mx-pillar flex flex-col rounded-[13px] border border-[var(--border)] bg-[var(--surface-1)] p-[26px] shadow-[var(--shadow-edge)]"
             >
-              <span className="mx-pillar-icon inline-flex h-[42px] w-[42px] items-center justify-center rounded-[11px] border border-[var(--border)] bg-[var(--accent-soft)] text-[var(--accent)]">
+              <span className="mx-pillar-icon inline-flex h-[42px] w-[42px] shrink-0 items-center justify-center rounded-[11px] border border-[var(--border)] bg-[var(--accent-soft)] text-[var(--accent)]">
                 <p.icon className="h-5 w-5" strokeWidth={1.75} />
               </span>
-              <h3 className="mt-[18px] font-display text-[19px] font-semibold tracking-[-0.01em] text-[var(--text-strong)]">
-                {p.title}
-              </h3>
-              <p className="mt-2 text-[14.5px] leading-[1.6] text-[var(--text-secondary)]">
-                {p.body}
-              </p>
+              {/* gap (not h3 margin) so spacing survives heading resets */}
+              <div className="mt-[18px] flex flex-col gap-[9px]">
+                <h3 className="font-display text-[19px] font-semibold tracking-[-0.01em] text-[var(--text-strong)]">
+                  {p.title}
+                </h3>
+                <p className="text-[14.5px] leading-[1.6] text-[var(--text-secondary)]">
+                  {p.body}
+                </p>
+              </div>
             </Reveal>
           ))}
         </div>
@@ -154,7 +158,7 @@ export default function HomePage() {
             }}
           />
           <Link
-            href="/highlights"
+            href="/dashboard/highlights"
             className="relative block transition-transform duration-200 hover:-translate-y-0.5"
           >
             <HighlightsDemo />
