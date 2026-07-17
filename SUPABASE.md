@@ -457,9 +457,12 @@ Same chain for BWF and user; BWF simply has richer `annotation.json` / valid-fra
 
 CDN worker remains the only holder of B2 credentials (`/presign` + delivery).
 
-MVP notes: only the **normalize** stage is wired in `jobs` STAGES; detect/analyze
-and loading `annotation.json` into `valid_frames_config` are follow-ups.
-User confirm does not HEAD-check B2 before enqueue (empty keys fail at normalize).
+MVP notes: **normalize → detect** are wired in `jobs` STAGES; analyze and
+loading `annotation.json` into `valid_frames_config` are follow-ups. Detect is
+terminal until analyze lands (match → `ready` after successful detect).
+Optional `VAST_DETECT_ENDPOINT_NAME` for the video-det vast endpoint (falls
+back to `VAST_ENDPOINT_NAME`). User confirm does not HEAD-check B2 before
+enqueue (empty keys fail at normalize).
 
 ---
 
@@ -497,7 +500,8 @@ unless product requires service-only BWF before launch (RLS).
 2. **Stage advance vs re-queue** — after normalize, re-enter pgmq with same
    `job_id` and `stage = detect` (implemented in `complete_job`), or auto-dispatch
    next stage inside callback without a new queue hop (callback path must stay short).
-3. **Wire detect/analyze** in `jobs` STAGES once worker contracts are pinned.
+3. **Wire analyze** in `jobs` STAGES once its worker contract is pinned; detect
+   is already wired and currently terminal.
 4. **Load `annotation.json` at dispatch** for BWF `valid_frames_config`.
 5. **Annotation presets** for BWF tournaments — config file vs small table when
    many events share geometry.

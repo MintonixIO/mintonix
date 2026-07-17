@@ -181,9 +181,9 @@ pattern promoted to a standard:
 - Workers hold no credentials; the callback token is the only authorization
   and is bound to one job (single-use: the callback marks the job terminal on
   first valid call).
-- Progress streams **directly** worker → Supabase Realtime (anon key,
-  `job:<job_id>` channel), bypassing the edge functions — the pattern
-  `video-det` already implements.
+- Progress Realtime (worker → `job:<job_id>`) is optional UX; **MVP detect
+  omits mid-job streaming** and reports only via `jobs/callback` (same as
+  normalize). Re-add progress later if the client needs a progress bar.
 - The jobs function's `/callback` route records assets, then **enqueues the
   next stage** (normalize → detect → analyze), making the pipeline a chain of
   queue messages rather than a long-lived orchestrator. Dispatch and callback
@@ -197,7 +197,7 @@ pattern promoted to a standard:
 | Stage | Worker | Status | In | Out |
 |---|---|---|---|---|
 | `normalize` | `workers/vast/video-normalization` | ✅ (needs score-timeline output) | original / YouTube URL (worker yt-dlps ✅) | normalized.mp4, thumbnail.jpg; youtube: + original.mkv archive; BWF: + valid.mp4, frame_manifest.csv, scores.csv |
-| `detect` | `workers/vast/video-det` | 🚧 worker built; dispatcher/table + embedding module not | normalized (or valid) mp4 | detections.json (YOLO26x-pose TensorRT + TrackNetV5 shuttle track + per-track appearance embeddings), Realtime progress |
+| `detect` | `workers/vast/video-det` | 🚧 worker + `STAGES.detect` wired; analyze next; embedding module 📐 | normalized.mp4 | detections.json (pose + TrackNetV5 **top-K shuttle candidates** per frame for high recall + optional exclusive ReID). `server.py` + `detect/` + `pose/` |
 | `analyze` | `workers/…/analysis` | 📐 | detections.json + annotation.json | analysis.json: 3D shuttle trajectory (physics fit), player ground-plane positions (homography), metrics (TBD) |
 
 `analyze` is CPU-dominant (geometry + curve fitting, no NN inference) — it can
@@ -303,7 +303,7 @@ mintonix/
 │   ├── github/match-data/     ✅ weekly scrape → Supabase
 │   └── vast/
 │       ├── video-normalization/  ✅ + valid-frames extraction
-│       ├── video-det/            🚧 pose + shuttle tracking
+│       ├── video-det/            🚧 detect stage (server/detect/pose); STAGES.detect wired
 │       └── analysis/             📐 3D + metrics
 └── .github/workflows/
 ```
@@ -358,8 +358,6 @@ in `wrangler.toml`).
 | `video-det.yml` | `workers/vast/video-det/**` | → `vast-worker.yml` (CPU-safe tests; TensorRT engine build stays a documented manual step) | 〃 | ✅ |
 | `cloudflare-cdn.yml` | `workers/cloudflare/cdn/**` | tests + `wrangler deploy --env dev` | `wrangler deploy --env prod` | ✅ |
 | `supabase.yml` | `supabase/**`, `packages/shared/**` | `db push` → `functions deploy` to dev project | same, to prod | ✅ |
-| `web.yml` | `apps/web/**`, `packages/shared/**` | lint/typecheck/build (deploy previews via Vercel git integration) | Vercel prod | ✅ |
-| `mobile.yml` | `apps/mobile/**`, `packages/shared/**` | typecheck; EAS Update preview channel | EAS Update on master; **EAS Build on tags/dispatch only** (store builds are slow, cost credits, gate on review) | 📐 (no `apps/mobile` yet) |
 
 ### Conventions (from `match-data.yml`, applied repo-wide)
 

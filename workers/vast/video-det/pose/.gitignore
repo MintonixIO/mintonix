@@ -1,13 +1,6 @@
-# Prebuilt INT8 TensorRT engine (456 MB) — not tracked in git.
-# Regenerate with download_model.py + export_trt.py on an RTX 5090 (sm_120),
-# or supply it at build time; build.sh stages it into worker/ before docker build.
+# Prebuilt TensorRT engines (large, arch-specific) — not tracked in git.
+# Build with download_model.py + export_trt.py on a host matching the product
+# image TRT stack, then mount at /app/models/yolo26x_pose_int8.engine.
 *.engine
-
-# build.sh hardlinks/copies these into worker/ as a build context staging step.
-worker/pipeline_decode.py
-worker/calibrate_workers.py
-
-# Worker outputs
-worker/out/
-*.npz
-*.json
+*.onnx
+*.pt

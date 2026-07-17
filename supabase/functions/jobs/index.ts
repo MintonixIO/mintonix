@@ -28,16 +28,16 @@
  *   owner_id IS NULL  →  bwf/<match_id>/
  *   owner_id set      →  users/<owner_id>/<match_id>/
  *
- * MVP: only the normalize stage is wired in STAGES; detect/analyze land when
- * worker contracts are pinned. annotation.json → valid_frames_config is a
- * follow-up (see SUPABASE.md).
+ * Stages wired: normalize → detect. analyze lands when its worker contract
+ * is pinned. annotation.json → valid_frames_config is a follow-up (see SUPABASE.md).
  *
  * Secrets:
  *   PIPELINE_SERVICE_TOKEN  auth for /dispatch (shared with matches-ingest)
  *   JOB_TOKEN_SECRET        HMAC secret for the callback token
  *   CDN_PRESIGN_URL         CDN Worker control plane (e.g. https://…/presign)
  *   PRESIGN_SERVICE_TOKEN   auth for /presign (shared with cdn-access)
- *   VAST_ENDPOINT_NAME      vast serverless endpoint name (exact string)
+ *   VAST_ENDPOINT_NAME      default vast serverless endpoint (normalize)
+ *   VAST_DETECT_ENDPOINT_NAME  optional; detect endpoint (falls back to VAST_ENDPOINT_NAME)
  *   VAST_API_KEY            vast ACCOUNT API key
  *   VAST_AUTOSCALER_URL     optional, default https://run.vast.ai
  *   VAST_TLS_CA             optional PEM: vast's self-signed worker CA
@@ -168,17 +168,19 @@ interface Settlement {
 }
 
 /**
- * Stage routing table. detect/analyze slot in once worker contracts land;
- * until then normalize is terminal and completing it makes the match ready.
+ * Stage routing table. normalize → detect; analyze slots in when ready.
  * Valid-frames / annotation.json loading is a follow-up.
  */
 const STAGES: Record<string, {
   route: string;
+  /** Env var for vast endpoint name; defaults to VAST_ENDPOINT_NAME. */
+  endpointEnv?: string;
   buildEnvelope(job: DispatchedJob, token: string): Promise<Record<string, unknown>>;
   settle(job: DispatchedJob, body: CallbackBody, ok: boolean): Settlement;
 }> = {
   normalize: {
     route: "/normalize/sync",
+    endpointEnv: "VAST_ENDPOINT_NAME",
 
     async buildEnvelope(job, token) {
       const prefix = job.b2_prefix;
@@ -210,17 +212,48 @@ const STAGES: Record<string, {
     },
 
     settle(_job, body, ok) {
-      // MVP: normalize is terminal. Wire detect next when the worker lands.
-      const next = null;
+      // Advance to detect on success. Match stays processing until detect (or
+      // later analyze) finishes; probe fields land from the normalize result.
+      const next = ok ? { stage: "detect" } : null;
       const match = ok
         ? {
-          status: next ? "processing" : "ready",
+          status: "processing",
           duration_sec: body.duration,
           width: body.width,
           height: body.height,
           fps: body.fps,
         }
         : {};
+      return { match, next };
+    },
+  },
+
+  detect: {
+    route: "/detect/sync",
+    // Separate GPU image/endpoint from normalize; falls back to VAST_ENDPOINT_NAME
+    // in invokeVast if unset (useful for single-endpoint local wiring).
+    endpointEnv: "VAST_DETECT_ENDPOINT_NAME",
+
+    async buildEnvelope(job, token) {
+      const prefix = job.b2_prefix;
+      // Always use normalized.mp4 (always produced). Prefer valid.mp4 later when
+      // dispatch can confirm the object exists (BWF valid-frames path).
+      // player_mask_url is accepted by the worker for exclusive ReID seeds but
+      // not presigned yet — player_id stays null until mask upload is productized.
+      return {
+        request_id: job.job_id,
+        callback_url: `${Deno.env.get("SUPABASE_URL")}/functions/v1/jobs/callback`,
+        callback_token: token,
+        input_url: await presign(`${prefix}normalized.mp4`, "GET"),
+        output_upload_url: await presign(`${prefix}detections.json`, "PUT"),
+        // player_mask_url: await presign(`${prefix}player_mask.png`, "GET"),
+      };
+    },
+
+    settle(_job, _body, ok) {
+      // analyze not wired yet — detect is terminal for MVP.
+      const next = null;
+      const match = ok ? { status: "ready" } : {};
       return { match, next };
     },
   },
@@ -268,10 +301,23 @@ async function resolveEndpointKey(endpointName: string, accountKey: string): Pro
   return match.api_key;
 }
 
-async function invokeVast(route: string, envelope: Record<string, unknown>, jobId: string): Promise<void> {
-  const endpoint = Deno.env.get("VAST_ENDPOINT_NAME");
+async function invokeVast(
+  route: string,
+  envelope: Record<string, unknown>,
+  jobId: string,
+  endpointEnv?: string,
+): Promise<void> {
+  // Stage-specific endpoint (e.g. VAST_DETECT_ENDPOINT_NAME) with fallback to
+  // the default normalize endpoint so a single-endpoint deploy still works.
+  const endpoint =
+    (endpointEnv ? Deno.env.get(endpointEnv) : undefined) ||
+    Deno.env.get("VAST_ENDPOINT_NAME");
   const accountKey = Deno.env.get("VAST_API_KEY");
-  if (!endpoint || !accountKey) throw new Error("VAST_ENDPOINT_NAME / VAST_API_KEY not configured");
+  if (!endpoint || !accountKey) {
+    throw new Error(
+      `${endpointEnv ?? "VAST_ENDPOINT_NAME"} / VAST_API_KEY not configured`,
+    );
+  }
   const apiKey = await resolveEndpointKey(endpoint, accountKey);
   const autoscaler = Deno.env.get("VAST_AUTOSCALER_URL") ?? "https://run.vast.ai";
 
@@ -409,7 +455,12 @@ async function handleDispatch(request: Request): Promise<Response> {
         attempt: job.attempt,
       });
       const envelope = await spec.buildEnvelope(job, token);
-      const invocation = invokeVast(spec.route, envelope, job.job_id).catch(async (e) => {
+      const invocation = invokeVast(
+        spec.route,
+        envelope,
+        job.job_id,
+        spec.endpointEnv,
+      ).catch(async (e) => {
         console.error(JSON.stringify({
           event: "dispatch.invoke_failed",
           jobId: job.job_id,

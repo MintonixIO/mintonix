@@ -1,28 +1,39 @@
 """
 Export yolo26x-pose.pt → TensorRT INT8 engine.
 
-MUST be run on the RTX 5090 server — TRT engines are architecture-specific
-(Blackwell sm_120) and cannot be built on a different GPU or transferred.
+Engines are GPU-arch + TensorRT-version specific. Build on a host that matches
+the product image (`nvcr.io/nvidia/tensorrt:24.04-py3`) and the target vast GPU
+arch — do not copy engines across different TRT versions or compute caps.
 
-Requirements on server:
-  TensorRT >= 10.0, CUDA >= 12.6, ultralytics >= 8.4
+Requirements on build host:
+  TensorRT matching the product image, CUDA, ultralytics
   pip install ultralytics tensorrt pycuda
 
 Calibration uses coco8-pose (8 images, auto-downloaded) — enough for a
 throughput baseline. For production accuracy, swap data= to a full COCO-pose
 split or representative frames from your own video.
+
+Environment (all optional):
+  POSE_PT            weights path          (default: yolo26x-pose.pt)
+  POSE_BATCH         engine max batch      (default: 8)
+  POSE_IMGSZ         square spatial size   (default: 960)
+                     Must match runtime letterbox / GpuConsumer imgsz.
+  POSE_WORKSPACE_GB  TRT builder workspace (default: 8)
+  POSE_CALIB_DATA    INT8 calib dataset    (default: coco8-pose.yaml)
+  POSE_USE_INT8      "1" INT8 / "0" FP16   (default: 1)
 """
 import os
 import sys
 from pathlib import Path
 from ultralytics import YOLO
 
-MODEL_PT   = "yolo26x-pose.pt"
-BATCH      = int(os.environ.get("POSE_BATCH", "16"))
-IMGSZ      = 640
-WORKSPACE  = 8      # GB available to TRT optimizer
-CALIB_DATA = "/root/datasets/calib_pose.yaml"  # frames extracted from long.mp4 8:58–13:30
-USE_INT8   = True
+MODEL_PT   = os.environ.get("POSE_PT", "yolo26x-pose.pt")
+BATCH      = int(os.environ.get("POSE_BATCH", "8"))
+IMGSZ      = int(os.environ.get("POSE_IMGSZ", "960"))
+WORKSPACE  = int(os.environ.get("POSE_WORKSPACE_GB", "8"))
+# Ultralytics auto-downloads coco8-pose if path is a known dataset name.
+CALIB_DATA = os.environ.get("POSE_CALIB_DATA", "coco8-pose.yaml")
+USE_INT8   = os.environ.get("POSE_USE_INT8", "1") not in ("0", "false", "False")
 
 
 def check_environment():
@@ -85,6 +96,7 @@ def main():
 
     print(f"\nEngine saved to: {engine_path}")
     print("Copy the .engine file to the same directory as infer_benchmark.py")
+    print(f"Runtime must use matching POSE_IMGSZ={IMGSZ} (or pass imgsz from engine shape).")
 
 
 if __name__ == "__main__":

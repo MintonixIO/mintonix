@@ -2,12 +2,36 @@
 
 ## Overview
 
-A vast.ai serverless GPU worker that downloads a video from Backblaze B2, runs
-detection inference frame-by-frame, streams progress to the client via Supabase
-Realtime, and uploads the result JSON back to B2.
+A vast.ai serverless GPU worker for the pipeline **detect** stage. It downloads
+a normalized match video via a presigned URL, runs pose + shuttle (+ optional
+ReID), uploads `detections.json` to B2, and reports completion to the Supabase
+`jobs/callback` route.
 
-B2 credentials never leave the Supabase Edge Function. The worker operates
-entirely through presigned URLs and the public Supabase anon key.
+Workers hold **no** B2 or Supabase service credentials — only presigned URLs
+and a single-use `callback_token` (HMAC JWT).
+
+MVP: **no Realtime progress streaming**. Re-add later if the UI needs it.
+
+---
+
+## Pipeline role
+
+```
+normalize  →  detect (this worker)  →  analyze (not wired yet)
+                  ↓
+            detections.json
+```
+
+| | |
+|---|---|
+| **In** | `normalized.mp4` (presigned GET); optional `player_mask_url` PNG |
+| **Out** | `detections.json` (presigned PUT) |
+| **Route** | `POST /detect/sync` |
+| **Dispatcher** | `supabase/functions/jobs` → `STAGES.detect` |
+
+MVP always feeds `normalized.mp4`. Prefer `valid.mp4` later when dispatch can
+confirm the object exists. Optional `player_mask_url` is accepted by the worker
+but not yet presigned by jobs (ReID `player_id` stays null until mask lands).
 
 ---
 
@@ -15,164 +39,170 @@ entirely through presigned URLs and the public Supabase anon key.
 
 | Actor | Role |
 |---|---|
-| **Client** | Browser/app — submits jobs, subscribes to Realtime progress |
-| **Edge Function** (`video-jobs`) | Single Deno function; mints URLs, submits to vast.ai, records completion |
-| **Backblaze B2** | Object storage for input video and output detection JSON |
-| **vast.ai Worker** | GPU container running the detection model |
-| **Supabase DB** | `video_jobs` table — persists job state |
-| **Supabase Realtime** | Broadcasts progress events to the subscribed client |
+| **jobs edge function** | Presigns URLs, mints callback token, routes to vast, settles callback |
+| **Backblaze B2** | Input video + output JSON (via CDN `/presign`) |
+| **vast.ai Worker** | GPU container: PyWorker + FastAPI model server |
+| **Supabase `jobs` / `matches`** | Stage state; advance normalize → detect |
 
 ---
 
-## Data Flow
+## Data flow
 
 ```
-Client
-  │
-  │  POST /functions/v1/video-jobs
-  │  { input_b2_path }  +  user JWT
+jobs/dispatch
+  │  buildEnvelope(detect): request_id, input_url, output_upload_url,
+  │                         callback_url, callback_token
+  │  POST vast worker /detect/sync  { auth_data, payload: { input: envelope } }
   ▼
-Edge Function (video-jobs)
+vast PyWorker (worker.py)  ──proxy──►  server.py
   │
-  ├─ INSERT video_jobs { id, status: "pending", user_id, input_b2_path }
-  │
-  ├─ Mint B2 presigned GET  (input video,   TTL: 2h)
-  ├─ Mint B2 presigned PUT  (output JSON,   TTL: 2h)
-  ├─ Mint job_token = HMAC-SHA256(job_id, WORKER_SECRET)
-  │
-  ├─ POST https://api.vast.ai/v0/serverless/route/  { endpoint_id }
-  │    └─ receives { worker_url }
-  │
-  ├─ UPDATE video_jobs SET status = "queued"
-  │
-  ├─ POST {worker_url}
-  │    {
-  │      job_id,
-  │      input_url,      ← presigned GET  (video)
-  │      output_url,     ← presigned PUT  (result JSON)
-  │      callback_url,   ← .../video-jobs/{job_id}/complete
-  │      job_token,
-  │      supabase_url,
-  │      supabase_anon_key,
-  │      realtime_channel: "video-job:{job_id}"
-  │    }
-  │
-  └─ Return { job_id } to client
-          │
-          ▼
-       Client subscribes to Supabase Realtime channel  video-job:{job_id}
-
-
-                    vast.ai Worker
-                         │
-                         ├─ GET input_url  →  download video from B2
-                         │
-                         ├─ Process frames  (detection model)
-                         │
-                         │   Every ~2 seconds:
-                         ├─ POST https://{supabase_url}/realtime/v1/api/broadcast
-                         │    Authorization: Bearer {supabase_anon_key}
-                         │    {
-                         │      channel: "video-job:{job_id}",
-                         │      event:   "progress",
-                         │      payload: {
-                         │        progress:      0.0–1.0,
-                         │        frames_done:   int,
-                         │        frames_total:  int,
-                         │        detections:    [{ frame, label, bbox, conf }]
-                         │      }
-                         │    }
-                         │         └─ Supabase Realtime broadcasts to client ──┐
-                         │                                                      │
-                         ├─ PUT output_url  →  upload result JSON to B2        │
-                         │                                                      │
-                         └─ POST callback_url  (edge function, once)           │
-                              {                                                 │
-                                job_token,                                     │
-                                status: "complete",                            │
-                                output_b2_path                                 │
-                              }                                                │
-                                   │                                           │
-                                   ▼                                           │
-                             Edge Function  (/complete route)                  │
-                                   │                                           │
-                                   ├─ Verify job_token                        │
-                                   ├─ UPDATE video_jobs SET                   │
-                                   │    status = "complete",                  │
-                                   │    output_b2_path = ...                  │
-                                   └─ Final Realtime broadcast ───────────────┤
-                                                                              │
-Client receives events ◄──────────────────────────────────────────────────────┘
-  { progress, frames_done, frames_total, detections }   (streaming)
-  { status: "complete", output_b2_path }                (final)
+  ├─ GET input_url          download video (HTTP or file://)
+  ├─ optional player_mask   SlimSAM PNG → ReID seeds
+  ├─ VideoDetector          pose + shuttle (+ exclusive ReID)
+  ├─ stream detections.json  (chunked write, then PUT)
+  └─ POST callback_url      Bearer callback_token
+       { request_id, status: "success"|"failed", frame_count?, error? }
+            │
+            ▼
+       jobs/callback → complete_job (detect terminal → match ready until analyze)
 ```
 
 ---
 
-## Edge Function Routes
+## Worker input (inner envelope)
 
-| Method | Path | Description |
-|---|---|---|
-| `POST` | `/video-jobs` | Submit job, mint URLs, call vast.ai, return `job_id` |
-| `POST` | `/video-jobs/:id/complete` | Worker signals completion; verify token, update DB, final broadcast |
+```jsonc
+{
+  "request_id": "uuid",                 // job_id
+  "input_url": "https://…",             // presigned GET or file://
+  "output_upload_url": "https://…",     // presigned PUT or file://
+  "callback_url": "https://…/functions/v1/jobs/callback",
+  "callback_token": "<jwt>",
+  "player_mask_url": "https://…"        // optional PNG
+}
+```
 
-Progress updates bypass the edge function entirely — the worker broadcasts
-directly to Supabase Realtime.
+### Callback (worker → jobs)
+
+```jsonc
+// success
+{ "request_id": "uuid", "status": "success", "frame_count": 1234, "elapsed_sec": 88.1 }
+// failure
+{ "request_id": "uuid", "status": "failed", "error": "…" }
+```
+
+Auth: `Authorization: Bearer <callback_token>` (not a body field).
 
 ---
 
-## Payload Schemas
+## Output schema (`detections.json`)
 
-### Worker input (POSTed to vast.ai worker)
+One JSON for pose + shuttle (frame-aligned). Analyze consumes this single asset.
 
 ```jsonc
 {
   "job_id": "uuid",
-  "input_url": "https://b2.example.com/...?sig=...",   // presigned GET
-  "output_url": "https://b2.example.com/...?sig=...",  // presigned PUT
-  "callback_url": "https://<project>.supabase.co/functions/v1/video-jobs/<id>/complete",
-  "job_token": "<hmac>",
-  "supabase_url": "https://<project>.supabase.co",
-  "supabase_anon_key": "<anon_key>",
-  "realtime_channel": "video-job:<job_id>"
+  "frames": [
+    {
+      "frame": 0,
+      "poses": [
+        {
+          "keypoints": [[x, y, conf], /* 17 COCO */],
+          "bbox": [x1, y1, x2, y2],   // normalized [0,1]
+          "conf": 0.91,
+          "player_id": 1              // null without mask/ReID
+        }
+      ],
+      "shuttle": [
+        { "x": 0.42, "y": 0.31, "conf": 0.88 },
+        { "x": 0.10, "y": 0.55, "conf": 0.12 }
+      ]
+    }
+  ]
 }
 ```
 
-### Realtime progress broadcast (worker → Supabase, every ~2s)
+Shuttle is **top-K heatmap peaks** (default K=8, min_conf=0.05) for high
+recall — not a single tracked point. Precision is analyze's job.
 
-```jsonc
-{
-  "channel": "video-job:<job_id>",
-  "event": "progress",
-  "payload": {
-    "progress": 0.42,
-    "frames_done": 126,
-    "frames_total": 300,
-    "detections": [
-      { "frame": 124, "label": "car", "bbox": [x, y, w, h], "conf": 0.91 }
-    ]
-  }
-}
+Optional `player_mask_url`: single-channel PNG, `0` = background, each positive
+value = one player on frame 0. Seeds ReID reference embeddings; assignment is
+**exclusive** (greedy bipartite by cosine similarity).
+
+---
+
+## Layers
+
+| | Job boundary | Pose engine |
+|---|---|---|
+| **Code** | `server.py`, `io_util.py`, `detect/`, `worker.py` | `pose/` package |
+| **Owns** | Envelope, B2 I/O (`file://` + HTTP), callback, shuttle+ReID schedule, JSON | YOLO26x-pose TRT, letterbox, CUDA-graph batch infer |
+| **Coords in API** | Normalized `[0,1]` in `detections.json` | Original pixels inside engine; adapter normalizes |
+
+```
+server.py → DetectConfig.from_env() → detect.VideoDetector
+              ├─ pose feed (opencv | ffmpeg)
+              │    opencv:  detect/pose_feed.run_opencv_pose → pose.PoseEngine
+              │    ffmpeg:  pose.ffmpeg_feed (multi-process SHM + GpuConsumer)
+              │    both end at EngineDetection via pose.engine.decode_pose_*
+              ├─ OpenCV once: detect/shuttle.py (TrackNetV5 → top-K peaks)
+              └─ detect/reid.py (optional OSNet, exclusive match)
 ```
 
-### Completion callback (worker → Edge Function)
+**One orchestration path:** pose feed produces `dict[frame → detections]`, then a
+single OpenCV pass attaches shuttle (+ optional ReID). Output length equals
+frames successfully read by OpenCV; missing pose indices are empty lists (no
+invented trailing frames).
 
-```jsonc
-{
-  "job_token": "<hmac>",
-  "status": "complete",
-  "output_b2_path": "jobs/<job_id>/result.json"
-}
+Default feed is **opencv** (`POSE_FEED=opencv`). FFmpeg multi-decode is opt-in
+(`POSE_FEED=ffmpeg`; legacy `POSE_PIPELINE=research`). Engine tensor shape is
+the authority for batch/imgsz after load. CUDA graphs run inside `GpuConsumer`.
+
+---
+
+## Runtime layout (vast.ai)
+
+Matches the proven **normalize** pattern:
+
+| Piece | Role |
+|---|---|
+| `entrypoint.sh` | Start `server.py`, then `start_server.sh` |
+| `start_server.sh` | vast bootstrap: TLS, venv, `python -m worker` |
+| `worker.py` | PyWorker: load reporting, proxy to model server |
+| `server.py` | FastAPI `/detect/sync` + `/health` |
+| `io_util.py` | download / upload / callback (`file://` + HTTP) |
+| `detect/` | VideoDetector, pose adapter, TrackNet, reid, types |
+| `pose/` | Engine used by product |
+| `/app/sample.mp4` | Local benchmark input (`BENCHMARK_INPUT_URL`) |
+
+| Constraint | Value |
+|---|---|
+| Model server port | `18000` (`MODEL_SERVER_PORT`) |
+| PyWorker port | `3000` (`WORKER_PORT`, autoscaler-facing) |
+| Parallelism | One job per GPU (`allow_parallel_requests=False`) |
+| Handler cancel | Forced off — dispatcher disconnect must not kill load accounting |
+| Benchmark | `file:///app/sample.mp4` → `file:///tmp/benchmark_*.json` |
+
+---
+
+## File structure
+
 ```
-
-### Error callback (worker → Edge Function, on failure)
-
-```jsonc
-{
-  "job_token": "<hmac>",
-  "status": "failed",
-  "error": "OOM during frame 312"
-}
+workers/vast/video-det/
+├── server.py           # FastAPI job boundary
+├── worker.py           # PyWorker config
+├── io_util.py          # file:// + HTTP transport
+├── entrypoint.sh
+├── start_server.sh
+├── detect/             # VideoDetector, shuttle, reid, types
+│   └── tracknet.py     # TrackNetV5 (loads tracknetv5.pt)
+├── pose/               # PoseEngine + TRT runtime + export helpers
+├── sample.mp4          # generated in Docker image
+├── Dockerfile
+├── .dockerignore
+├── requirements.txt
+├── test_contract.py
+└── ARCHITECTURE.md
 ```
 
 ---
@@ -181,52 +211,39 @@ directly to Supabase Realtime.
 
 | Concern | Mechanism |
 |---|---|
-| B2 credentials | Never leave the edge function; worker receives only opaque signed URLs |
-| Worker identity | `job_token = HMAC-SHA256(job_id \|\| WORKER_SECRET)` — minted per job, verified on completion callback |
-| Realtime auth | Supabase anon key — already public (embedded in frontend); safe for broadcast |
+| B2 credentials | Never on worker; presigned URLs only |
+| Worker identity | `callback_token` JWT (aud=`jobs-callback`), bound to job/stage/attempt |
 | Service role key | Never passed to the worker |
-| Replay attacks | `job_token` is single-use per job; completion route marks job terminal on first valid call |
+| Replay | Callback marks job terminal / CAS on attempt+stage |
 
 ---
 
-## Supabase DB Schema
+## Ops notes
 
-```sql
-create table video_jobs (
-  id              uuid primary key default gen_random_uuid(),
-  user_id         uuid references auth.users not null,
-  status          text not null default 'pending',  -- pending | queued | processing | complete | failed
-  input_b2_path   text not null,
-  output_b2_path  text,
-  progress        real default 0,
-  error           text,
-  created_at      timestamptz default now(),
-  updated_at      timestamptz default now()
-);
-```
+- TensorRT engines are GPU-arch + TRT-version specific; build via
+  `pose/export_trt.py` on a host matching the product image
+  (`tensorrt:24.04-py3`).
+- Weights expected under `/app/models/` (mount or download at start):
+  - pose TRT engine (`POSE_ENGINE`; spatial size + batch from tensor shape)
+  - `tracknetv5.pt` (`SHUTTLE_CKPT`)
+  - optional `osnet_reid_int8.engine` (`REID_ENGINE`)
+- Detect env (see `detect/config.py`): `POSE_FEED`, `POSE_CONF`, optional
+  `POSE_IMGSZ` / `POSE_DECODE_WORKERS` / `POSE_CEILING` for ffmpeg feed.
+- CI smoke: `import server, worker, detect` + `test_contract` with CUDA stub.
+- Env for jobs function: `VAST_DETECT_ENDPOINT_NAME` (optional fallback to
+  `VAST_ENDPOINT_NAME`).
+- Download parallelism: `DL_CONNECTIONS` (default 8) for range-capable GETs.
 
----
+### Payload sizing (analyze consumers)
 
-## Worker File Structure
+`detections.json` is streamed to disk then PUT once. Rough upper bound per
+frame with default K=8 shuttle peaks and up to 4 poses × 17 kpts:
 
-```
-workers/vast/video-det/
-├── handler.py        # FastAPI app: POST /process-video, runs detection in background task
-├── worker.py         # PyWorker config wiring handler.py as the inference backend
-├── detect.py         # Model loading and per-frame inference logic
-├── broadcast.py      # Throttled Supabase Realtime broadcast helper
-├── Dockerfile        # GPU base image, installs deps, entrypoint: worker.py
-└── requirements.txt
-```
-
----
-
-## Key Constraints
-
-| Constraint | Value / Reasoning |
+| | |
 |---|---|
-| Presigned URL TTL | 2h minimum — must exceed queue wait + cold start + max video length |
-| Progress broadcast interval | Every 2 seconds — balances UX smoothness against Realtime message volume |
-| Worker upload before callback | Worker PUTs to B2 output URL *before* POSTing the completion callback |
-| Stuck job cleanup | A Supabase cron (pg_cron) marks jobs still in `queued`/`processing` after 3h as `failed` |
-| vast.ai cold start | Worker pool kept warm via PyWorker benchmark; first request may still wait for a ready worker |
+| ~bytes / frame | ~2–4 KiB JSON (varies with pose count) |
+| 30 min @ 30 fps | ~54k frames → ~100–200 MiB JSON |
+| Peak worker RAM | video file + one 48-frame BGR chunk + output file (not full JSON in RAM) |
+
+Analyze should stream-parse the frames array rather than loading whole files
+when matches grow long.
