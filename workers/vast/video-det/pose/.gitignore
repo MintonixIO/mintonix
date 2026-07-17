@@ -1,0 +1,6 @@
+# Prebuilt TensorRT engines (large, arch-specific) — not tracked in git.
+# Build with download_model.py + export_trt.py on a host matching the product
+# image TRT stack, then mount at /app/models/yolo26x_pose_int8.engine.
+*.engine
+*.onnx
+*.pt

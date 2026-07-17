@@ -1,0 +1,15 @@
+# Keep the product image lean: no research leftovers, caches, or docs.
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+**/.mypy_cache
+**/.git
+**/.gitignore
+**/*.md
+!ARCHITECTURE.md
+
+# Local test artifacts
+**/sample_local.*
+**/*.engine
+**/*.pt
+**/*.onnx

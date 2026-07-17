@@ -1,0 +1,99 @@
+# Top-level name is intentionally NOT a real environment. Always deploy with an
+# explicit --env (dev|prod). A bare `wrangler deploy` would target this
+# top-level config, which has NO vars — keeping its name distinct from
+# [env.prod].name means a stray no-env deploy can't overwrite the prod Worker.
+name = "mintonix-cdn-base"
+# Pinned so wrangler never needs to discover the account via /memberships —
+# a user-scoped endpoint that account-owned API tokens (cfat_…, used by CI)
+# are not allowed to call. Not a secret; inherited by both environments.
+account_id = "2b7f66ed0076a0d5d8f15b83db3aa706"
+main = "src/index.ts"
+compatibility_date = "2024-09-23"
+# Ed25519 (used for JWT verification) requires the WebCrypto Ed25519 surface.
+compatibility_flags = ["nodejs_compat"]
+
+# Two deployment environments, each a SEPARATE Worker pointed at a SEPARATE B2
+# bucket:
+#   env.dev  -> Worker "mintonix-cdn-dev"  -> dev bucket   (deployed on PRs)
+#   env.prod -> Worker "mintonix-cdn"      -> prod bucket  (deployed on master)
+#
+# Deploy:  wrangler deploy --env dev   |   wrangler deploy --env prod
+# Secrets are scoped per Worker name, so set them once per env:
+#   wrangler secret put B2_ACCESS_KEY_ID      --env dev   (and again --env prod)
+#   wrangler secret put B2_SECRET_ACCESS_KEY  --env dev   (and again --env prod)
+#   wrangler secret put PRESIGN_SERVICE_TOKEN --env dev   (and again --env prod)
+#
+# IMPORTANT: `vars` is a NON-INHERITABLE key in Wrangler — top-level [vars] are
+# NOT merged into a named environment. Every var the Worker reads is therefore
+# repeated in each [env.*.vars] block below. (main / compatibility_* above ARE
+# inherited.) Keep the two blocks in sync except for the per-env values
+# (bucket + public key, and optionally endpoint/region if the buckets differ).
+#
+# CDN_JWT_PUBLIC_KEY is a multi-line SPKI PEM; paste it as a TOML triple-quoted
+# string, e.g.
+#   CDN_JWT_PUBLIC_KEY = """
+#   -----BEGIN PUBLIC KEY-----
+#   ...
+#   -----END PUBLIC KEY-----
+#   """
+# Use a DIFFERENT keypair for dev and prod, and put each env's PRIVATE half in
+# that env's Supabase project secrets (CDN_JWT_PRIVATE_KEY).
+
+# --- DEV ---------------------------------------------------------------------
+[env.dev]
+name = "mintonix-cdn-dev"
+# Dev works fine on *.workers.dev — no custom domain required. You only forgo
+# the edge cache + free B2 egress, which don't matter for functional testing.
+# routes = [
+#   { pattern = "cdn-dev.mintonix.com", custom_domain = true }
+# ]
+
+[env.dev.vars]
+B2_S3_ENDPOINT = "https://s3.us-east-005.backblazeb2.com"
+B2_REGION = "us-east-005"
+B2_BUCKET = "mintonix-dev"       # DEV (private) bucket
+# DEV Ed25519 PUBLIC key (SPKI PEM) — verify-only, safe to commit.
+CDN_JWT_PUBLIC_KEY = """
+-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAjGpfIRgX5Hrmxbwahmrr1iefRt/XhMuzDHEevUce6iY=
+-----END PUBLIC KEY-----
+"""
+CACHE_TTL_SECONDS = "86400"
+CORS_ALLOW_ORIGIN = "*"
+# Must cover the pipeline's presigned-URL lifetime (jobs fn PRESIGN_EXPIRY_SECONDS,
+# default 14400): a normalize job runs for hours and uploads at the end.
+PRESIGN_MAX_EXPIRY_SECONDS = "14400"
+
+# --- PROD --------------------------------------------------------------------
+[env.prod]
+name = "mintonix-cdn"
+# Prod NEEDS the custom domain for Cloudflare's edge cache + free B2 egress via
+# the Bandwidth Alliance. The zone must be on Cloudflare.
+# routes = [
+#   { pattern = "cdn.mintonix.com", custom_domain = true }
+# ]
+
+[env.prod.vars]
+B2_S3_ENDPOINT = "https://s3.us-east-005.backblazeb2.com"
+B2_REGION = "us-east-005"
+B2_BUCKET = "mintonix-prod"      # PROD (private) bucket
+# PROD Ed25519 PUBLIC key (SPKI PEM) — verify-only, safe to commit.
+CDN_JWT_PUBLIC_KEY = """
+-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAxeCBt2Rl/aqNwuu1NO90cN4inWbfjXhY2UzN9SAL+LU=
+-----END PUBLIC KEY-----
+"""
+CACHE_TTL_SECONDS = "86400"
+CORS_ALLOW_ORIGIN = "*"
+# Must cover the pipeline's presigned-URL lifetime (jobs fn PRESIGN_EXPIRY_SECONDS,
+# default 14400): a normalize job runs for hours and uploads at the end.
+PRESIGN_MAX_EXPIRY_SECONDS = "14400"
+
+# --- Secrets (DO NOT put here; set via `wrangler secret put --env <env>`) -----
+# The Worker is the SOLE holder of B2 credentials. Because /presign mints
+# presigned PUT/DELETE (which inherit the signer's permissions) and runs LIST,
+# this key needs listFiles + readFiles + writeFiles + deleteFiles on the bucket
+# — not read-only. Each env has its own bucket key.
+#   wrangler secret put B2_ACCESS_KEY_ID       --env dev|prod
+#   wrangler secret put B2_SECRET_ACCESS_KEY   --env dev|prod
+#   wrangler secret put PRESIGN_SERVICE_TOKEN  --env dev|prod

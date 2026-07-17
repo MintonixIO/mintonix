@@ -1,0 +1,102 @@
+# Reusable pipeline for vast.ai worker images (see ARCHITECTURE.md §8).
+#
+# Build once per commit as ghcr.io/<owner>/<image>:sha-<sha>, test THAT image,
+# push it, then move the channel tag (:staging on PR, :latest on master) to the
+# tested digest with `imagetools create` — a registry-side manifest copy, never
+# a rebuild, so what the vast endpoint pulls is byte-identical to what passed
+# tests. SHA tags also stop concurrent PRs overwriting each other's :staging.
+
+name: Vast worker image (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      directory:
+        description: "Worker directory, e.g. workers/vast/video-normalization"
+        required: true
+        type: string
+      image:
+        description: "GHCR image name, e.g. video-normalization"
+        required: true
+        type: string
+      test_command:
+        description: "Command run inside the built image; nonzero exit fails the build"
+        required: true
+        type: string
+      docker_run_args:
+        description: "Extra args for the test `docker run`, e.g. '-e SOME_FLAG=1' or '--shm-size=1g'"
+        required: false
+        type: string
+        default: ""
+      free_disk_space:
+        description: "Reclaim ~30 GB on the runner first (needed for CUDA/TensorRT base images)"
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  build-test-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+      sha_tag: ${{ steps.meta.outputs.sha_tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free runner disk space
+        if: ${{ inputs.free_disk_space }}
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /opt/hostedtoolcache/CodeQL /usr/local/.ghcup
+          df -h /
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image coordinates
+        id: meta
+        run: |
+          IMAGE="ghcr.io/${{ github.repository_owner }}/${{ inputs.image }}"
+          echo "image=${IMAGE,,}" >> "$GITHUB_OUTPUT"
+          echo "sha_tag=sha-${{ github.sha }}" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        working-directory: ${{ inputs.directory }}
+        run: docker build -t "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.sha_tag }}" .
+
+      - name: Test
+        run: >
+          docker run --rm ${{ inputs.docker_run_args }}
+          "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.sha_tag }}"
+          ${{ inputs.test_command }}
+
+      - name: Push tested image
+        run: docker push "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.sha_tag }}"
+
+  promote:
+    needs: build-test-push
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The vast dev endpoint tracks :staging, prod tracks :latest.
+      - name: Move channel tag to the tested digest
+        run: |
+          TAG="${{ github.event_name == 'pull_request' && 'staging' || 'latest' }}"
+          docker buildx imagetools create \
+            -t "${{ needs.build-test-push.outputs.image }}:$TAG" \
+            "${{ needs.build-test-push.outputs.image }}:${{ needs.build-test-push.outputs.sha_tag }}"

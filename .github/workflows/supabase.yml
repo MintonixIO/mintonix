@@ -1,0 +1,75 @@
+# Supabase pipeline: migrations + edge functions share ONE workflow with
+# ordered jobs because they target one runtime (the Supabase project) and
+# can't be rolled back separately — a function that reads a new column must
+# never deploy before the migration that adds it, and migrations only roll
+# forward (see ARCHITECTURE.md §8).
+#
+# PR → dev project, master → prod. Each GitHub Environment supplies:
+#   vars.SUPABASE_PROJECT_REF, secrets.SUPABASE_ACCESS_TOKEN,
+#   secrets.SUPABASE_DB_PASSWORD
+
+name: Supabase — migrations + edge functions
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "supabase/**"
+      - "packages/shared/**"
+      - ".github/workflows/supabase.yml"
+  pull_request:
+    paths:
+      - "supabase/**"
+      - "packages/shared/**"
+      - ".github/workflows/supabase.yml"
+
+# Never let two runs race `db push` against the same project.
+concurrency:
+  group: supabase-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    environment: ${{ github.event_name == 'pull_request' && 'dev' || 'prod' }}
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Link project
+        run: supabase link --project-ref "${{ vars.SUPABASE_PROJECT_REF }}"
+
+      # Migrations are plain CREATE (no IF NOT EXISTS) by convention, so a
+      # drifted database fails loudly here instead of silently diverging.
+      # Prod cutover from deleted pre-20260712 versions is a MANUAL runbook
+      # (SUPABASE.md § Prod migration runbook): repair history, then push.
+      # CI must not silently wipe prod — if remote still has unrepaired old
+      # versions, db push fails with "Remote migration versions not found".
+      - name: Apply migrations
+        run: supabase db push
+
+  functions:
+    needs: migrate
+    runs-on: ubuntu-latest
+    environment: ${{ github.event_name == 'pull_request' && 'dev' || 'prod' }}
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      # Deploys every function under supabase/functions; per-function
+      # verify_jwt comes from supabase/config.toml. Function secrets
+      # (PRESIGN_SERVICE_TOKEN, JOB_TOKEN_SECRET, …) are `supabase secrets`
+      # state on the project, not CI inputs.
+      - name: Deploy edge functions
+        run: supabase functions deploy --project-ref "${{ vars.SUPABASE_PROJECT_REF }}"

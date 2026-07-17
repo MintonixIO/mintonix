@@ -2,79 +2,31 @@ name: Video Normalization Worker
 
 on:
   push:
-    branches:
-      - master
+    branches: [master]
     paths:
       - "workers/vast/video-normalization/**"
+      - ".github/workflows/video-normalization.yml"
+      - ".github/workflows/vast-worker.yml"
   pull_request:
     paths:
       - "workers/vast/video-normalization/**"
+      - ".github/workflows/video-normalization.yml"
+      - ".github/workflows/vast-worker.yml"
+
+concurrency:
+  group: video-normalization-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  staging:
-    runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
+  image:
+    uses: ./.github/workflows/vast-worker.yml
     permissions:
       contents: read
       packages: write
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build
-        working-directory: workers/vast/video-normalization
-        run: |
-          IMAGE=ghcr.io/${{ github.repository_owner }}/video-normalization
-          IMAGE=${IMAGE,,}
-          docker build -t video-normalization -t $IMAGE:staging .
-
-      - name: Test
-        # REQUIRE_GPU=0: the image defaults to GPU-required, but this runner has
-        # no GPU and the e2e test exercises the CPU (libx264) path.
-        run: docker run --rm -e REQUIRE_GPU=0 video-normalization python -m unittest test_handler -v
-
-      - name: Push
-        run: |
-          IMAGE=ghcr.io/${{ github.repository_owner }}/video-normalization
-          IMAGE=${IMAGE,,}
-          docker push $IMAGE:staging
-
-  prod:
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build
-        working-directory: workers/vast/video-normalization
-        run: |
-          IMAGE=ghcr.io/${{ github.repository_owner }}/video-normalization
-          IMAGE=${IMAGE,,}
-          docker build -t video-normalization -t $IMAGE:latest .
-
-      - name: Test
-        # REQUIRE_GPU=0: the image defaults to GPU-required, but this runner has
-        # no GPU and the e2e test exercises the CPU (libx264) path.
-        run: docker run --rm -e REQUIRE_GPU=0 video-normalization python -m unittest test_handler -v
-
-      - name: Push
-        run: |
-          IMAGE=ghcr.io/${{ github.repository_owner }}/video-normalization
-          IMAGE=${IMAGE,,}
-          docker push $IMAGE:latest
+    with:
+      directory: workers/vast/video-normalization
+      image: video-normalization
+      # Transcode is GPU-only and CI runners have no GPU: the transcode e2e
+      # tests self-skip, leaving the contract/unit tests plus the remux-path
+      # e2e (which needs no GPU) to validate the image.
+      test_command: python -m unittest test_handler -v

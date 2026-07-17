@@ -1,171 +1,75 @@
-# Match-data Supabase schema
+# Match-data → Supabase
 
-Stores BWF World Tour results scraped from Wikipedia, plus one matched YouTube
-video per match. Designed for both **match-centric** queries (one row per match,
-mostly join-free) and **player-centric** queries (via the `match_players`
-junction).
+The weekly scraper loads **finished BWF matches** into the shared product table
+`matches` defined by the pipeline migration
+(`supabase/migrations/20260712000000_init_match_pipeline.sql`). Full column
+semantics live in repo-root **SUPABASE.md**.
 
-Four tables + one read-model view.
+There is **no** separate `nations` / `players` / `match_players` graph and no
+`match_key` column. Catalog identity is a content hash of the scraper's
+stable key (see below).
 
-## Design notes
+## What the loader writes
 
-- **`matches` is denormalized** — tournament title, discipline, round, date,
-  seeds, all set scores, and the matched video live on the row. Most
-  match-centric queries touch only this table.
-- **Players are normalized** (`players` + `match_players`) so player-centric
-  queries ("all of a player's matches") are clean indexed joins, and doubles
-  (MD/WD/XD) are two `match_players` rows sharing a `team_side`.
-- **One video per match** — folded into `matches` as columns, no separate table.
-- **`nations`** is a small lookup so flag URLs aren't repeated per player.
-- **Idempotent loads** — every table upserts on a natural unique key, so
-  re-running the loader never duplicates rows.
-- **Backfilled columns are never overwritten** — the scraper-driven loader omits
-  `players.avatar_url` and `nations.flag_url` from its payloads, so values added
-  out-of-band survive re-loads.
+| column | source |
+|--------|--------|
+| `id` | `sha256(utf-8 match_key).hexdigest()` |
+| `owner_id` | always omitted (NULL = system/BWF) |
+| `tournament` | `"{title} · {discipline} · {round}"` |
+| `match_date` | scraped date → ISO |
+| `team1_player1`, `team1_player2` | roster side 1 (singles → p2 null) |
+| `team2_player1`, `team2_player2` | roster side 2 |
+| `g1_t1`…`g3_t2` | set scores |
+| `source_url` | optional; from `video_matches.json` → `https://www.youtube.com/watch?v=…` when coverage is healthy |
 
----
+Pipeline fields (`status`, `duration_sec`, `width`, `height`, `fps`) are **not**
+touched — a re-scrape must not reset normalize progress.
 
-## `nations`
+## Internal match key (not a DB column)
 
-| column   | type | notes                                              |
-|----------|------|----------------------------------------------------|
-| code     | text | **PK**. Country code from `{{flagicon\|XX}}`        |
-| name     | text |                                                    |
-| flag_url | text | nullable; **not** set by the scraper               |
-
-```sql
-CREATE TABLE nations (
-  code     text PRIMARY KEY,
-  name     text,
-  flag_url text
-);
+```
+match_key = "{season}|{tournament}|{discipline}|{section}|{round}|{match_idx}"
 ```
 
-## `players`
+`section` is required for uniqueness: split draws restart `match_idx` within
+each section. The loader hashes this string for `matches.id` so re-scrapes hit
+the same row and the same B2 prefix (`bwf/<id>/`).
 
-| column     | type   | notes                                  |
-|------------|--------|----------------------------------------|
-| id         | bigint | **PK**, identity                       |
-| name       | text   | **UNIQUE** (upsert key). Wiki page title when available, else display text |
-| country    | text   | FK → `nations(code)`                    |
-| avatar_url | text   | nullable; **not** set by the scraper   |
+**Scores are not part of the hash** (Wikipedia score corrections must not mint
+a new id).
 
-```sql
-CREATE TABLE players (
-  id         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  name       text UNIQUE NOT NULL,
-  country    text REFERENCES nations(code),
-  avatar_url text
-);
+## Finished-only policy
+
+A match with no determined winner is skipped (unplayed slot or not-yet-played
+fixture). If it also has no scores, its hashed id is a purge candidate for any
+leftover placeholder row. Winner-less matches that *do* have scores are left
+alone (in-progress or flaky parse).
+
+## Video mapping
+
+`find_youtube_videos.py` is offline and writes `video_matches.json`
+(`match_key` → YouTube id). The loader folds those into `source_url` only when:
+
+1. At least one of this file's matches is covered, and
+2. Coverage does not drop by more than 50% vs existing BWF `source_url` rows.
+
+Otherwise existing URLs are preserved (columns omitted from the upsert).
+
+## What this job does *not* do
+
+- Does **not** call `matches-ingest` or enqueue GPU jobs. Catalog metadata and
+  pipeline enqueue are separate (see ARCHITECTURE.md §2a).
+- Does **not** write `annotation.json` or touch B2.
+- Does **not** create player graph tables (removed in the match-centric schema).
+
+## CLI
+
+```bash
+SUPABASE_URL=… SUPABASE_SERVICE_KEY=… \
+  python3 load_to_supabase.py \
+    --json-file bwf_2026_results.json \
+    --videos-file video_matches.json
+
+# PR CI: report diff only
+python3 load_to_supabase.py --json-file … --videos-file … --dry-run
 ```
-
-## `matches`
-
-| column           | type        | notes                                          |
-|------------------|-------------|------------------------------------------------|
-| id               | bigint      | **PK**, identity                               |
-| match_key        | text        | **UNIQUE** (upsert key), see below             |
-| season           | int         |                                                |
-| tournament       | text        | title, e.g. "2026 All England Open"            |
-| discipline       | text        | MS / WS / MD / WD / XD                          |
-| section          | text        | draw section path, e.g. "Men's singles/Top half/Section 1" |
-| round            | text        | "Quarter-finals", "Final", ...                 |
-| match_idx        | int         | ordinal within (discipline, section, round)    |
-| match_date       | date        | nullable                                       |
-| team1_seed       | text        | nullable                                       |
-| team2_seed       | text        | nullable                                       |
-| winner           | int         | 1 or 2 (nullable if undecided)                 |
-| games_won        | text        | e.g. "2–1"                                      |
-| g1_t1, g1_t2     | int         | game 1 scores, nullable                        |
-| g2_t1, g2_t2     | int         | game 2 scores, nullable                        |
-| g3_t1, g3_t2     | int         | game 3 scores, nullable (best-of-3)            |
-| video_id         | text        | matched YouTube id; set by the matcher         |
-| video_title      | text        | set by the matcher                             |
-| video_confidence | numeric     | set by the matcher                             |
-| scraped_at       | timestamptz |                                                |
-
-`match_key = "{season}|{tournament}|{discipline}|{section}|{round}|{match_idx}"`
-
-`section` is required for uniqueness: split draws restart `match_idx` within each
-section (Top half / Section 1, ...), so without it the key collides ~4×.
-
-```sql
-CREATE TABLE matches (
-  id               bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  match_key        text UNIQUE NOT NULL,
-  season           int,
-  tournament       text,
-  discipline       text,
-  section          text,
-  round            text,
-  match_idx        int,
-  match_date       date,
-  team1_seed       text,
-  team2_seed       text,
-  winner           int,
-  games_won        text,
-  g1_t1 int, g1_t2 int,
-  g2_t1 int, g2_t2 int,
-  g3_t1 int, g3_t2 int,
-  video_id         text,
-  video_title      text,
-  video_confidence numeric,
-  scraped_at       timestamptz
-);
-```
-
-## `match_players`
-
-Junction linking matches to players, with the side they played on.
-
-| column    | type   | notes                              |
-|-----------|--------|------------------------------------|
-| match_id  | bigint | FK → `matches(id)` ON DELETE CASCADE |
-| player_id | bigint | FK → `players(id)`                 |
-| team_side | int    | 1 or 2                             |
-
-`UNIQUE (match_id, player_id)` — the upsert key.
-
-```sql
-CREATE TABLE match_players (
-  match_id  bigint REFERENCES matches(id) ON DELETE CASCADE,
-  player_id bigint REFERENCES players(id),
-  team_side int,
-  UNIQUE (match_id, player_id)
-);
-CREATE INDEX ON match_players (player_id);
-```
-
----
-
-## `match_full` (view)
-
-Match-centric read model: one row per match with team rosters folded back in,
-so the frontend can render a match without manually joining the junction. Player
-queries still use `match_players`/`players` directly.
-
-```sql
-CREATE VIEW match_full AS
-SELECT
-  m.*,
-  array_agg(p.name) FILTER (WHERE mp.team_side = 1) AS team1_players,
-  array_agg(p.name) FILTER (WHERE mp.team_side = 2) AS team2_players
-FROM matches m
-LEFT JOIN match_players mp ON mp.match_id = m.id
-LEFT JOIN players p        ON p.id = mp.player_id
-GROUP BY m.id;
-```
-
----
-
-## Populated by which job
-
-| table / column                         | source                          |
-|----------------------------------------|---------------------------------|
-| `nations.code` / `name`                | scraper → loader                |
-| `nations.flag_url`                     | manual / one-off backfill       |
-| `players.name` / `country`             | scraper → loader                |
-| `players.avatar_url`                   | manual / one-off backfill       |
-| `matches.*` (results)                  | scraper → loader                |
-| `matches.video_*`                      | YouTube matcher                 |
-| `match_players.*`                      | scraper → loader                |

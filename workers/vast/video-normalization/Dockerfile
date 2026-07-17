@@ -19,6 +19,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git curl ca-certificates xz-utils \
     python3 python3-pip python3-venv \
     python-is-python3 \
+    # opencv-python-headless (valid_frames.py court detection) and
+    # paddlepaddle (scoreboard OCR) both link against these at import time
+    # even without a display. libgl1: paddleocr→paddlex pulls the full
+    # (GUI-linked) opencv wheel as its own dep, shadowing our headless pin,
+    # and its cv2 dlopens libGL.so.1 on import.
+    libgomp1 libglib2.0-0 libgl1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Ubuntu 22.04's apt ffmpeg is 4.4, whose scale_cuda filter has NO `format`
@@ -42,6 +48,14 @@ WORKDIR /app
 COPY requirements.txt .
 RUN python3 -m pip install --no-cache-dir -r requirements.txt
 
+# PaddleOCR pulls its detection/recognition models from Paddle's CDN on first
+# use. Bake them into the image (instantiating with the exact flags
+# valid_frames.py uses) so a freshly autoscaled instance doesn't stall
+# mid-job on a model download — or fail outright if the CDN is unreachable.
+RUN python3 -c "from paddleocr import PaddleOCR; \
+    PaddleOCR(lang='en', use_doc_orientation_classify=False, \
+    use_doc_unwarping=False, use_textline_orientation=False)"
+
 COPY . .
 
 # vast's start_server.sh launches the PyWorker via `python -m worker` from
@@ -58,15 +72,12 @@ RUN mkdir -p /workspace/vast-pyworker \
 # Backend FastAPI server (server.py) + vast PyWorker (worker.py via start_server.sh).
 # Do NOT set BACKEND (start_server.sh would then require HF_TOKEN) or
 # USE_SYSTEM_PYTHON (that path installs `vastai` over our `vastai-sdk`).
-# REQUIRE_GPU=1 makes normalize.py refuse to transcode on CPU when no usable
-# NVIDIA GPU is present: on a rented GPU instance a libx264 fallback would burn
-# credit at a fraction of the speed, and a GPU-broken host should fail its
-# startup benchmark so the autoscaler discards it. CI overrides this with
-# `-e REQUIRE_GPU=0` to run the CPU e2e test on its GPU-less runner.
+# Transcodes are GPU-only (normalize.py has no CPU encode path): a job landing
+# on a GPU-broken host fails fast, the startup benchmark fails too so the
+# autoscaler discards the host, and the queue retries the job elsewhere.
 ENV MODEL_SERVER_PORT=18000 \
     MODEL_LOG=/var/log/portal/video-normalization.log \
     WORKSPACE_DIR=/workspace \
-    WORKER_PORT=3000 \
-    REQUIRE_GPU=1
+    WORKER_PORT=3000
 
 CMD ["bash", "entrypoint.sh"]
