@@ -196,7 +196,7 @@ Envelope from jobs: `input_url`, outputs, optional youtube archive, callback.
 | **bug** | P0 | `normalize.py` `upload` (~228–247) | Single-shot PUT has **no retries**. After long NVENC, B2 5xx forces full re-download/re-encode. Detect already retries. | Same retry/backoff as detect (or shared I/O). |
 | **suggestion** | P1 | `normalize.py` whole (~920 lines) | God-module: I/O + ffmpeg + job orchestration. | Split `io.py` / `ffmpeg_ops.py` / `job.py`; keep facade for tests. |
 | **suggestion** | P1 | `has_scale_cuda` | Job fails only when nvenc missing; scale_cuda missing → mid-ffmpeg death after download. | When scale/pixfmt required, require `has_scale_cuda()` with clear retry-elsewhere error. |
-| **suggestion** | defer | Multipart upload | Implemented; jobs only presign single PUT. | Wire for multi-GB or leave unused intentionally. |
+| **done** | — | Multipart upload | CDN `op=MULTIPART` + jobs `output_upload` / YouTube `original_upload`. | Deploy CDN + jobs; B2 lifecycle abort incomplete multipart. |
 | **suggestion** | defer | `valid_frames.py` + paddle | Heavy, multi-minute OCR path; jobs never send config. | Cut from MVP success criteria; optional image tag later. |
 | **suggestion** | — | `server.py` progress | Failure callback can include `original_archived`; jobs do not re-route retry source from it yet. | Use it on retry or stop advertising as retry-critical. |
 | **nit** | — | probe duration | `float(fmt["duration"])` can KeyError if missing. | Guard with stream duration fallback. |

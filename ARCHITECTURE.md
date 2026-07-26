@@ -106,11 +106,11 @@ users/<uid>/<match_id>/            # user-owned; RLS = owner
 bwf/<match_id>/                    # system-owned (BWF); readable to signed-in
   original.<ext>          raw source (upload or yt-dlp fetch)
   annotation.json         court geometry + player labels   (client / service)
-  normalized.mp4          ≤1080p/30fps H.264/AAC           (normalize)
+  normalized.mp4          ≤1080p/30fps H.264/AAC; BWF: cleaned cut is primary (normalize)
   thumbnail.jpg                                            (normalize)
-  valid.mp4               valid-frames-only cut            (normalize, BWF)
-  frame_manifest.csv      old→new frame index map          (normalize, BWF)
-  scores.csv              OCR score timeline               (normalize, BWF)
+  frame_ranges.csv        compact old→new range map        (normalize, BWF)
+  # scores.csv            NOT implemented (score timeline deferred)
+  # valid.mp4             legacy; BWF cleaned asset is normalized.mp4
   detections.json         per-frame pose + shuttle tracks  (detect)
   analysis.json           3D positions, metrics, resolved  (analyze)
 ```
@@ -198,8 +198,8 @@ pattern promoted to a standard:
 
 | Stage | Worker | Status | In | Out |
 |---|---|---|---|---|
-| `normalize` | `workers/vast/video-normalization` | ✅ (needs score-timeline output) | original / YouTube URL (worker yt-dlps ✅) | normalized.mp4, thumbnail.jpg; youtube: + original.mkv archive; BWF: + valid.mp4, frame_manifest.csv, scores.csv |
-| `detect` | `workers/vast/video-det` | 🚧 worker + `STAGES.detect` wired; analyze next; embedding module 📐 | normalized.mp4 | detections.json (pose + TrackNetV5 **top-K shuttle candidates** per frame for high recall + optional exclusive ReID). `server.py` + `detect/` + `pose/` |
+| `normalize` | `workers/vast/video-normalization` | ✅ (scores.csv deferred) | original / YouTube URL (worker yt-dlps ✅); BWF: annotation.json → valid_frames_config | normalized.mp4 (full or BWF cleaned cut), thumbnail.jpg; youtube: + original.mkv; BWF: + frame_ranges.csv |
+| `detect` | `workers/vast/video-det` | 🚧 worker + `STAGES.detect` wired; analyze next; embedding module 📐 | normalized.mp4 (BWF cut already primary) | detections.json (pose + TrackNetV5 **top-K shuttle candidates** per frame for high recall + optional exclusive ReID). `server.py` + `detect/` + `pose/` |
 | `analyze` | `workers/…/analysis` | 📐 | detections.json + annotation.json | analysis.json: 3D shuttle trajectory (physics fit), player ground-plane positions (homography), metrics (TBD) |
 
 `analyze` is CPU-dominant (geometry + curve fitting, no NN inference) — it can
@@ -221,9 +221,10 @@ players on its own — the embeddings earn their keep on fragmentation,
 occlusion at the net, and cross-shot/cross-video identity.
 
 BWF vs user is **not** a different pipeline — it's the same chain. BWF may
-carry richer `valid_frames_config` built from `annotation.json` (court +
-scoreboard geometry) and roster names on `matches.team*_player*`; user jobs
-typically normalize without valid-frames. See SUPABASE.md.
+carry a thin `valid_frames_config` from `annotation.json` (court corners +
+player names; scoreboard crops only if stored) and roster names on
+`matches.team*_player*`; the worker fills missing scoreboard geometry after
+probe. User jobs typically normalize without valid-frames. See SUPABASE.md.
 
 ## 5. Supabase: auth, tables, RLS
 

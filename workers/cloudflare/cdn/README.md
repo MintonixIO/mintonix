@@ -7,9 +7,10 @@ Two planes:
 - **Data plane** — `GET /<key>?t=<jwt>`: token-gated, cached delivery of private
   objects to end users. Proxied through the Worker so it stays cached.
 - **Control plane** — `POST /presign`: the Supabase orchestrator (service-token
-  authed) asks for a presigned **GET** / **PUT** / **DELETE**, or a **LIST** of
-  keys under a prefix. Signed URLs are hit directly against B2; LIST runs in
-  the Worker.
+  authed) asks for a presigned **GET** / **PUT** / **DELETE**, a **MULTIPART**
+  session (CreateMultipartUpload + part/complete/abort URLs), or a **LIST** of
+  keys under a prefix. Signed part/GET/PUT/DELETE URLs hit B2 directly; LIST
+  and CreateMultipartUpload run in the Worker.
 
 Why Cloudflare in front of B2: Backblaze and Cloudflare are **Bandwidth Alliance**
 partners, so egress from B2 → Cloudflare is **free**. Users stream from Cloudflare's
@@ -130,6 +131,14 @@ curl -sX POST https://cdn.mintonix.com/presign \
   -H 'Content-Type: application/json' \
   -d '{"key":"users/u1/m1/original.mp4","op":"DELETE"}'
 # -> { "url": "…", "method":"DELETE", "key":"…", "expiresAt":"…" }
+
+# Large pipeline outputs (normalized.mp4 / original.mkv): parallel multipart
+curl -sX POST https://cdn.mintonix.com/presign \
+  -H "Authorization: Bearer $PRESIGN_SERVICE_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"key":"bwf/<match_id>/normalized.mp4","op":"MULTIPART","parts":256,"partSize":67108864}'
+# -> { "op":"MULTIPART", "part_urls":[…], "complete_url":"…", "abort_url":"…",
+#      "part_size":67108864, "uploadId":"…", "expiresAt":"…" }
 
 curl -sX POST https://cdn.mintonix.com/presign \
   -H "Authorization: Bearer $PRESIGN_SERVICE_TOKEN" \

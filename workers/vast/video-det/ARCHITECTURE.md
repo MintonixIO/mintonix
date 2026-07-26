@@ -29,9 +29,10 @@ normalize  →  detect (this worker)  →  analyze (not wired yet)
 | **Route** | `POST /detect/sync` |
 | **Dispatcher** | `supabase/functions/jobs` → `STAGES.detect` |
 
-MVP always feeds `normalized.mp4`. Prefer `valid.mp4` later when dispatch can
-confirm the object exists. Optional `player_mask_url` is accepted by the worker
-but not yet presigned by jobs (ReID `player_id` stays null until mask lands).
+Always feeds `normalized.mp4`. For BWF, normalize already writes the cleaned
+court∧scoreboard cut to that key (no separate `valid.mp4` primary). Optional
+`player_mask_url` is accepted by the worker but not yet presigned by jobs
+(ReID `player_id` stays null until mask lands).
 
 ---
 

@@ -1,5 +1,5 @@
 """Valid-frame detection: court-visibility NCC + scoreboard-visibility OCR,
-combined into "keep these frames" ranges plus an old->new frame-index manifest.
+combined into keep-ranges plus a compact old→new range manifest.
 
 Ported from the sibling `valid-frames` project (court-det's fast_detector.py
 NCC court detector + score-det's read_scores_hd.py scoreboard OCR +
@@ -14,31 +14,27 @@ Definition (unchanged from valid-frames): a frame is valid iff
   AND
   the scoreboard is visible (OCR presence check, sampled once per second).
 
-Detection runs on the already-normalized video (not the raw source), so court
-NCC and scoreboard OCR coordinates are in that single, consistent coordinate
-system/frame-rate -- no cross-resolution or cross-fps frame-index mapping.
-normalize_job forces that video to CFR when this feature is requested, so
-frame index n and timestamp n/fps agree.
-
-This module only detects and maps: it returns keep-ranges, the manifest, and
-the ffmpeg `select` expression. normalize.py owns the actual encode -- the
-encoder choice and progress-logging convention live there, once.
+Detection runs on the *source* video (annotation coordinates are source-native).
+normalize_job then does ONE NVDEC encode of the kept ranges (same time-window
+primitive as full-timeline segment-parallel) into primary `normalized.mp4`.
 
 Decode cost is one keyframes-only pass (template bootstrap) plus ONE full
-decode fanned out to both detectors: the NCC stream and the 1fps scoreboard
-crops come from a single ffmpeg invocation (verified byte-identical to
-separate passes in the sibling project's SYSTEM.md) -- decode dominates
-detection time, so it isn't done twice.
+decode fanned out to both detectors (NVDEC when available): the NCC stream
+and the 1fps scoreboard crops come from a single ffmpeg. OCR overlaps the
+band decode via a producer-consumer queue.
 """
+
+from __future__ import annotations
 
 import csv
 import logging
 import os
+import queue
 import re
 import subprocess
 import tempfile
+import threading
 import time
-
 import cv2
 import numpy as np
 
@@ -58,6 +54,20 @@ DEFAULT_NCC_ON = 0.80
 DEFAULT_NCC_OFF = 0.70
 DEFAULT_OCR_CONF_MIN = 0.6
 DEFAULT_MIN_VALID_RUN = 5  # frames
+
+# OCR worker threads. Default scales with host cores (cap 8): PaddleOCR is
+# partly GIL-bound but multi-worker still overlaps I/O + native ops on fat
+# rented hosts (e.g. 48-core 5080 boxes). Override with OCR_WORKERS.
+def _default_ocr_workers() -> int:
+    env = os.environ.get("OCR_WORKERS")
+    if env is not None and env.strip() != "":
+        return max(1, int(env))
+    cores = os.cpu_count() or 4
+    # ~1 worker per 4 cores, floor 2, ceil 8.
+    return max(2, min(8, cores // 4))
+
+
+OCR_WORKERS = _default_ocr_workers()
 
 _DIGIT_TOKEN = re.compile(r"^[\d ]+$")
 _DIGIT_RE = re.compile(r"\d{1,2}")
@@ -87,10 +97,26 @@ def _pipe_frames(cmd):
             proc.wait()
 
 
+def _hwaccel_prefix() -> list[str]:
+    """Use NVDEC when a GPU is present so detect doesn't burn CPU on 4K decode.
+
+    Output stays system memory (software scale/crop after hw decode). Safe on
+    CPU-only hosts (empty prefix).
+    """
+    try:
+        from ffmpeg_ops import use_gpu
+        if use_gpu():
+            return ["-hwaccel", "cuda", "-hwaccel_device", "0"]
+    except Exception:  # noqa: BLE001 — detect must work without GPU probe
+        pass
+    return []
+
+
 def _iter_keyframes(video_path):
     """Decode only I-frames (fast, coarse) for reference bootstrapping."""
     yield from _pipe_frames([
-        "ffmpeg", "-v", "error", "-skip_frame", "nokey", "-i", video_path,
+        "ffmpeg", "-v", "error", *_hwaccel_prefix(),
+        "-skip_frame", "nokey", "-i", video_path,
         "-vf", f"scale={SW}:{SH}", "-vsync", "0",
         "-pix_fmt", "bgr24", "-f", "rawvideo", "pipe:1",
     ])
@@ -99,10 +125,10 @@ def _iter_keyframes(video_path):
 def _decode_fanout(video_path, crop, band_dir):
     """Single full decode fanned out to both detectors: yields the SWxSH NCC
     frames from stdout while the same ffmpeg writes 1fps scoreboard-band JPEGs
-    into band_dir."""
+    into band_dir. Prefers NVDEC when available (CPU scale after hw decode)."""
     pattern = os.path.join(band_dir, "band_%06d.jpg")
     yield from _pipe_frames([
-        "ffmpeg", "-v", "error", "-i", video_path,
+        "ffmpeg", "-v", "error", *_hwaccel_prefix(), "-i", video_path,
         "-map", "0:v:0", "-vf", f"scale={SW}:{SH}",
         "-pix_fmt", "bgr24", "-f", "rawvideo", "pipe:1",
         "-map", "0:v:0",
@@ -164,15 +190,30 @@ def _hysteresis(ncc, on, off):
     return out
 
 
+# Incomplete JPEG / transient decode — consumer may re-queue.
+_INCOMPLETE = object()
+OCR_IMREAD_RETRIES = 3
+OCR_ITEM_TIMEOUT_SEC = float(os.environ.get("OCR_ITEM_TIMEOUT_SEC", "120"))
+BAND_QUEUE_PUT_TIMEOUT_SEC = float(os.environ.get("BAND_QUEUE_PUT_TIMEOUT_SEC", "300"))
+
+
 def _read_scoreboard_frame(ocr, path, sub_crop, row_split_y, name_re, conf_min):
-    """True iff the scoreboard reads as present: a player name is detected,
-    or at least one digit token appears in each of the two score rows (split
-    by row_split_y)."""
+    """Presence check on one band JPEG.
+
+    Returns True/False for present/absent, or `_INCOMPLETE` when the file is
+    not yet a readable image (ffmpeg still writing).
+    """
     img = cv2.imread(path)
     if img is None:
-        return False
+        return _INCOMPLETE
     x0, y0 = sub_crop["x"], sub_crop["y"]
     x1, y1 = x0 + sub_crop["w"], y0 + sub_crop["h"]
+    # Guard empty/out-of-bounds sub-crop on the band.
+    h, w = img.shape[:2]
+    x0, y0 = max(0, x0), max(0, y0)
+    x1, y1 = min(w, x1), min(h, y1)
+    if x1 <= x0 or y1 <= y0:
+        return False
     crop = img[y0:y1, x0:x1]
     result = ocr.predict(crop)[0]
 
@@ -192,36 +233,50 @@ def _read_scoreboard_frame(ocr, path, sub_crop, row_split_y, name_re, conf_min):
     return has_name or (len(top) >= 1 and len(bot) >= 1)
 
 
-def _ocr_scoreboard(band_paths, sub_crop, row_split_y, player_names, conf_min):
-    """Per-second scoreboard-visibility mask over the extracted band JPEGs."""
-    from paddleocr import PaddleOCR  # heavy import, deferred so the pure-logic
-                                       # helpers stay importable/testable
-                                       # without the OCR runtime.
+def _ocr_consumer_loop(band_q: queue.Queue, results: dict, sub_crop, row_split_y,
+                       name_re, conf_min, stop_token):
+    """Consume band JPEG paths; write results[idx] = bool.
 
-    names = [n for n in player_names if n.strip()]
-    if not names:
-        # An empty alternation would match every token and silently degrade
-        # validity to court-only. Validated upfront too; this is the backstop.
-        raise RuntimeError("valid_frames: player_names must contain a non-empty name")
-    name_re = re.compile("|".join(re.escape(n) for n in names), re.I)
-    ocr = PaddleOCR(lang="en", use_doc_orientation_classify=False,
-                     use_doc_unwarping=False, use_textline_orientation=False)
-
-    t0 = time.time()
-    last_log = t0
-    visible = []
-    for path in band_paths:
-        visible.append(
-            _read_scoreboard_frame(ocr, path, sub_crop, row_split_y, name_re, conf_min)
-        )
-        now = time.time()
-        if now - last_log >= LOG_INTERVAL_SEC:
-            last_log = now
-            log.info("valid_frames(ocr): %d/%d seconds @ %.1f/s",
-                     len(visible), len(band_paths), len(visible) / (now - t0))
-    log.info("valid_frames(scoreboard): %d seconds in %.1fs, %d visible",
-             len(visible), time.time() - t0, sum(visible))
-    return visible
+    Incomplete JPEGs are retried **in place** (sleep + re-read) so retries never
+    land after stop tokens and cannot be dropped on a full queue.
+    """
+    from paddleocr import PaddleOCR
+    # enable_mkldnn=False: paddle 3.x OneDNN path crashes on predict with
+    # ConvertPirAttribute2RuntimeAttribute (ArrayAttribute<DoubleAttribute>).
+    ocr = PaddleOCR(
+        lang="en",
+        use_doc_orientation_classify=False,
+        use_doc_unwarping=False,
+        use_textline_orientation=False,
+        enable_mkldnn=False,
+    )
+    while True:
+        item = band_q.get()
+        if item is stop_token:
+            band_q.task_done()
+            break
+        idx, path = item[0], item[1]
+        try:
+            ok = _INCOMPLETE
+            for attempt in range(OCR_IMREAD_RETRIES):
+                ok = _read_scoreboard_frame(
+                    ocr, path, sub_crop, row_split_y, name_re, conf_min,
+                )
+                if ok is not _INCOMPLETE:
+                    break
+                time.sleep(0.05 * (attempt + 1))
+            if ok is _INCOMPLETE:
+                log.warning(
+                    "valid_frames(ocr item %d): unreadable after %d tries",
+                    idx, OCR_IMREAD_RETRIES,
+                )
+                results[idx] = False
+            else:
+                results[idx] = bool(ok)
+        except Exception as e:  # noqa: BLE001
+            log.warning("valid_frames(ocr item %d): %s", idx, e)
+            results[idx] = False
+        band_q.task_done()
 
 
 def _runs_of_true(mask, min_len):
@@ -258,18 +313,18 @@ def compute_valid_ranges(court_visible, scoreboard_visible_per_second, fps,
 
 
 def detect_valid_ranges(video_path, config, fps, width, height):
-    """Run both detectors over `video_path` (a CFR video of the given fps and
-    dimensions -- the coordinate system `config` geometry is expressed in) and
-    return (ranges, total_frame_count), where ranges is the sorted list of
-    inclusive (start, end) frame-index ranges to keep.
+    """Run both detectors over `video_path` (source video; annotation geometry
+    is in this coordinate system) and return (ranges, total_frame_count),
+    where ranges is the sorted list of inclusive (start, end) frame-index
+    ranges to keep.
 
-    `config` (all required except the ncc_on/off, ocr_conf_min, min_valid_run
-    tunables, which default to the valid-frames project's operating point):
+    `config` (required: court_corners, player_names; scoreboard geometry
+    should already have defaults applied by the job layer):
       court_corners:   [[x,y]]*4, the main-camera court polygon
       scoreboard_crop: {x,y,w,h}, the scoreboard band sampled at 1fps
       score_sub_crop:  {x,y,w,h}, tight OCR window inside scoreboard_crop
       row_split_y:     y (within score_sub_crop) separating the two score rows
-      player_names:    [str, str], anchors for the name-detected heuristic
+      player_names:    [str, …], anchors for the name-detected heuristic
 
     Raises if no valid ranges are found (almost certainly a bad config).
     """
@@ -278,30 +333,132 @@ def detect_valid_ranges(video_path, config, fps, width, height):
     ref = _build_court_reference(video_path, mask, area)
     log.info("valid_frames(reference): bootstrapped in %.1fs", time.time() - t0)
 
+    names = [n for n in config["player_names"] if isinstance(n, str) and n.strip()]
+    if not names:
+        raise RuntimeError("valid_frames: player_names must contain a non-empty name")
+    name_re = re.compile("|".join(re.escape(n) for n in names), re.I)
+    conf_min = config.get("ocr_conf_min", DEFAULT_OCR_CONF_MIN)
+    sub_crop = config["score_sub_crop"]
+    row_split_y = config["row_split_y"]
+
     with tempfile.TemporaryDirectory() as band_dir:
+        # Producer-consumer: as band_*.jpg files appear, OCR them while NCC
+        # continues consuming the rawvideo pipe.
+        band_q: queue.Queue = queue.Queue(maxsize=64)
+        ocr_results: dict[int, bool] = {}
+        stop = object()
+        n_ocr_threads = max(1, OCR_WORKERS)
+        consumers = [
+            threading.Thread(
+                target=_ocr_consumer_loop,
+                args=(band_q, ocr_results, sub_crop, row_split_y,
+                      name_re, conf_min, stop),
+                daemon=True,
+            )
+            for _ in range(n_ocr_threads)
+        ]
+        for t in consumers:
+            t.start()
+
+        seen_bands: set[str] = set()
+        next_band_idx = 0
+
+        def _enqueue(name: str) -> None:
+            nonlocal next_band_idx
+            path = os.path.join(band_dir, name)
+            try:
+                band_q.put(
+                    (next_band_idx, path),
+                    timeout=BAND_QUEUE_PUT_TIMEOUT_SEC,
+                )
+            except queue.Full as e:
+                raise RuntimeError(
+                    "valid_frames: OCR queue stalled (OCR_WORKERS too slow "
+                    "or hung PaddleOCR) — increase OCR_WORKERS or timeout"
+                ) from e
+            next_band_idx += 1
+            seen_bands.add(name)
+
+        def poll_new_bands(*, final: bool = False):
+            """Enqueue band JPEGs that are safe to read.
+
+            FFmpeg writes files in place; the newest name may still be
+            incomplete. Enqueue band N only once band N+1 exists (writer moved
+            on), or on final=True after decode EOF (all files complete).
+            """
+            try:
+                names_on_disk = sorted(
+                    f for f in os.listdir(band_dir) if f.endswith(".jpg")
+                )
+            except FileNotFoundError:
+                return
+            for i, name in enumerate(names_on_disk):
+                if name in seen_bands:
+                    continue
+                if not final and i == len(names_on_disk) - 1:
+                    # Newest file may still be open for write.
+                    continue
+                path = os.path.join(band_dir, name)
+                try:
+                    if os.path.getsize(path) < 32:
+                        if not final:
+                            continue
+                except OSError:
+                    if not final:
+                        continue
+                _enqueue(name)
+
         t0 = time.time()
         last_log = t0
         ncc = []
-        for frame in _decode_fanout(video_path, config["scoreboard_crop"], band_dir):
-            ncc.append(float((_normalize(_gray_small(frame)) * ref).sum()))
-            now = time.time()
-            if now - last_log >= LOG_INTERVAL_SEC:
-                last_log = now
-                log.info("valid_frames(decode): %d frames @ %.0f fps",
-                         len(ncc), len(ncc) / (now - t0))
+        try:
+            for frame in _decode_fanout(video_path, config["scoreboard_crop"], band_dir):
+                ncc.append(float((_normalize(_gray_small(frame)) * ref).sum()))
+                # Poll for new band JPEGs every ~30 frames to overlap OCR.
+                if len(ncc) % 30 == 0:
+                    poll_new_bands(final=False)
+                now = time.time()
+                if now - last_log >= LOG_INTERVAL_SEC:
+                    last_log = now
+                    log.info("valid_frames(decode): %d frames @ %.0f fps (ocr queued %d)",
+                             len(ncc), len(ncc) / (now - t0), next_band_idx)
+            poll_new_bands(final=True)  # final flush — all bands complete
+        finally:
+            for _ in consumers:
+                try:
+                    band_q.put(stop, timeout=BAND_QUEUE_PUT_TIMEOUT_SEC)
+                except queue.Full as e:
+                    raise RuntimeError(
+                        "valid_frames: could not deliver OCR stop token "
+                        "(queue full — OCR stalled)"
+                    ) from e
+            hung = []
+            for t in consumers:
+                t.join(timeout=OCR_ITEM_TIMEOUT_SEC * 2)
+                if t.is_alive():
+                    hung.append(t.name or "ocr-consumer")
+            if hung:
+                raise RuntimeError(
+                    f"valid_frames: OCR consumer(s) hung after join timeout: {hung}"
+                )
+
         court = _hysteresis(np.array(ncc, np.float32),
                             config.get("ncc_on", DEFAULT_NCC_ON),
                             config.get("ncc_off", DEFAULT_NCC_OFF))
         log.info("valid_frames(court): %d frames in %.1fs, %d visible",
                  len(court), time.time() - t0, int(court.sum()))
 
-        bands = sorted(
-            os.path.join(band_dir, f) for f in os.listdir(band_dir) if f.endswith(".jpg")
-        )
-        svis = _ocr_scoreboard(
-            bands, config["score_sub_crop"], config["row_split_y"],
-            config["player_names"], config.get("ocr_conf_min", DEFAULT_OCR_CONF_MIN),
-        )
+        # Fail-closed: every enqueued band index must have a result.
+        n_seconds = next_band_idx
+        missing = [i for i in range(n_seconds) if i not in ocr_results]
+        if missing:
+            raise RuntimeError(
+                f"valid_frames: OCR missing results for {len(missing)} band "
+                f"index(es) (e.g. {missing[:5]}); refusing partial scoreboard mask"
+            )
+        svis = [bool(ocr_results[i]) for i in range(n_seconds)]
+        log.info("valid_frames(scoreboard): %d seconds, %d visible (overlapped OCR)",
+                 n_seconds, sum(svis))
 
     ranges = compute_valid_ranges(
         court, svis, fps, config.get("min_valid_run", DEFAULT_MIN_VALID_RUN),
@@ -314,27 +471,73 @@ def detect_valid_ranges(video_path, config, fps, width, height):
     return ranges, len(court)
 
 
-def build_frame_manifest(ranges):
-    """[(old_start, old_end), ...] (sorted, non-overlapping, inclusive) ->
-    list of (old_frame, new_frame) pairs; new indices are sequential in kept
-    (chronological) order."""
-    manifest = []
+def output_frame_count_for_range(n_src: int, src_fps: float, out_fps: float) -> int:
+    """Approximate delivery frame count for a source keep-run after fps=out_fps.
+
+    Encode applies fps=min(src, MAX_FPS); for 60→30 this is ~half the source
+    frames. Uses round(n_src * out/src) with a floor of 1 for non-empty runs.
+    **Approximate:** actual ffmpeg fps-filter output may differ by ±1 frame per
+    range due to timestamp rounding; sufficient for remapping / duration estimates.
+    """
+    if n_src <= 0:
+        return 0
+    if not src_fps or src_fps <= 0 or not out_fps or out_fps <= 0:
+        return n_src
+    if abs(out_fps - src_fps) < 1e-6:
+        return n_src
+    return max(1, int(round(n_src * out_fps / src_fps)))
+
+
+def build_range_manifest(ranges, src_fps: float | None = None,
+                         out_fps: float | None = None):
+    """Compact range map: list of
+    {old_start, old_end, new_start, new_end} (all inclusive).
+
+    old_* index the **source** (detection) frame timeline.
+    new_* index the **cleaned output** after delivery fps cap
+    (out_fps = min(src_fps, MAX_FPS)). When src_fps/out_fps omitted, 1:1.
+    """
+    out = []
     new_idx = 0
     for old_start, old_end in ranges:
-        for old_idx in range(old_start, old_end + 1):
-            manifest.append((old_idx, new_idx))
-            new_idx += 1
-    return manifest
+        n_src = old_end - old_start + 1
+        if src_fps is not None and out_fps is not None:
+            n_out = output_frame_count_for_range(n_src, src_fps, out_fps)
+        else:
+            n_out = n_src
+        new_start = new_idx
+        new_end = new_idx + n_out - 1 if n_out > 0 else new_idx - 1
+        out.append({
+            "old_start": old_start,
+            "old_end": old_end,
+            "new_start": new_start,
+            "new_end": new_end,
+        })
+        new_idx = new_end + 1 if n_out > 0 else new_idx
+    return out
 
 
-def write_manifest_csv(manifest, path):
+def write_range_manifest_csv(range_manifest, path):
+    """Write compact ranges CSV (not one row per frame)."""
     with open(path, "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["old_frame", "new_frame"])
-        w.writerows(manifest)
+        w.writerow(["old_start", "old_end", "new_start", "new_end"])
+        for r in range_manifest:
+            w.writerow([r["old_start"], r["old_end"], r["new_start"], r["new_end"]])
 
 
-def build_select_expr(ranges):
-    """ffmpeg `select` filter boolean expression keeping frame numbers `n`
-    that fall in any of `ranges` (inclusive)."""
-    return "+".join(f"between(n,{a},{b})" for a, b in ranges)
+def count_kept_frames(ranges, src_fps: float | None = None,
+                      out_fps: float | None = None) -> int:
+    """Kept frame count in source space (default) or output space when fps given."""
+    if src_fps is None or out_fps is None:
+        return sum(end - start + 1 for start, end in ranges)
+    total = 0
+    for start, end in ranges:
+        total += output_frame_count_for_range(end - start + 1, src_fps, out_fps)
+    return total
+
+
+def kept_duration_sec(ranges, src_fps: float) -> float:
+    if not src_fps or src_fps <= 0:
+        return 0.0
+    return sum((end - start + 1) / src_fps for start, end in ranges)

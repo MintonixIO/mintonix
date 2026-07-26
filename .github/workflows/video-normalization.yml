@@ -29,4 +29,5 @@ jobs:
       # Transcode is GPU-only and CI runners have no GPU: the transcode e2e
       # tests self-skip, leaving the contract/unit tests plus the remux-path
       # e2e (which needs no GPU) to validate the image.
-      test_command: python -m unittest test_handler -v
+      # Suite lives in test_*.py (test_handler.py was split); discover matches local README.
+      test_command: python -m unittest discover -v -s . -p 'test_*.py'

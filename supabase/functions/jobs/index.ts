@@ -29,7 +29,11 @@
  *   owner_id set      →  users/<owner_id>/<match_id>/
  *
  * Stages wired: normalize → detect. analyze lands when its worker contract
- * is pinned. annotation.json → valid_frames_config is a follow-up (see SUPABASE.md).
+ * is pinned. For system/BWF matches, dispatch loads annotation.json into a
+ * thin valid_frames_config (corners + names + stored crops only; worker
+ * defaults missing scoreboard geometry after probe) so normalize writes a
+ * cleaned cut to normalized.mp4 (detect always reads that key). scores.csv
+ * is not produced (deferred).
  *
  * Secrets:
  *   PIPELINE_SERVICE_TOKEN  auth for /dispatch (shared with matches-ingest)
@@ -42,6 +46,8 @@
  *   VAST_AUTOSCALER_URL     optional, default https://run.vast.ai
  *   VAST_TLS_CA             optional PEM: vast's self-signed worker CA
  *   PRESIGN_EXPIRY_SECONDS  optional, default 14400
+ *   MULTIPART_MAX_PARTS     optional, default 256 (× part size ≈ max object)
+ *   MULTIPART_PART_SIZE     optional, default 67108864 (64 MiB)
  * SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY injected by the platform.
  */
 
@@ -96,19 +102,77 @@ function isYoutubeUrl(raw: string | null | undefined): boolean {
 
 // ---------------------------------------------------------------- presign
 
-async function presign(key: string, op: "GET" | "PUT"): Promise<string> {
+/** Worker multipart upload shape (matches video-normalization upload_multipart). */
+export interface MultipartUploadSpec {
+  part_urls: string[];
+  complete_url: string;
+  abort_url: string;
+  part_size: number;
+}
+
+async function presignControlPlane(
+  body: Record<string, unknown>,
+): Promise<Response> {
   const presignUrl = Deno.env.get("CDN_PRESIGN_URL");
   const token = Deno.env.get("PRESIGN_SERVICE_TOKEN");
   if (!presignUrl || !token) throw new Error("presign control plane not configured");
-  const expiresIn = Number(Deno.env.get("PRESIGN_EXPIRY_SECONDS") ?? "14400");
-  const resp = await fetch(presignUrl, {
+  return fetch(presignUrl, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ key, op, expiresIn }),
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(body),
   });
+}
+
+async function presign(key: string, op: "GET" | "PUT"): Promise<string> {
+  const expiresIn = Number(Deno.env.get("PRESIGN_EXPIRY_SECONDS") ?? "14400");
+  const resp = await presignControlPlane({ key, op, expiresIn });
   if (!resp.ok) throw new Error(`presign ${op} ${key} failed: ${resp.status}`);
   const { url } = await resp.json() as { url: string };
   return url;
+}
+
+/**
+ * Create a B2 multipart upload session and return presigned part/complete/abort
+ * URLs for large pipeline outputs (normalized.mp4, original.mkv). Small objects
+ * (thumbnail, CSV, JSON) stay on single PUT via presign(..., "PUT").
+ */
+async function presignMultipart(key: string): Promise<MultipartUploadSpec> {
+  const expiresIn = Number(Deno.env.get("PRESIGN_EXPIRY_SECONDS") ?? "14400");
+  const parts = Number(Deno.env.get("MULTIPART_MAX_PARTS") ?? "256");
+  const partSize = Number(
+    Deno.env.get("MULTIPART_PART_SIZE") ?? String(64 * 1024 * 1024),
+  );
+  const resp = await presignControlPlane({
+    key,
+    op: "MULTIPART",
+    parts,
+    partSize,
+    expiresIn,
+  });
+  if (!resp.ok) {
+    const t = await resp.text();
+    throw new Error(
+      `presign MULTIPART ${key} failed: ${resp.status} ${t.slice(0, 200)}`,
+    );
+  }
+  const body = await resp.json() as {
+    part_urls?: string[];
+    complete_url?: string;
+    abort_url?: string;
+    part_size?: number;
+  };
+  if (!body.part_urls?.length || !body.complete_url || !body.abort_url) {
+    throw new Error(`presign MULTIPART ${key}: malformed response`);
+  }
+  return {
+    part_urls: body.part_urls,
+    complete_url: body.complete_url,
+    abort_url: body.abort_url,
+    part_size: body.part_size ?? partSize,
+  };
 }
 
 // ---------------------------------------------------------------- job token
@@ -168,8 +232,127 @@ interface Settlement {
 }
 
 /**
+ * Thin map of B2 annotation.json → worker valid_frames_config.
+ * Field renames only: court.corners → court_corners; labels[].display_name
+ * (or match roster) → player_names. Passes scoreboard_crop / score_sub_crop /
+ * row_split_y through **only if present** — does not invent geometry.
+ * Worker is sole defaulting authority: after probe, apply_valid_frames_defaults
+ * fills missing scoreboard geometry (top-left quadrant convention).
+ *
+ * Returns null when annotation is absent/unusable (fail-closed for BWF).
+ */
+export function annotationToValidFramesConfig(
+  annotation: unknown,
+  roster: {
+    team1_player1?: string | null;
+    team1_player2?: string | null;
+    team2_player1?: string | null;
+    team2_player2?: string | null;
+  },
+): Record<string, unknown> | null {
+  if (!annotation || typeof annotation !== "object") return null;
+  const ann = annotation as Record<string, unknown>;
+  const court = ann.court;
+  if (!court || typeof court !== "object") return null;
+  const c = court as Record<string, unknown>;
+  const corners = c.corners;
+  if (
+    !Array.isArray(corners) || corners.length !== 4 ||
+    !corners.every((p) =>
+      Array.isArray(p) && p.length === 2 &&
+      typeof p[0] === "number" && typeof p[1] === "number"
+    )
+  ) {
+    return null;
+  }
+
+  const names: string[] = [];
+  const labels = ann.labels;
+  if (Array.isArray(labels)) {
+    for (const lab of labels) {
+      if (lab && typeof lab === "object") {
+        const n = (lab as Record<string, unknown>).display_name;
+        if (typeof n === "string" && n.trim()) names.push(n.trim());
+      }
+    }
+  }
+  if (names.length === 0) {
+    for (const key of [
+      "team1_player1",
+      "team1_player2",
+      "team2_player1",
+      "team2_player2",
+    ] as const) {
+      const n = roster[key];
+      if (typeof n === "string" && n.trim()) names.push(n.trim());
+    }
+  }
+  if (names.length === 0) return null;
+
+  const cfg: Record<string, unknown> = {
+    court_corners: corners,
+    player_names: names,
+  };
+
+  const asCrop = (obj: unknown): Record<string, number> | null => {
+    if (!obj || typeof obj !== "object") return null;
+    const o = obj as Record<string, unknown>;
+    const keys = ["x", "y", "w", "h"] as const;
+    if (!keys.every((k) => typeof o[k] === "number")) return null;
+    return {
+      x: o.x as number,
+      y: o.y as number,
+      w: o.w as number,
+      h: o.h as number,
+    };
+  };
+  const crop = asCrop(c.scoreboard_crop);
+  if (crop) cfg.scoreboard_crop = crop;
+  const sub = asCrop(c.score_sub_crop);
+  if (sub) cfg.score_sub_crop = sub;
+  if (typeof c.row_split_y === "number") cfg.row_split_y = c.row_split_y;
+
+  return cfg;
+}
+
+/**
+ * Load annotation.json for system/BWF matches.
+ * Throws when missing/unusable so the job fails instead of silently
+ * full-timeline normalizing an uncleaned BWF master into detect.
+ */
+async function loadBwfValidFramesConfig(
+  job: DispatchedJob,
+): Promise<Record<string, unknown>> {
+  const url = await presign(`${job.b2_prefix}annotation.json`, "GET");
+  const resp = await fetch(url);
+  if (!resp.ok) {
+    throw new Error(
+      `BWF match ${job.match_id}: annotation.json missing or unreadable ` +
+        `(HTTP ${resp.status}); cannot build valid_frames_config`,
+    );
+  }
+  const annotation = await resp.json();
+  const cfg = annotationToValidFramesConfig(annotation, {
+    team1_player1: job.team1_player1,
+    team1_player2: job.team1_player2,
+    team2_player1: job.team2_player1,
+    team2_player2: job.team2_player2,
+  });
+  if (!cfg) {
+    throw new Error(
+      `BWF match ${job.match_id}: annotation.json unusable ` +
+        `(need court.corners + player names/labels or roster)`,
+    );
+  }
+  return cfg;
+}
+
+/**
  * Stage routing table. normalize → detect; analyze slots in when ready.
- * Valid-frames / annotation.json loading is a follow-up.
+ *
+ * BWF contract: cleaned cut (court ∧ scoreboard) is written to
+ * normalized.mp4 so detect always GETs that key. Compact frame_ranges.csv
+ * is a side artifact. scores.csv is not produced.
  */
 const STAGES: Record<string, {
   route: string;
@@ -191,23 +374,33 @@ const STAGES: Record<string, {
       };
 
       // User-owned: original already in B2 as original.mp4 (matches-ingest).
-      // System/BWF with YouTube: always yt-dlp + archive PUT. Retries must not
-      // be B2-only — if original.mkv never landed, a GET would hard-fail forever.
+      // System/BWF with YouTube: always yt-dlp + multipart archive. Retries must
+      // not be B2-only — if original.mkv never landed, a GET would hard-fail.
       // (Worker overwrites the same key on successful archive.)
       // System/backlog without URL: original already under the prefix as mp4.
+      // Downloads use parallel byte-ranges on the presigned GET (worker DL_CONNECTIONS).
       if (job.owner_id) {
         env.input_url = await presign(`${prefix}original.mp4`, "GET");
       } else if (isYoutubeUrl(job.source_url)) {
         env.input_url = job.source_url;
-        env.original_upload_url = await presign(`${prefix}original.mkv`, "PUT");
+        env.original_upload = await presignMultipart(`${prefix}original.mkv`);
       } else {
         env.input_url = await presign(`${prefix}original.mp4`, "GET");
       }
 
-      env.output_upload_url = await presign(`${prefix}normalized.mp4`, "PUT");
+      // Primary cleaned deliverable (BWF cut or full normalize) — multipart so
+      // multi-GB uploads hit line rate (worker UL_CONNECTIONS).
+      env.output_upload = await presignMultipart(`${prefix}normalized.mp4`);
+      // Small side assets: single PUT is enough.
       env.thumbnail_upload_url = await presign(`${prefix}thumbnail.jpg`, "PUT");
 
-      // TODO: load annotation.json (presign GET) → valid_frames_config for BWF.
+      // BWF / system: require annotation.json → valid_frames_config; fail the
+      // job if missing (no silent full-timeline fallback). Worker does
+      // detect-then-single-encode into normalized.mp4.
+      if (!job.owner_id) {
+        env.valid_frames_config = await loadBwfValidFramesConfig(job);
+        env.manifest_upload_url = await presign(`${prefix}frame_ranges.csv`, "PUT");
+      }
       return env;
     },
 
@@ -236,8 +429,8 @@ const STAGES: Record<string, {
 
     async buildEnvelope(job, token) {
       const prefix = job.b2_prefix;
-      // Always use normalized.mp4 (always produced). Prefer valid.mp4 later when
-      // dispatch can confirm the object exists (BWF valid-frames path).
+      // Always normalized.mp4 — for BWF this is already the cleaned cut
+      // (court ∧ scoreboard). No separate valid.mp4 primary path.
       // player_mask_url is accepted by the worker for exclusive ReID seeds but
       // not presigned yet — player_id stays null until mask upload is productized.
       return {

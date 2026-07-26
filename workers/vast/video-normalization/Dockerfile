@@ -48,13 +48,14 @@ WORKDIR /app
 COPY requirements.txt .
 RUN python3 -m pip install --no-cache-dir -r requirements.txt
 
-# PaddleOCR pulls its detection/recognition models from Paddle's CDN on first
-# use. Bake them into the image (instantiating with the exact flags
-# valid_frames.py uses) so a freshly autoscaled instance doesn't stall
-# mid-job on a model download — or fail outright if the CDN is unreachable.
+# PaddleOCR models: best-effort bake so BWF OCR does not hit the CDN mid-job.
+# Non-fatal — BWF valid-frames is optional; a CDN blip at build must not block
+# the non-BWF normalize path. Models download on first BWF job if bake fails.
+# valid_frames/paddle is imported lazily only when valid_frames_config is set.
 RUN python3 -c "from paddleocr import PaddleOCR; \
     PaddleOCR(lang='en', use_doc_orientation_classify=False, \
-    use_doc_unwarping=False, use_textline_orientation=False)"
+    use_doc_unwarping=False, use_textline_orientation=False)" \
+    || echo "WARN: PaddleOCR model bake skipped (BWF OCR will download on first use)"
 
 COPY . .
 
