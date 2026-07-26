@@ -3,6 +3,8 @@
 Owns YOLO26x-pose TensorRT inference, letterbox geometry, CUDA-graph consumer,
 and engine export helpers. Job I/O, shuttle, and ReID live in `detect/` +
 `server.py` and should import pose only through this package.
+
+Multi-ffmpeg research code lives under `tools/ffmpeg_pose_bench/` (not product).
 """
 from .engine import (
     DEFAULT_CONF,
@@ -26,5 +28,3 @@ __all__ = [
     "letterbox_bgr",
     "letterbox_params",
 ]
-# ffmpeg_feed / decode_pool are optional heavy imports (ffmpeg + mp);
-# use `from pose.ffmpeg_feed import run_ffmpeg_pose` (or research_pipeline alias).

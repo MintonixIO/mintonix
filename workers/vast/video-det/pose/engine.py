@@ -4,8 +4,7 @@ Product code (detect/pose.py) must not reimplement preprocess, TRT I/O, or
 postprocess — it only adapts engine outputs into the job/JSON types.
 
 Pure postprocess helpers (`coerce_ultralytics_pose`, `decode_pose_frame`,
-`decode_pose_batch`) are shared by the serial `PoseEngine` path and the
-ffmpeg multi-decode feed so both produce identical `EngineDetection`s.
+`decode_pose_batch`) decode TRT output to original-pixel `EngineDetection`s.
 """
 from __future__ import annotations
 
@@ -126,8 +125,8 @@ class PoseEngine:
     """Synchronous batch pose engine for already-decoded BGR frames.
 
     Uses Ultralytics TRT engines, letterbox geometry, and conf policy.
-    GPU work is a K-deep CUDA-graph consumer from trt_runtime; this class only
-    stages one host batch at a time so it can share the GPU with shuttle/ReID.
+    GPU work is the single-buffer product ``GpuConsumer`` (stage → run → sync)
+    so the same GPU can run shuttle/ReID next without a multi-K research ring.
     """
 
     def __init__(
@@ -136,7 +135,6 @@ class PoseEngine:
         *,
         conf: float = DEFAULT_CONF,
         batch_size: int | None = None,
-        graph_depth: int = 2,
     ) -> None:
         # Defer CUDA/TRT until construction so `import pose` works on CI without
         # a driver (same contract as detect.reid).
@@ -165,9 +163,7 @@ class PoseEngine:
             self.imgsz = h
         else:
             self.imgsz = IMGSZ
-        self._consumer = GpuConsumer(
-            self.engine, self.batch_size, K=graph_depth, imgsz=self.imgsz
-        )
+        self._consumer = GpuConsumer(self.engine, self.batch_size, imgsz=self.imgsz)
         self._torch = torch
 
     def run_batch(self, frames_bgr: list[np.ndarray]) -> list[list[EngineDetection]]:
@@ -188,10 +184,10 @@ class PoseEngine:
             metas.append(meta)
 
         c = self._consumer
-        b = c.stage_host(rgb)
-        c.run_gpu(b)
+        c.stage_host(rgb)
+        c.run_gpu(0)
         c.sync()
-        raw = c.out[b].detach().float().cpu().numpy()
+        raw = c.out.detach().float().cpu().numpy()
         return decode_pose_batch(raw, metas, self.conf)
 
 

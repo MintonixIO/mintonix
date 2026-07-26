@@ -1,5 +1,19 @@
 # tools
 
+## `ffmpeg_pose_bench/` (non-product)
+
+Multi-ffmpeg SHM + CUDA-graph pose throughput research. **Not** used by
+`detect.VideoDetector` or `server.py`. Time-sliced multi-decode can desync from
+sequential OpenCV shuttle indices; product stays single OpenCV pass.
+
+Owns multi-K `RingGpuConsumer` + zero-copy `feed` (`ring_consumer.py`); product
+`pose.trt_runtime.GpuConsumer` is K=1 only.
+
+```bash
+# from workers/vast/video-det with PYTHONPATH=.
+python -c "from tools.ffmpeg_pose_bench.ffmpeg_feed import run_ffmpeg_pose"
+```
+
 ## `visualize_detections.py`
 
 Overlay product `detections.json` (pose + shuttle) on a match video for quality review.

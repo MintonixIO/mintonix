@@ -1,6 +1,6 @@
 # pose/ — YOLO26x-pose TensorRT engine
 
-Product pose inference used by `detect.PoseEstimator` → `detections.json`.
+Product pose inference used by `detect.VideoDetector` → `detections.json`.
 
 ## Layout
 
@@ -8,7 +8,7 @@ Product pose inference used by `detect.PoseEstimator` → `detections.json`.
 |---|---|
 | `engine.py` | `PoseEngine`: letterbox batch → TRT → pixel detections |
 | `letterbox.py` | 640 letterbox / unletterbox geometry (`IMGSZ`) |
-| `trt_runtime.py` | `load_engine`, `GpuConsumer` (CUDA graphs) |
+| `trt_runtime.py` | `load_engine`, product `GpuConsumer` (K=1 CUDA graph: stage→run→sync) |
 | `export_trt.py` / `download_model.py` | Manual engine build on target GPU |
 
 ## Engine build
@@ -35,3 +35,6 @@ dets = engine.run_batch(frames_bgr)  # len == engine.batch_size
 ```
 
 Job orchestration, shuttle, and ReID live in `detect/` — not here.
+
+Multi-ffmpeg pose throughput experiments live under
+`tools/ffmpeg_pose_bench/` and are **not** product path.
