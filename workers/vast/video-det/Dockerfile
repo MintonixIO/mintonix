@@ -43,16 +43,23 @@ RUN mkdir -p /workspace/vast-pyworker \
     && printf '# worker.py needs only vastai, installed by start_server.sh\n' \
        > /workspace/vast-pyworker/requirements.txt
 
+# ALLOW_FILE_URLS=1 enables local benchmark file:// I/O only.
+# Reads: /app (sample.mp4), /tmp, tempfile.gettempdir().
+# Writes: /tmp + tempfile only — never /app (see io_util._file_url_write_roots).
+# Production job traffic must use https presigned URLs, not file://.
 ENV MODEL_SERVER_PORT=18000 \
     MODEL_LOG=/var/log/portal/video-det.log \
     WORKSPACE_DIR=/workspace \
     WORKER_PORT=3000 \
     BENCHMARK_INPUT_URL=file:///app/sample.mp4 \
+    ALLOW_FILE_URLS=1 \
     POSE_ENGINE=/app/models/yolo26x_pose_int8.engine \
     SHUTTLE_CKPT=/app/models/tracknetv5.pt \
     REID_ENGINE=/app/models/osnet_reid_int8.engine
 
 # Models are mounted or downloaded at container start (not always baked in).
+# server.py fails startup if POSE_ENGINE / SHUTTLE_CKPT are missing unless
+# ALLOW_MISSING_MODELS=1 (do not use that in production).
 EXPOSE 3000
 
 CMD ["bash", "entrypoint.sh"]

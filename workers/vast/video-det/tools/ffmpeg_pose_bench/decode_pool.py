@@ -20,7 +20,7 @@ from queue import Empty as QueueEmpty
 import numpy as np
 import torch
 
-from .letterbox import IMGSZ
+from pose.letterbox import IMGSZ
 
 CHANNELS = 3
 F_SETPIPE_SZ = 1031
@@ -271,5 +271,5 @@ class IndexedDecodePool:
             pass
 
 
-# Re-export for callers (`from pose.decode_pool import Empty`)
+# Re-export for callers (`from tools.ffmpeg_pose_bench.decode_pool import Empty`)
 Empty = QueueEmpty

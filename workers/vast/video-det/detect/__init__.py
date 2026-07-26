@@ -1,8 +1,10 @@
-"""Product detect orchestrator: pose feed → shuttle/ReID on OpenCV frames."""
+"""Product detect orchestrator: single-pass OpenCV → pose + shuttle (+ ReID)."""
 from __future__ import annotations
 
 import logging
 import math
+import queue
+import threading
 from pathlib import Path
 from typing import Generator
 
@@ -11,59 +13,79 @@ import numpy as np
 
 from .config import DetectConfig
 from .pose import to_pose_result
+from .shuttle import SHUTTLE_WIN
 from .types import FrameResult, PoseResult, ShuttleCandidate
 
 log = logging.getLogger("video-det.detect")
 
-# Shuttle window is fixed at 3 (TrackNetV5 triplet).
-SHUTTLE_WIN = 3
+__all__ = [
+    "DetectConfig",
+    "SHUTTLE_WIN",
+    "VideoDetector",
+    "_chunk_size",
+]
 
 # Default chunk size when engine batch divides 48 (batch ∈ {8, 16}).
-# If batch does not divide 48, use lcm(batch, 3) via `_chunk_size`.
 _DEFAULT_CHUNK = 48
+# Hard cap so large engine batches do not balloon host+GPU memory.
+_MAX_CHUNK = 96
 
 
 def _chunk_size(batch_size: int | None) -> int:
-    """Frames per OpenCV shuttle/ReID chunk.
+    """Frames per OpenCV pose/shuttle/ReID chunk (pose/RAM only).
 
-    Prefer 48 when `batch_size` divides it (no wasted pad for engines with
-    batch 8 or 16). Otherwise `lcm(batch, 3)` so both alignments stay clean.
-    When batch is unknown (ffmpeg feed already finished pose), 48 is fine.
+    Prefer 48 when ``batch_size`` divides it (no wasted pad for engines with
+    batch 8 or 16). Otherwise the smallest multiple of ``batch_size`` that is
+    ≥ 48 (capped at ``_MAX_CHUNK``). Shuttle uses stride-1 windows and does not
+    require multiples of 3.
     """
     if batch_size is None or batch_size <= 0:
         return _DEFAULT_CHUNK
+    if batch_size > _MAX_CHUNK:
+        # Engine batch already larger than our host-frame budget; keep the
+        # OpenCV chunk at the cap and pad inside `_pose_chunk`.
+        return _MAX_CHUNK
     if _DEFAULT_CHUNK % batch_size == 0:
         return _DEFAULT_CHUNK
-    return math.lcm(batch_size, SHUTTLE_WIN)
+    mult = math.ceil(_DEFAULT_CHUNK / batch_size) * batch_size
+    return min(mult, _MAX_CHUNK)
 
 
 class VideoDetector:
-    """Single-path product detector.
+    """Single-pass product detector.
 
-    1. Pose feed → `dict[int, list[EngineDetection]]` (opencv or ffmpeg)
-    2. OpenCV once for shuttle (+ ReID seed on frame 0)
-    3. Per chunk: poses for those indices, shuttle, ReID assign → FrameResult
+    One OpenCV decode thread owns VideoCapture and fills the next BGR chunk
+    while the main thread runs pose → shuttle → ReID on the current chunk
+    (one-chunk lookahead; at most one pending data chunk buffered).
 
-    Output length equals the OpenCV frame count. Missing pose indices get an
-    empty pose list; we never invent trailing empty-shuttle frames past OpenCV EOF.
+    Pose and shuttle share the same sequential OpenCV frame index and stay
+    serial on the GPU. Shuttle carries one-frame context across chunks so
+    stride-1 windows are globally correct. Output length equals frames
+    successfully read (must be > 0).
     """
 
     def __init__(self, config: DetectConfig) -> None:
+        # Defer heavy CUDA/TRT imports until construction (CI can import detect).
+        from pose.engine import PoseEngine
+
         from .reid import ReIDEmbedder
         from .shuttle import ShuttleDetector
 
         self.config = config
-        self.pose_engine_path = Path(config.pose_engine)
+        if not Path(config.pose_engine).is_file():
+            raise FileNotFoundError(f"pose engine missing: {config.pose_engine}")
+        if not Path(config.shuttle_ckpt).is_file():
+            raise FileNotFoundError(f"shuttle checkpoint missing: {config.shuttle_ckpt}")
+
+        self.pose = PoseEngine(config.pose_engine, conf=config.conf)
         self.shuttle = ShuttleDetector(config.shuttle_ckpt)
         self.reid = (
             ReIDEmbedder(config.reid_engine) if config.reid_engine is not None else None
         )
-        # OpenCV feed may pre-load PoseEngine at run; keep optional handle for
-        # callers that want batch_size after first run.
-        self._pose_batch: int | None = None
+        self.pose_batch = self.pose.batch_size
         log.info(
-            "VideoDetector: pose_feed=%s conf=%s reid=%s",
-            config.pose_feed,
+            "VideoDetector: batch=%d conf=%s reid=%s",
+            self.pose_batch,
             config.conf,
             config.reid_engine is not None,
         )
@@ -75,140 +97,278 @@ class VideoDetector:
     def run(
         self, video_path: str | Path, player_mask: np.ndarray | None = None
     ) -> Generator[tuple[list[FrameResult], int, int], None, None]:
-        """Yield (chunk_results, frames_done, frames_total) after every chunk."""
-        by_frame_eng, pose_meta = self._run_pose_feed(video_path)
-        log.info("pose feed meta: %s", pose_meta)
+        """Yield (chunk_results, frames_done, frames_total) after every emit.
 
-        orig_hw = pose_meta.get("orig_hw")
-        batch = pose_meta.get("batch")
-        if isinstance(batch, int):
-            self._pose_batch = batch
-        chunk_size = _chunk_size(self._pose_batch)
+        Decode overlaps GPU work via one-chunk lookahead: a producer thread
+        owns the single OpenCV ``VideoCapture`` and keeps at most one full
+        data chunk ready (``Queue(maxsize=1)``). EOS is a separate
+        ``threading.Event`` so it cannot race with data or be dropped.
 
+        Cross-chunk shuttle context (one-frame hold) and ReID seed live only
+        in this method. ``_process_chunk`` is the pure pose→shuttle→ReID
+        helper invoked with fully resolved ``prev_frame`` / ``next_frame``.
+        """
         from .reid import build_reference_embeddings
 
         cap = cv2.VideoCapture(str(video_path))
         if not cap.isOpened():
             raise RuntimeError(f"OpenCV could not open video: {video_path}")
-        # Prefer CAP_PROP when available; actual total is frames we successfully read.
+
         reported = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         total_hint = max(1, reported) if reported > 0 else 1
+        chunk_size = _chunk_size(self.pose_batch)
 
-        buf: list[np.ndarray] = []
-        indices: list[int] = []
-        global_idx = 0
-        refs: dict[int, np.ndarray] = {}
-        # Fall back to pose meta size when OpenCV frames lack shape (should not happen).
-        fallback_h, fallback_w = 0, 0
-        if isinstance(orig_hw, (list, tuple)) and len(orig_hw) == 2:
-            fallback_h, fallback_w = int(orig_hw[0]), int(orig_hw[1])
+        # Data-only queue: at most one pending chunk. EOS is an Event so it
+        # never competes for a queue slot or gets dropped on Full.
+        pending: queue.Queue = queue.Queue(maxsize=1)
+        eos = threading.Event()
+        stop = threading.Event()
+        producer_error: list[BaseException] = []
 
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
+        def _put_chunk(chunk: tuple[list[np.ndarray], list[int]]) -> bool:
+            """Block with timeout until put succeeds or stop. Returns False if stopped."""
+            while not stop.is_set():
+                try:
+                    pending.put(chunk, timeout=0.1)
+                    return True
+                except queue.Full:
+                    continue
+            return False
 
-            if global_idx == 0 and self.reid is not None and player_mask is not None:
-                refs = build_reference_embeddings(self.reid, frame, player_mask)
+        def _producer() -> None:
+            global_idx = 0
+            buf: list[np.ndarray] = []
+            indices: list[int] = []
+            try:
+                while not stop.is_set():
+                    ret, frame = cap.read()
+                    if not ret:
+                        break
+                    # OpenCV may reuse the same buffer; copy before buffering.
+                    # CPU-only: no CUDA/TRT on this thread.
+                    frame = frame.copy()
+                    buf.append(frame)
+                    indices.append(global_idx)
+                    global_idx += 1
 
-            buf.append(frame)
-            indices.append(global_idx)
-            global_idx += 1
+                    if len(buf) == chunk_size:
+                        chunk = (buf, indices)
+                        buf = []
+                        indices = []
+                        if not _put_chunk(chunk):
+                            break
 
-            if len(buf) == chunk_size:
-                results = self._merge_chunk(
-                    buf, indices, by_frame_eng, refs, fallback_w, fallback_h
-                )
-                buf.clear()
-                indices.clear()
-                yield results, global_idx, max(total_hint, global_idx)
+                if buf and not stop.is_set():
+                    _put_chunk((buf, indices))
+            except BaseException as e:  # noqa: BLE001 — stash for main thread
+                producer_error.append(e)
+            finally:
+                cap.release()
+                # Always-writable terminal signal (never needs a queue slot).
+                eos.set()
 
-        cap.release()
-
-        if buf:
-            results = self._merge_chunk(
-                buf, indices, by_frame_eng, refs, fallback_w, fallback_h
-            )
-            buf.clear()
-            indices.clear()
-            yield results, global_idx, max(total_hint, global_idx)
-
-        # No trailing pose-only empty-shuttle frames: output length == OpenCV count.
-
-    # ------------------------------------------------------------------
-    # Pose feed
-    # ------------------------------------------------------------------
-
-    def _run_pose_feed(
-        self, video_path: str | Path
-    ) -> tuple[dict[int, list], dict]:
-        cfg = self.config
-        if cfg.pose_feed == "ffmpeg":
-            from .pose_feed import run_ffmpeg_pose
-
-            log.info("pose feed=ffmpeg conf=%s", cfg.conf)
-            return run_ffmpeg_pose(
-                video_path,
-                self.pose_engine_path,
-                conf=cfg.conf,
-                ceiling=cfg.pose_ceiling,
-                workers=cfg.decode_workers,
-                imgsz=cfg.imgsz,
-            )
-
-        from .pose_feed import run_opencv_pose
-
-        log.info("pose feed=opencv conf=%s", cfg.conf)
-        return run_opencv_pose(
-            video_path,
-            self.pose_engine_path,
-            conf=cfg.conf,
+        producer = threading.Thread(
+            target=_producer, name="video-det-decode", daemon=True
         )
+        producer.start()
+        frames_done = 0
+        refs: dict[int, np.ndarray] = {}
+        # Hold last frame BGR+index until next chunk/EOS supplies true next.
+        # Poses are not precomputed — `_process_chunk` runs once with full context.
+        held: dict | None = None
+        main_exc: BaseException | None = None
+
+        def _emit_results(results: list[FrameResult]):
+            nonlocal frames_done
+            if not results:
+                return None
+            frames_done = results[-1].frame + 1
+            return results, frames_done, max(total_hint, frames_done)
+
+        def _handle_chunk(
+            chunk_frames: list[np.ndarray], chunk_indices: list[int]
+        ) -> list[FrameResult]:
+            nonlocal held, refs
+            if not chunk_frames:
+                return []
+
+            # ReID seed on main thread only (pycuda/TRT is not thread-safe).
+            if (
+                chunk_indices[0] == 0
+                and self.reid is not None
+                and player_mask is not None
+                and not refs
+            ):
+                refs = build_reference_embeddings(
+                    self.reid, chunk_frames[0], player_mask
+                )
+
+            emit: list[FrameResult] = []
+
+            # Complete previous chunk's last frame with true next neighbor.
+            if held is not None:
+                emit.extend(
+                    self._process_chunk(
+                        [held["bgr"]],
+                        [held["idx"]],
+                        refs,
+                        prev_frame=held["prev_bgr"],
+                        next_frame=chunk_frames[0],
+                    )
+                )
+                prev_for_body: np.ndarray | None = held["bgr"]
+            else:
+                prev_for_body = None
+
+            n = len(chunk_frames)
+            if n == 1:
+                held = {
+                    "bgr": chunk_frames[0],
+                    "idx": chunk_indices[0],
+                    "prev_bgr": prev_for_body,
+                }
+            else:
+                # Emit body with correct next=last frame; hold last (no pose yet).
+                emit.extend(
+                    self._process_chunk(
+                        chunk_frames[:-1],
+                        chunk_indices[:-1],
+                        refs,
+                        prev_frame=prev_for_body,
+                        next_frame=chunk_frames[-1],
+                    )
+                )
+                held = {
+                    "bgr": chunk_frames[-1],
+                    "idx": chunk_indices[-1],
+                    "prev_bgr": chunk_frames[-2],
+                }
+            return emit
+
+        try:
+            while True:
+                item: tuple[list[np.ndarray], list[int]] | None
+                try:
+                    item = pending.get(timeout=0.2)
+                except queue.Empty:
+                    if not eos.is_set():
+                        continue
+                    # Producer finished: drain any data still in the queue, then stop.
+                    # Never break while a chunk may still be sitting in `pending`.
+                    while True:
+                        try:
+                            item = pending.get_nowait()
+                        except queue.Empty:
+                            item = None
+                            break
+                        emit = _handle_chunk(item[0], item[1])
+                        out = _emit_results(emit)
+                        if out is not None:
+                            yield out
+                    break
+
+                emit = _handle_chunk(item[0], item[1])
+                out = _emit_results(emit)
+                if out is not None:
+                    yield out
+
+            # EOS: flush held frame with edge-pad next (via _process_chunk only).
+            if held is not None:
+                flush = self._process_chunk(
+                    [held["bgr"]],
+                    [held["idx"]],
+                    refs,
+                    prev_frame=held["prev_bgr"],
+                    next_frame=None,
+                )
+                held = None
+                out = _emit_results(flush)
+                if out is not None:
+                    yield out
+        except BaseException as e:
+            main_exc = e
+            stop.set()
+        finally:
+            stop.set()
+            # Drain so a blocked producer can exit puts and set eos.
+            while True:
+                try:
+                    pending.get_nowait()
+                except queue.Empty:
+                    break
+            producer.join(timeout=30.0)
+            producer_alive = producer.is_alive()
+
+        if main_exc is not None:
+            if producer_error:
+                log.warning(
+                    "decode producer also failed: %s",
+                    producer_error[0],
+                    exc_info=producer_error[0],
+                )
+            if producer_alive:
+                log.error("decode producer still alive after join timeout")
+            raise main_exc
+        if producer_alive:
+            raise RuntimeError("decode producer did not exit after join timeout")
+        if producer_error:
+            raise producer_error[0]
+        if frames_done == 0:
+            raise RuntimeError(f"no frames decoded from video: {video_path}")
 
     # ------------------------------------------------------------------
     # Chunk helpers
     # ------------------------------------------------------------------
 
-    def _shuttle_chunk(
-        self, frames: list[np.ndarray]
-    ) -> list[list[ShuttleCandidate]]:
-        """TrackNet triplets over `frames`; pad last frame to multiple of 3."""
+    def _pose_chunk(self, frames: list[np.ndarray]) -> list[list[PoseResult]]:
+        """Run PoseEngine over `frames` in engine-sized batches; pad last batch."""
         n = len(frames)
         if n == 0:
             return []
-        last = frames[-1]
-        pad3 = ((n + SHUTTLE_WIN - 1) // SHUTTLE_WIN) * SHUTTLE_WIN
-        s_frames = frames + [last] * (pad3 - n)
-        shuttle_out: list[list[ShuttleCandidate]] = []
-        for i in range(0, pad3, SHUTTLE_WIN):
-            shuttle_out.extend(
-                self.shuttle.process_triplet(*s_frames[i : i + SHUTTLE_WIN])
-            )
-        return shuttle_out[:n]
+        bs = self.pose_batch
+        pose_out: list[list[PoseResult]] = []
+        for start in range(0, n, bs):
+            batch = frames[start : start + bs]
+            real = len(batch)
+            if real < bs:
+                batch = batch + [batch[-1]] * (bs - real)
+            engine_out = self.pose.run_batch(batch)
+            for j in range(real):
+                h, w = frames[start + j].shape[:2]
+                pose_out.append([to_pose_result(d, w, h) for d in engine_out[j]])
+        return pose_out
 
-    def _merge_chunk(
+    def _process_chunk(
         self,
         frames: list[np.ndarray],
         indices: list[int],
-        by_frame_eng: dict[int, list],
         refs: dict[int, np.ndarray],
-        fallback_w: int,
-        fallback_h: int,
+        *,
+        prev_frame: np.ndarray | None = None,
+        next_frame: np.ndarray | None = None,
     ) -> list[FrameResult]:
+        """Pure pose → shuttle → ReID for a resolved frame list.
+
+        Does **not** implement cross-chunk hold or ReID seed — those live only
+        in ``run()``, which calls this helper once per frame group with
+        ``prev_frame`` / ``next_frame`` already resolved for global stride-1
+        windows. Safe for unit tests that need a single synchronous pass.
+        """
         n = len(frames)
         if n == 0:
             return []
 
-        shuttle_out = self._shuttle_chunk(frames)
-
-        pose_out: list[list[PoseResult]] = []
-        for frame, idx in zip(frames, indices):
-            h, w = frame.shape[:2]
-            if w <= 0 or h <= 0:
-                w, h = fallback_w, fallback_h
-            dets = by_frame_eng.get(idx, [])
-            pose_out.append([to_pose_result(d, w, h) for d in dets])
-
+        # Intentional serial GPU schedule: pose then shuttle (then ReID on CPU
+        # crops). No dual-stream pose+shuttle — one GPU, simple and correct.
+        pose_out = self._pose_chunk(frames)
+        shuttle_out: list[list[ShuttleCandidate]] = self.shuttle.process_frames(
+            frames, prev_frame=prev_frame, next_frame=next_frame
+        )
+        if len(pose_out) != n or len(shuttle_out) != n:
+            raise RuntimeError(
+                f"chunk length mismatch: n={n} pose={len(pose_out)} "
+                f"shuttle={len(shuttle_out)}"
+            )
         self._assign_player_ids(frames, pose_out, refs)
 
         return [

@@ -19,12 +19,17 @@ still-wrapped body):
       -> 200 { "request_id", "frame_count", "elapsed_sec" }
       -> 422 / 500 { "request_id", "error" }
 
-    GET /health -> 200 { "status": "ok", "models_loaded": bool }
+    GET /health
+        -> 200 { "status": "ok", "models_loaded": true } when detector is ready
+        -> 503 { "status": "not_ready", "models_loaded": false } otherwise
 
 Callback (from the job thread, Authorization: Bearer <callback_token>):
     { "request_id", "status": "success"|"failed", "frame_count"?, "error"? }
 
 No Realtime progress in MVP — re-add later if the UI needs a progress bar.
+
+Startup requires pose + shuttle weights on disk unless ALLOW_MISSING_MODELS=1
+(CI). Mount/download engines before server.py becomes healthy.
 """
 
 from __future__ import annotations
@@ -34,16 +39,22 @@ import logging
 import os
 import tempfile
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import cv2
-import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
 from detect import DetectConfig, VideoDetector
-from io_util import download, post_callback, upload_file
+from io_util import (
+    MAX_MASK_BYTES,
+    download,
+    post_callback,
+    safe_error_message,
+    upload_file,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -54,40 +65,63 @@ log = logging.getLogger("video-det.server")
 HOST = os.environ.get("MODEL_SERVER_HOST", "127.0.0.1")
 PORT = int(os.environ.get("MODEL_SERVER_PORT", "18000"))
 
-app = FastAPI(title="video-det")
 _detector: VideoDetector | None = None
-_config: DetectConfig | None = None
 
 
-@app.on_event("startup")
+def _allow_missing_models() -> bool:
+    return os.environ.get("ALLOW_MISSING_MODELS", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
 async def _load_models() -> None:
-    """Load models when engines exist; CI/smoke can start without weights."""
-    global _detector, _config
+    """Load models at startup. Fail hard if weights missing unless ALLOW_MISSING_MODELS=1."""
+    global _detector
     cfg = DetectConfig.from_env()
-    _config = cfg
+    allow_missing = _allow_missing_models()
     if not cfg.pose_engine.is_file() or not cfg.shuttle_ckpt.is_file():
-        log.warning(
-            "startup: models missing (pose=%s shuttle=%s) — /health ok, jobs will fail",
-            cfg.pose_engine,
-            cfg.shuttle_ckpt,
+        msg = (
+            f"startup: models missing (pose={cfg.pose_engine} "
+            f"shuttle={cfg.shuttle_ckpt})"
         )
-        return
+        if allow_missing:
+            log.warning("%s — ALLOW_MISSING_MODELS=1; /health not ready", msg)
+            return
+        log.error("%s — refusing to start (set ALLOW_MISSING_MODELS=1 for CI)", msg)
+        raise FileNotFoundError(msg)
     if cfg.reid_engine is None:
         log.warning(
             "startup: ReID engine missing — player_id will be null (check REID_ENGINE)"
         )
     _detector = VideoDetector.from_config(cfg)
     log.info(
-        "startup: VideoDetector loaded (pose_feed=%s reid=%s conf=%s)",
-        cfg.pose_feed,
+        "startup: VideoDetector loaded (batch=%d reid=%s conf=%s)",
+        _detector.pose_batch,
         cfg.reid_engine is not None,
         cfg.conf,
     )
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Modern FastAPI lifespan: load models on startup (fail-hard unless allowed)."""
+    await _load_models()
+    yield
+
+
+app = FastAPI(title="video-det", lifespan=lifespan)
+
+
 @app.get("/health")
-async def health() -> dict:
-    return {"status": "ok", "models_loaded": _detector is not None}
+async def health() -> JSONResponse:
+    if _detector is None:
+        return JSONResponse(
+            {"status": "not_ready", "models_loaded": False},
+            status_code=503,
+        )
+    return JSONResponse({"status": "ok", "models_loaded": True})
 
 
 @app.post("/detect/sync")
@@ -128,6 +162,7 @@ async def detect_sync(request: Request) -> JSONResponse:
                 player_mask_url=player_mask_url,
             )
         except Exception as e:
+            err = safe_error_message(e)
             if callback_url:
                 post_callback(
                     callback_url,
@@ -135,10 +170,11 @@ async def detect_sync(request: Request) -> JSONResponse:
                     {
                         "request_id": request_id,
                         "status": "failed",
-                        "error": str(e),
+                        "error": err,
                     },
                 )
-            raise
+            # Re-raise with redacted message so outer handler cannot leak secrets.
+            raise RuntimeError(err) from None
         if callback_url:
             post_callback(
                 callback_url,
@@ -155,9 +191,10 @@ async def detect_sync(request: Request) -> JSONResponse:
         result = await run_in_threadpool(run_and_report)
         return JSONResponse({"request_id": request_id, **result})
     except Exception as e:  # noqa: BLE001
-        log.exception("detect(failed): request_id=%s", request_id)
+        err = safe_error_message(e)
+        log.exception("detect(failed): request_id=%s error=%s", request_id, err)
         return JSONResponse(
-            {"request_id": request_id, "error": str(e)},
+            {"request_id": request_id, "error": err},
             status_code=500,
         )
 
@@ -192,12 +229,16 @@ def _run_job(
             mask_fd, mask_name = tempfile.mkstemp(suffix=".png")
             os.close(mask_fd)
             mask_tmp = Path(mask_name)
-            download(player_mask_url, mask_tmp)
+            download(player_mask_url, mask_tmp, max_bytes=MAX_MASK_BYTES)
             player_mask = cv2.imread(str(mask_tmp), cv2.IMREAD_GRAYSCALE)
+            if player_mask is None:
+                raise RuntimeError("player_mask unreadable")
 
         frame_count = _stream_detections_json(
             json_tmp, request_id=request_id, video_path=video_tmp, player_mask=player_mask
         )
+        if frame_count == 0:
+            raise RuntimeError("no frames decoded from video")
         upload_file(json_tmp, output_upload_url, content_type="application/json")
 
         elapsed = time.monotonic() - t0
@@ -244,5 +285,7 @@ def _stream_detections_json(
 
 
 if __name__ == "__main__":
+    import uvicorn  # runtime only — keep import server CPU-safe for CI/tests
+
     log.info("startup: listening on %s:%s", HOST, PORT)
     uvicorn.run(app, host=HOST, port=PORT, log_level="info")

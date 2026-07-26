@@ -1,7 +1,6 @@
-"""Backward-compatible import surface for the multi-ffmpeg pose feed.
+"""Backward-compatible import surface for the multi-ffmpeg pose bench.
 
-Prefer `pose.ffmpeg_feed` for new code. This module re-exports the public API
-so existing `from pose.research_pipeline import run_research_pose` keeps working.
+Research / throughput bench only — not imported by product `detect/` or `server`.
 """
 from .ffmpeg_feed import (  # noqa: F401
     CaptureConsumer,

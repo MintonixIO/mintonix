@@ -23,7 +23,7 @@ class ReIDEmbedder:
 
     def __init__(self, engine_path: str | Path, batch_size: int = 16) -> None:
         # Defer CUDA/TRT until construction so `import detect` works on CI
-        # without a driver (same contract as PoseEstimator / PoseEngine).
+        # without a driver (same contract as PoseEngine).
         import pycuda.autoinit  # noqa: F401
         import pycuda.driver as cuda
         import tensorrt as trt
@@ -126,6 +126,12 @@ def build_reference_embeddings(
     background, each distinct positive value is one player's region on that
     reference frame (frame 0 of the video).
     """
+    fh, fw = frame.shape[:2]
+    mh, mw = player_mask.shape[:2]
+    if (mh, mw) != (fh, fw):
+        raise RuntimeError(
+            f"player_mask shape {(mh, mw)} does not match frame {(fh, fw)}"
+        )
     labels = sorted(int(v) for v in np.unique(player_mask) if v != 0)
     if not labels:
         return {}

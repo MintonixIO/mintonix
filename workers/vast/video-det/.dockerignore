@@ -8,6 +8,9 @@
 **/*.md
 !ARCHITECTURE.md
 
+# Non-product multi-ffmpeg research bench (not needed at runtime).
+tools/ffmpeg_pose_bench/
+
 # Local test artifacts
 **/sample_local.*
 **/*.engine

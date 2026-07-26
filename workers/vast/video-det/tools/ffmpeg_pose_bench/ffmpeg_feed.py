@@ -1,8 +1,11 @@
-"""Multi-ffmpeg → pinned SHM → CUDA-graph pose video feed.
+"""Multi-ffmpeg → pinned SHM → CUDA-graph pose video feed (research / bench only).
 
-Product feed path: decode overlaps on CPU processes while pose clears the GPU.
-Postprocess is the shared `decode_pose_*` path from `engine.py` (no duplicated
-Ultralytics unletterbox / conf logic here).
+Not part of the product detect path. Product uses single OpenCV decode +
+PoseEngine so pose and shuttle share one frame index space.
+
+Decode overlaps on CPU processes while pose clears the GPU. Postprocess is the
+shared `decode_pose_*` path from `pose.engine` (no duplicated Ultralytics
+unletterbox / conf logic here).
 """
 from __future__ import annotations
 
@@ -17,12 +20,13 @@ from typing import Any
 import numpy as np
 import torch
 
-from .decode_pool import Empty, IndexedDecodePool, frame_bytes, letterbox_vf
-from .engine import DEFAULT_CONF, EngineDetection, decode_pose_batch
-from .letterbox import LetterboxMeta, letterbox_params
-from .trt_runtime import GpuConsumer, load_engine
+from pose.engine import DEFAULT_CONF, EngineDetection, decode_pose_batch
+from pose.letterbox import LetterboxMeta, letterbox_params
 
-log = logging.getLogger("video-det.ffmpeg_feed")
+from .decode_pool import Empty, IndexedDecodePool, frame_bytes, letterbox_vf
+from .ring_consumer import RingGpuConsumer, load_engine
+
+log = logging.getLogger("video-det.ffmpeg_pose_bench")
 
 POOL_EFF = 0.80
 
@@ -156,11 +160,12 @@ def calibrate_workers(
     return workers, meta
 
 
-class CaptureConsumer(GpuConsumer):
-    """GpuConsumer that D2H-captures TRT outputs and decodes via engine helpers.
+class CaptureConsumer(RingGpuConsumer):
+    """Ring consumer that D2H-captures TRT outputs and decodes via engine helpers.
 
-    GPU normalize + graph paths are inherited (`feed` / `run_gpu`); this subclass
-    only tracks per-buffer frame bases and runs shared postprocess.
+    Multi-K normalize + graph paths are inherited (`feed` / `run_gpu`); this
+    subclass only tracks per-buffer frame bases and runs shared postprocess.
+    Research / bench only — product pose uses ``pose.trt_runtime.GpuConsumer``.
     """
 
     def setup_capture(self, meta: LetterboxMeta, conf: float) -> None:
@@ -381,5 +386,5 @@ def run_ffmpeg_pose(
     return consumer.by_frame, run_meta
 
 
-# Back-compat name used by detect.VideoDetector research path.
+# Bench-only alias; not used by product VideoDetector.
 run_research_pose = run_ffmpeg_pose
