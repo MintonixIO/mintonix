@@ -389,6 +389,10 @@ verify_jwt = false
 [functions.jobs]
 verify_jwt = false
 
+# Ops control plane: pipeline token only (manage.py / internal tooling).
+[functions.ops]
+verify_jwt = false
+
 [analytics]
 enabled = true
 port = 54327

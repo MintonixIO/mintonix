@@ -296,8 +296,9 @@ mintonix/
 │   └── functions/
 │       ├── cdn-access/        ✅ delivery tokens + upload presign
 │       ├── matches-ingest/    ✅ front door: match + job enqueue (one RPC)
-│       └── jobs/              ✅ /dispatch (queue→vast) + /callback (settle
-│                                 / advance stage in place)
+│       ├── jobs/              ✅ /dispatch (queue→vast) + /callback (settle
+│       │                         / advance stage in place)
+│       └── ops/               ✅ /set-stage (manual stage + optional B2 purge)
 ├── workers/
 │   ├── cloudflare/cdn/        ✅ B2 delivery + /presign control plane
 │   ├── github/match-data/     ✅ weekly scrape → Supabase
@@ -308,10 +309,12 @@ mintonix/
 └── .github/workflows/
 ```
 
-Pipeline RPCs (`ingest_match`, `dispatch_next_job`, `complete_job`) live in
-the match-pipeline migration: edge functions decide policy, RPCs make the
-writes atomic (a match that needs processing never exists without its queue
-message; stage advance re-queues the same job row).
+Pipeline RPCs (`ingest_match`, `dispatch_next_job`, `complete_job`,
+`ops_set_stage`) live in the match-pipeline migrations: edge functions decide
+policy, RPCs make the writes atomic (a match that needs processing never
+exists without its queue message; stage advance re-queues the same job row).
+Ops is service-token only (same `PIPELINE_SERVICE_TOKEN` as ingest/dispatch)
+for operator stage control — see SUPABASE.md.
 
 ## 8. CI/CD
 

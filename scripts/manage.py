@@ -15,6 +15,10 @@ Keys
   ,            open Settings
   o s u r      browse: origin / status / source / refresh
 
+Match detail (stage control)
+  Inspect B2, Set stage… (pick stage; optional purge; optional enqueue)
+  via ops edge. Dual truth: jobs.stage vs B2 objects.
+
 Reconcile
   Diffs B2 ↔ Supabase (orphans either side + asset/status drift)
   and offers fix actions (delete, re-queue, set status).
@@ -39,6 +43,18 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from typing import Any
+
+import ops_stage as _ops_stage
+from ops_stage import (
+    KEEP_ON_REGRESS,
+    STAGE_ORDER,
+    STAGE_PRIMARY,
+    basenames_from_keys,
+    format_ops_partial_guidance,
+    outputs_to_purge,
+    preview_purge_targets,
+    stage_completeness,
+)
 
 # ─── environments ─────────────────────────────────────────────────────────────
 
@@ -94,6 +110,7 @@ KNOWN_BASENAMES = (
     "normalized.mp4", "thumbnail.jpg", "valid.mp4", "frame_manifest.csv",
     "scores.csv", "detections.json", "analysis.json",
 )
+
 MATCH_SELECT = (
     "id,owner_id,source_url,tournament,match_date,status,created_at,"
     "team1_player1,team1_player2,team2_player1,team2_player2,"
@@ -125,7 +142,7 @@ SECRET_FIELDS: list[SecretField] = [
     SecretField(
         "PIPELINE_SERVICE_TOKEN", "Pipeline service token", "Required · Pipeline",
         required=True, secret=True,
-        help="x-pipeline-token for matches-ingest and /jobs/dispatch.",
+        help="x-pipeline-token for matches-ingest, /jobs/dispatch, and /ops/set-stage.",
     ),
     SecretField(
         "SUPABASE_SERVICE_ROLE_KEY", "Supabase service role key", "Required · Pipeline",
@@ -510,6 +527,56 @@ def fetch_live_jobs(env: EnvProfile, secrets: dict[str, str], limit: int = 30) -
         f"&status=in.(queued,processing)&order=created_at.desc&limit={limit}"
     )
     return http_json("GET", url, rest_headers(secrets)) or []
+
+
+def fetch_live_job_for_match(
+    env: EnvProfile, secrets: dict[str, str], match_id: str,
+) -> dict | None:
+    url = (
+        f"{supabase_url(env, secrets)}/rest/v1/jobs"
+        f"?select=id,match_id,status,stage,queue,attempt,error,msg_id"
+        f"&match_id=eq.{urllib.parse.quote(match_id, safe='')}"
+        f"&status=in.(queued,processing)&order=created_at.desc&limit=1"
+    )
+    rows = http_json("GET", url, rest_headers(secrets)) or []
+    return rows[0] if rows else None
+
+
+def fetch_latest_job_for_match(
+    env: EnvProfile, secrets: dict[str, str], match_id: str,
+) -> dict | None:
+    url = (
+        f"{supabase_url(env, secrets)}/rest/v1/jobs"
+        f"?select=id,match_id,status,stage,queue,attempt,error,created_at"
+        f"&match_id=eq.{urllib.parse.quote(match_id, safe='')}"
+        f"&order=created_at.desc&limit=1"
+    )
+    rows = http_json("GET", url, rest_headers(secrets)) or []
+    return rows[0] if rows else None
+
+
+def ops_set_stage(
+    env: EnvProfile,
+    secrets: dict[str, str],
+    *,
+    match_id: str,
+    stage: str,
+    enqueue: bool = True,
+    cancel_live: bool = True,
+    purge: bool = False,
+) -> dict:
+    """Call ops edge /set-stage (pipeline token). Thin wrapper around ops_stage."""
+    require(secrets, "PIPELINE_SERVICE_TOKEN")
+    return _ops_stage.ops_set_stage(
+        ops_url=f"{functions_base(env, secrets)}/ops/set-stage",
+        pipeline_token=secrets["PIPELINE_SERVICE_TOKEN"],
+        user_agent=HTTP_USER_AGENT,
+        match_id=match_id,
+        stage=stage,
+        enqueue=enqueue,
+        cancel_live=cancel_live,
+        purge=purge,
+    )
 
 
 def match_b2_prefix(owner_id: str | None, match_id: str) -> str:
@@ -2044,12 +2111,29 @@ def screen_browse(app: App) -> None:
 def screen_match_detail(app: App, m: dict) -> None:
     mid = m["id"]
     prefix = match_b2_prefix(m.get("owner_id"), mid)
+    live = None
+    latest = None
+    try:
+        live = fetch_live_job_for_match(app.env, app.secrets, mid)
+        latest = live or fetch_latest_job_for_match(app.env, app.secrets, mid)
+    except Exception:
+        pass
+
+    job_line = "—"
+    if latest:
+        job_line = (
+            f"{latest.get('status')}  stage={latest.get('stage')}  "
+            f"attempt={latest.get('attempt')}  id={clip(str(latest.get('id')), 8)}"
+            + ("  (live)" if live else "")
+        )
+
     lines = [
         f"id          {mid}",
         f"env         {app.env.label}",
         f"origin      {'user' if m.get('owner_id') else 'BWF/system'}",
         f"owner_id    {m.get('owner_id') or '—'}",
         f"status      {m.get('status')}",
+        f"job         {job_line}",
         f"tournament  {m.get('tournament') or '—'}",
         f"match_date  {m.get('match_date') or '—'}",
         f"source_url  {m.get('source_url') or '—'}",
@@ -2063,16 +2147,274 @@ def screen_match_detail(app: App, m: dict) -> None:
     show_text(app, "Match", lines, footer="Enter for actions   Esc back")
     try:
         a = menu_select(app, "Match actions", [
-            ("Queue this match", "Call matches-ingest (normalize job)"),
+            ("Inspect B2 objects", "LIST prefix · stage completeness"),
+            ("Set stage…", "Pick stage; optional purge + enqueue"),
+            ("Queue this match", "Call matches-ingest (normalize job from source)"),
             ("Delete this match", "B2 + DB cleanup"),
             ("Back", "Return to list"),
         ])
     except Cancel:
         return
     if a == 0:
-        _queue_one(app, m)
+        _inspect_b2(app, m)
     elif a == 1:
+        _set_stage_flow(app, m)
+    elif a == 2:
+        _queue_one(app, m)
+    elif a == 3:
         _delete_one(app, m)
+
+
+def _inspect_b2(app: App, m: dict) -> None:
+    mid = m["id"]
+    prefix = match_b2_prefix(m.get("owner_id"), mid)
+    try:
+        app.set_status("  listing B2…", "dim")
+        keys = list_prefix_keys(app.env, app.secrets, prefix)
+    except Exception as e:
+        app.flash_error(str(e))
+        show_text(app, "LIST failed", textwrap.wrap(str(e), 70))
+        return
+
+    bases = basenames_from_keys(keys, prefix)
+    comp = stage_completeness(bases)
+    live = None
+    try:
+        live = fetch_live_job_for_match(app.env, app.secrets, mid)
+    except Exception:
+        pass
+
+    lines = [
+        f"prefix   {prefix}",
+        f"objects  {len(keys)}",
+        f"job      "
+        + (
+            f"{live.get('status')} stage={live.get('stage')} attempt={live.get('attempt')}"
+            if live else "(no live job)"
+        ),
+        "",
+        "Stage completeness (primary artifact)",
+        f"  normalize  {comp['normalize']}   ({STAGE_PRIMARY['normalize']})",
+        f"  detect     {comp['detect']}   ({STAGE_PRIMARY['detect']})",
+        f"  analyze    {comp['analyze']}   ({STAGE_PRIMARY['analyze']})",
+        "",
+        "Objects",
+    ]
+    if not keys:
+        lines.append("  (none)")
+    else:
+        for key in sorted(keys):
+            base = key[len(prefix):] if key.startswith(prefix) else key
+            mark = ""
+            for st, primary in STAGE_PRIMARY.items():
+                if base == primary:
+                    mark = f"  ← {st}"
+                    break
+            if base in KEEP_ON_REGRESS or base.startswith("original."):
+                mark = mark or "  (keep on regress)"
+            lines.append(f"  {base}{mark}")
+    show_text(app, f"B2 · {clip(mid, 18)}", lines)
+    app.flash_ok(f"{len(keys)} object(s)  ·  n={comp['normalize']} d={comp['detect']} a={comp['analyze']}")
+
+
+def _pick_stage(app: App, title: str) -> str | None:
+    try:
+        i = menu_select(app, title, [
+            ("normalize", "Re-run from source / original → normalized.mp4"),
+            ("detect", "Re-run detect on existing normalized.mp4"),
+            ("analyze", "Re-run analyze on existing detections.json"),
+        ])
+    except Cancel:
+        return None
+    return STAGE_ORDER[i]
+
+
+def _pick_yes_no(app: App, title: str, yes_help: str, no_help: str, *, default_yes: bool) -> bool | None:
+    """Two-option menu. Returns True/False or None on cancel."""
+    options = [
+        ("Yes", yes_help),
+        ("No", no_help),
+    ]
+    if not default_yes:
+        options = list(reversed(options))
+    try:
+        i = menu_select(app, title, options)
+    except Cancel:
+        return None
+    # Map selection back to yes/no depending on order.
+    if default_yes:
+        return i == 0
+    return i == 1
+
+
+def _set_stage_flow(app: App, m: dict) -> None:
+    """One TUI action: pick stage, optional purge, optional enqueue."""
+    mid = m["id"]
+    prefix = match_b2_prefix(m.get("owner_id"), mid)
+    stage = _pick_stage(app, "Set stage")
+    if not stage:
+        app.set_status("  cancelled", "dim")
+        return
+
+    purge = _pick_yes_no(
+        app,
+        "Purge stage outputs?",
+        "DELETE this stage + later basenames under match prefix",
+        "Leave B2 objects alone",
+        default_yes=False,
+    )
+    if purge is None:
+        app.set_status("  cancelled", "dim")
+        return
+
+    enqueue = _pick_yes_no(
+        app,
+        "Enqueue on jobs_interactive?",
+        "pgmq.send — dispatch will pick it up",
+        "Job at stage, no pgmq — still holds one-live slot (blocks ingest)",
+        default_yes=True,
+    )
+    if enqueue is None:
+        app.set_status("  cancelled", "dim")
+        return
+
+    live = None
+    live_fetch_failed = False
+    try:
+        live = fetch_live_job_for_match(app.env, app.secrets, mid)
+    except Exception as e:
+        live_fetch_failed = True
+        app.flash_warn(f"Could not fetch live job: {e}")
+
+    cancel_live = True
+    if live_fetch_failed:
+        if not confirm(
+            app, "Live job unknown",
+            [
+                f"Match  {mid}",
+                "",
+                "Could not verify whether a job is processing.",
+                "Proceed and allow cancel of any live job?",
+                "(RPC may cancel in-flight work and issue a new job_id.)",
+            ],
+            danger=True,
+            default_no=True,
+        ):
+            app.set_status("  aborted — could not verify live job", "dim")
+            return
+    elif live and live.get("status") == "processing":
+        if not confirm(
+            app, "Cancel live processing?",
+            [
+                f"Match   {mid}",
+                f"Job     {live.get('id')}",
+                f"Stage   {live.get('stage')}  attempt={live.get('attempt')}",
+                "",
+                "A worker may still be running. Cancel marks the job canceled",
+                "and creates a NEW job_id (stale callback tokens will not settle).",
+                "Decline leaves the processing job alone (aborts set-stage).",
+            ],
+            danger=True,
+            default_no=True,
+        ):
+            app.set_status("  left processing job alone", "dim")
+            return
+
+    purge_names = outputs_to_purge(stage) if purge else []
+    preview_keys: list[str] = []
+    if purge:
+        try:
+            app.set_status("  previewing B2 purge…", "dim")
+            listed = list_prefix_keys(app.env, app.secrets, prefix)
+            preview_keys = preview_purge_targets(listed, prefix, stage)
+        except Exception as e:
+            app.flash_warn(f"Purge preview LIST failed: {e}")
+
+    lines = [
+        f"Environment  {app.env.label}",
+        f"Match        {mid}",
+        f"Stage        {stage}",
+        f"Enqueue      {'yes — jobs_interactive' if enqueue else 'no — not dispatchable'}",
+        f"Cancel live  {cancel_live}"
+        + (
+            f"  (live={live.get('status')} stage={live.get('stage')})"
+            if live else
+            ("  (live job UNKNOWN)" if live_fetch_failed else "  (no live job)")
+        ),
+        f"Purge B2     {'YES — stage + later outputs' if purge else 'no'}",
+    ]
+    if purge:
+        lines += ["", "Will DELETE basenames:"]
+        lines += [f"  • {n}" for n in purge_names]
+        if preview_keys:
+            lines += ["", f"Preview hits under prefix ({len(preview_keys)}):"]
+            lines += [f"  {k}" for k in preview_keys[:20]]
+            if len(preview_keys) > 20:
+                lines.append(f"  … and {len(preview_keys) - 20} more")
+        lines += [
+            "",
+            "Always kept: original.*  annotation.json",
+            "Flow: set stage (no enqueue) → B2 purge → enqueue if requested",
+        ]
+    lines += [
+        "",
+        "DB: ops_set_stage → job at stage, matches.status=pending",
+    ]
+    if not enqueue:
+        lines += [
+            "",
+            "WARNING: enqueue=no leaves a live queued job (null msg_id).",
+            "matches-ingest / Queue this match will return already_queued",
+            "until you Set stage with enqueue=yes or the job is terminal.",
+        ]
+    if live and live.get("status") == "processing" and enqueue:
+        lines += [
+            "",
+            "NOTE: canceling processing + enqueue is racy — a dying worker",
+            "may still PUT. Consider enqueue=no, wait, inspect B2, re-run.",
+        ]
+    if not confirm(
+        app, "Confirm set stage", lines,
+        danger=app.env.is_prod or purge,
+        default_no=app.env.is_prod or purge,
+    ):
+        app.set_status("  cancelled", "dim")
+        return
+
+    try:
+        app.set_status("  set-stage…", "dim")
+        result = ops_set_stage(
+            app.env, app.secrets,
+            match_id=mid,
+            stage=stage,
+            enqueue=enqueue,
+            cancel_live=cancel_live,
+            purge=purge,
+        )
+        if result.get("rejected"):
+            app.flash_warn(
+                f"Rejected: {result.get('reason') or result.get('error') or result}"
+            )
+            show_text(app, "ops_set_stage rejected", json.dumps(result, indent=2).splitlines())
+        elif result.get("ok") is False or result.get("stage_set"):
+            app.flash_error(
+                f"Partial: {result.get('code') or result.get('error') or 'ops'}"
+            )
+            guide = format_ops_partial_guidance(result)
+            body = guide + ["", "── raw ──", *json.dumps(result, indent=2).splitlines()]
+            show_text(app, "ops recovery", body)
+        else:
+            purged = result.get("purged") or []
+            app.flash_ok(
+                f"stage={result.get('stage')} enqueue={result.get('enqueue')} "
+                f"job={clip(str(result.get('job_id')), 8)} "
+                f"purged={len(purged)}"
+            )
+            show_text(app, "ops_set_stage result", json.dumps(result, indent=2).splitlines())
+    except Exception as e:
+        app.flash_error(str(e))
+        show_text(app, "set-stage failed", textwrap.wrap(str(e), 70))
+
 
 
 def _queue_one(app: App, m: dict) -> None:
