@@ -62,7 +62,7 @@ row in `matches` + objects in B2 under that match's constructable prefix**
   via service `/presign`, then `matches-ingest` enqueues normalize. 📐
 - **Steady state** — scraper sets `source_url` on `matches` and calls
   `matches-ingest`; normalize fetches YouTube (yt-dlp ✅) and archives to B2.
-  (enqueue ✅ / dispatch manual 📐)
+  (enqueue intentional ✅ / dispatch cron ✅)
 
 **Rule: B2 is canonical.** A YouTube URL is fetched exactly once, at
 normalize time; the normalized output lands in B2 and no later stage ever
@@ -77,7 +77,7 @@ touches YouTube again.
 2. Client PUTs directly to B2 (bucket CORS must allow the app origin).
 3. Client confirms via `matches-ingest` (user JWT, `{ id, upload: true }`) →
    `matches` row with `owner_id`, `jobs` row, pgmq message. ✅
-   (dispatch itself is still manual 📐)
+   (dispatch: pg_cron every minute ✅; enqueue only on confirm)
 
 ### 2c. Court annotation & player labeling ✅ (inference) / 📐 (persistence)
 
@@ -146,10 +146,12 @@ the CDN cache.
 ### Queue 📐
 
 A Postgres-backed queue in Supabase (**pgmq via Supabase Queues**) plus a
-`jobs` state table. Producers (upload confirm, backlog script, scraper,
-stage-completion callbacks) just `pgmq.send()`; a dispatcher edge function
-(cron-driven, and/or DB webhook on insert) pops messages, presigns URLs, and
-POSTs to the appropriate vast serverless endpoint.
+`jobs` state table. **Enqueue is intentional only** (upload confirm /
+`matches-ingest`, ops set-stage with `enqueue=true`, stage-advance/`retry`
+in `complete_job`). Catalog scrape never enqueues GPU work. A dispatcher edge
+function (**pg_cron every minute** → `invoke_jobs_dispatch` → pg_net POST
+`/jobs/dispatch`) pops messages, presigns URLs, and POSTs to the appropriate
+vast serverless endpoint.
 
 Why a queue *in front of* vast's own autoscaler queue: priority (user uploads
 preempt backlog), retries with visibility timeout, rate/cost caps on GPU
@@ -296,8 +298,9 @@ mintonix/
 │   └── functions/
 │       ├── cdn-access/        ✅ delivery tokens + upload presign
 │       ├── matches-ingest/    ✅ front door: match + job enqueue (one RPC)
-│       └── jobs/              ✅ /dispatch (queue→vast) + /callback (settle
-│                                 / advance stage in place)
+│       ├── jobs/              ✅ /dispatch (queue→vast) + /callback (settle
+│       │                         / advance stage in place)
+│       └── ops/               ✅ /set-stage (manual stage + optional B2 purge)
 ├── workers/
 │   ├── cloudflare/cdn/        ✅ B2 delivery + /presign control plane
 │   ├── github/match-data/     ✅ weekly scrape → Supabase
@@ -308,10 +311,12 @@ mintonix/
 └── .github/workflows/
 ```
 
-Pipeline RPCs (`ingest_match`, `dispatch_next_job`, `complete_job`) live in
-the match-pipeline migration: edge functions decide policy, RPCs make the
-writes atomic (a match that needs processing never exists without its queue
-message; stage advance re-queues the same job row).
+Pipeline RPCs (`ingest_match`, `dispatch_next_job`, `complete_job`,
+`ops_set_stage`) live in the match-pipeline migrations: edge functions decide
+policy, RPCs make the writes atomic (a match that needs processing never
+exists without its queue message; stage advance re-queues the same job row).
+Ops is service-token only (same `PIPELINE_SERVICE_TOKEN` as ingest/dispatch)
+for operator stage control — see SUPABASE.md.
 
 ## 8. CI/CD
 

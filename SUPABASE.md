@@ -4,12 +4,15 @@ Canonical data model for Mintonix match catalog + video processing.
 Complements `ARCHITECTURE.md` (system topology, trust model, workers).
 Where the two disagree on table shape, **this file wins** for Postgres.
 
-Status: **implemented** — single squashed migration
-`supabase/migrations/20260712000000_init_match_pipeline.sql` (tables + final
-RPCs); edge functions `matches-ingest`, `jobs`, `cdn-access`. Supersedes the
-multi-table video pipeline and normalized match-data migrations (deleted). Dev
-reshape drops legacy objects in the init migration; **prod** needs a planned
-cutover — see [Prod migration runbook](#prod-migration-runbook).
+Status: **implemented** — squashed init
+`supabase/migrations/20260712000000_init_match_pipeline.sql` (tables + core
+RPCs) plus additive `20260726000000_ops_set_stage.sql` /
+`20260726010000_ops_set_stage_v2.sql` (`ops_set_stage`) and
+`20260726020000_jobs_dispatch_cron.sql` (auto-drain cron); edge functions
+`matches-ingest`, `jobs`, `cdn-access`, `ops`. Supersedes the multi-table video
+pipeline and normalized match-data migrations (deleted). Dev reshape drops
+legacy objects in the init migration; **prod** needs a planned cutover — see
+[Prod migration runbook](#prod-migration-runbook).
 
 ---
 
@@ -335,11 +338,53 @@ SELECT * FROM jobs
 You lose visibility-timeout redelivery unless you add a lease column
 (`lease_expires_at`) and a reaper. **pgmq is the preferred default.**
 
-### Cron
+### Cron (dispatch drain)
 
-Schedule `POST /functions/v1/jobs/dispatch` via pg_cron + pg_net (Vault for
-URL + pipeline token), e.g. every minute. Until cron is wired, dispatch is
-manual/CI.
+**Auto-drain only.** A pg_cron job (`jobs-dispatch`, every minute) calls
+`public.invoke_jobs_dispatch()`, which POSTs `/functions/v1/jobs/dispatch`
+via pg_net. Nothing in this path enqueues work.
+
+| May enqueue | Must not auto-enqueue |
+|-------------|------------------------|
+| `matches-ingest` (user confirm / intentional system ingest) | Catalog load (`load_to_supabase.py`) |
+| `ops` set-stage with `enqueue=true` | Scraper / weekly match-data alone |
+| `complete_job` next-stage / retry re-queue | Any “process all matches” cron |
+
+Migration: `20260726020000_jobs_dispatch_cron.sql`.
+
+**Per-project Vault setup** (once per env after `db push`; secrets never in git):
+
+```sql
+-- Full dispatch URL for this project:
+select vault.create_secret(
+  'https://<PROJECT_REF>.supabase.co/functions/v1/jobs/dispatch',
+  'jobs_dispatch_url',
+  'pg_cron → jobs/dispatch'
+);
+
+-- Same value as edge secret PIPELINE_SERVICE_TOKEN:
+select vault.create_secret(
+  '<PIPELINE_SERVICE_TOKEN>',
+  'pipeline_service_token',
+  'x-pipeline-token for jobs/dispatch'
+);
+```
+
+If either secret is missing, the cron logs a WARNING and no-ops (safe right
+after migrate). To rotate, update the Vault secret row (Dashboard → Database →
+Vault, or `vault.update_secret`).
+
+Verify:
+
+```sql
+select jobid, jobname, schedule, active from cron.job where jobname = 'jobs-dispatch';
+-- after a minute with secrets set + something queued:
+select id, status_code, created from net._http_response order by created desc limit 5;
+```
+
+Manual dispatch (manage.py / curl) still works; cron is the steady-state drain.
+
+Default body: `{ "max": 2, "max_running": 2 }` (see `invoke_jobs_dispatch`).
 
 ---
 
@@ -378,6 +423,63 @@ Settle a stage from the callback:
 Stage-specific config is **not** passed as a jobs.params blob long-term:
 dispatcher loads `annotation.json` (presign GET) or uses match columns when
 building the next envelope.
+
+### `ops_set_stage(p_match_id, p_stage, p_enqueue, p_cancel_live)`
+
+Service-role only. Manual per-match stage control (ops / `scripts/manage.py`).
+Smoke: `scripts/smoke_ops_set_stage.sql` (local Supabase). Grants: `EXECUTE`
+for `service_role` only — verify post-deploy that `authenticated` is denied.
+
+| Arg | Meaning |
+|-----|---------|
+| `p_match_id` | Existing match |
+| `p_stage` | `normalize` \| `detect` \| `analyze` — what runs next |
+| `p_enqueue` | Default true. `true` → `jobs_interactive` + `pgmq.send`; `false` → job at stage, no pgmq (not dispatchable) |
+| `p_cancel_live` | Default true. Fourth arg. If a live job is `processing` and this is false → reject (`live_processing`) without mutating |
+
+**Behavior:**
+
+1. Lock match; require it exists.
+2. If live job is `processing` and `cancel_live=false` →
+   `{ ok:false, rejected:true, reason:'live_processing' }` (**before** any archive/cancel).
+3. Archive any in-flight pgmq message. **Archive exceptions fail the RPC**
+   (do not leave a leftover message or double-send). `archive()=false`
+   (already absent) is OK.
+4. Live **queued** job: reuse the same row (`stage`, `status=queued`, `attempt=0`).
+5. Live **processing** job (cancel allowed): mark row **`canceled`** (`msg_id`
+   and `queue` cleared), then **INSERT a new `job_id`** at `p_stage`. Stale
+   worker tokens bound to the old id/attempt cannot pass `complete_job` CAS.
+6. No live job: `INSERT` a new jobs row at `p_stage`.
+7. **enqueue=true:** `pgmq.send('jobs_interactive', {job_id})`, store `msg_id`, priority 10.
+8. **enqueue=false:** `status=queued` but `msg_id=null`, `queue=null` — dispatch never claims it.
+9. `matches.status → pending`.
+
+One apply path sets stage + enqueue fields after cancel/reuse/insert (a
+`unique_violation` on insert retries the live-job resolve with flags reset —
+no duplicated body).
+
+**`enqueue=false` footgun:** the row remains `status=queued` and still holds
+the **one-live-per-match** unique index. `matches-ingest` / “Queue this match”
+will return `already_queued` until you **Set stage** again with `enqueue=true`
+(reuses the live row and `pgmq.send`s) or the job becomes terminal
+(`complete` / `failed` / `canceled`).
+
+**B2 purge is not this RPC.** On `/ops/set-stage` with `purge=true`, the edge
+always applies stage with **`enqueue=false` first** (cancel/set under lock, not
+dispatchable), then LIST+DELETE stage+later basenames, then — only if the
+caller asked for `enqueue=true` — a second `ops_set_stage` to put the job on
+`jobs_interactive`. That avoids dispatch racing deletes. `purge=false` stays a
+single RPC with the requested enqueue. If purge fails after the first RPC,
+stage is already set (`stage_set` in the 502 body) — re-run set-stage with
+purge (or fix CDN); enqueue is deferred until purge succeeds.
+
+**Live processing policy:** cancel (new `job_id`) or hard-fail if the operator
+declines. Cancel does **not** stop the vast worker — late PUTs can still land.
+If dual truth matters, use `enqueue=false`, wait for VT/worker timeout, inspect
+B2, then re-run with `enqueue=true`.
+
+Returns jsonb: `ok`, `match_id`, `job_id`, `stage`, `enqueue`, `queue`, `msg_id`,
+`b2_prefix`, `had_live`, `canceled_processing`, `canceled_job_id`, `created_job`.
 
 ---
 
@@ -445,6 +547,37 @@ presigned URLs + single-use callback token bound to `(job_id, attempt)`.
 
 Same chain for BWF and user; BWF simply has richer `annotation.json` / valid-frames.
 
+### Dual truth + stage artifact map (ops regression)
+
+| Layer | Meaning |
+|-------|---------|
+| `jobs.stage` + `jobs.status` | What will run next (or is running) |
+| B2 objects under match prefix | Evidence that a stage finished |
+
+When **regressing to** stage S, delete outputs for S **and every later stage**:
+
+| Stage | Outputs deleted on regress *to* this stage (and later) | Always keep |
+|-------|--------------------------------------------------------|-------------|
+| `normalize` | `normalized.mp4`, `thumbnail.jpg`, `valid.mp4`, `frame_manifest.csv`, `scores.csv` | `original.*`, `annotation.json` |
+| `detect` | `detections.json` | earlier outputs |
+| `analyze` | `analysis.json` | earlier outputs |
+
+Shared constant: keep Python (`scripts/ops_stage.py` `STAGE_OUTPUTS`) and
+TypeScript (`supabase/functions/ops/stage_outputs.ts`) in sync with this table.
+
+### Operator control surface
+
+`scripts/manage.py` (match detail actions):
+
+1. **Inspect B2 objects** — LIST prefix, basenames + stage completeness
+2. **Set stage…** — pick stage; optional purge; optional enqueue
+3. Existing **Queue** (matches-ingest normalize) and **Delete**
+
+Backend path: `POST /functions/v1/ops/set-stage` (`PIPELINE_SERVICE_TOKEN` /
+`x-pipeline-token`). No purge → one RPC. With purge → RPC `enqueue=false` →
+CDN LIST/DELETE → optional second RPC `enqueue=true`. Clients never gain write
+access.
+
 ---
 
 ## Edge functions
@@ -454,8 +587,23 @@ Same chain for BWF and user; BWF simply has richer `annotation.json` / valid-fra
 | `cdn-access` | User JWT → upload/delivery tokens; `users/<uid>/` prefix + upload basename allowlist |
 | `matches-ingest` | Front door: create/upsert match + enqueue job (service token or user JWT) |
 | `jobs` | `/dispatch` (pipeline token) + `/callback` (job HMAC bound to job_id/match_id/stage/attempt) |
+| `ops` | `/set-stage` only (`PIPELINE_SERVICE_TOKEN` / `x-pipeline-token`) — set stage; purge uses non-dispatchable stage then optional enqueue |
 
 CDN worker remains the only holder of B2 credentials (`/presign` + delivery).
+
+**Ops auth:** same pipeline token as `matches-ingest` / `/jobs/dispatch`
+(`PIPELINE_SERVICE_TOKEN`, header `x-pipeline-token`). No separate ops token
+for MVP.
+
+**`POST /functions/v1/ops/set-stage` body:**
+
+| Field | Meaning |
+|-------|---------|
+| `match_id` | Required |
+| `stage` | `normalize` \| `detect` \| `analyze` |
+| `enqueue` | Default true — put job on `jobs_interactive` |
+| `cancel_live` | Default true — if false and a job is `processing`, reject without mutate |
+| `purge` | Default false — stage with enqueue=false, LIST+DELETE stage+later basenames, then enqueue if requested |
 
 MVP notes: **normalize → detect** are wired in `jobs` STAGES; analyze and
 loading `annotation.json` into `valid_frames_config` are follow-ups. Detect is
