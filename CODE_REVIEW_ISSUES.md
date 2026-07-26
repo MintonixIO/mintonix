@@ -127,7 +127,7 @@ Dual auth: pipeline token (system/BWF) or user JWT (upload confirm). Calls `inge
 
 | Sev | MVP | Location | Issue | Suggestion |
 |-----|-----|----------|-------|------------|
-| **bug** | P0 | Cron sketch (~624–635) | Dispatch cron is **commented**; no in-repo scheduler. Ingest never progresses alone. | Enable pg_cron + Vault **or** external cron every minute. |
+| ~~**bug**~~ | ~~P0~~ | ~~Cron sketch~~ | **Resolved:** `20260726020000_jobs_dispatch_cron.sql` — `jobs-dispatch` every minute; Vault `jobs_dispatch_url` + `pipeline_service_token`. | — |
 | **bug** (ops/spend) | P0 | Processing reclaim (~392–417) | VT redelivery always reclaims (`attempt++`) even at `max_running`. Combined with edge invoke timeout/retry → double GPU work. | Reclaim only after stage SLA / heartbeat; fix invoke lifecycle (see §5). |
 | **suggestion** | — | At capacity (~422–429) | `set_vt(…,0)` + continue can re-read same head up to 8 times. | Optional delay VT (e.g. 30s). |
 
@@ -306,7 +306,7 @@ Internal TUI: browse, queue, dispatch, reconcile, secrets, env switch.
 |-----|-----|-------|-------------------|------------|
 | **bug** | P0 | Double GPU dispatch | §4.3 reclaim + §5.1 invoke timeout | 202 Accepted or no-requeue-after-accept + safer reclaim |
 | **bug** | P0 | BWF identity | §1 docs, §2 annotator, loader | One `bwf_id(match_key)` + tests |
-| **bug** | P0 | Pipeline never runs alone | §4.3 cron | Schedule dispatch |
+| ~~**bug**~~ | ~~P0~~ | ~~Pipeline never runs alone~~ | §4.3 cron | **Resolved:** auto-drain cron (Vault setup still required per env) |
 | **suggestion** | P1 | Worker I/O drift | §7 normalize vs §9 detect | Shared I/O module |
 | **suggestion** | defer | Valid-frames / annotation | §5 normalize stage, §7, §2 BWF | Wire only when BWF quality is in scope |
 | **suggestion** | defer | Analyze | §10 | After detect is stable |
@@ -318,7 +318,7 @@ Internal TUI: browse, queue, dispatch, reconcile, secrets, env switch.
 1. **Catalog:** freeze one BWF id algorithm; fix docs; don’t invent ids in annotate.  
 2. **Upload:** fix annotate env targeting; keep cdn-access user path.  
 3. **Ingest:** ship as-is; add CORS if browser-direct.  
-4. **Queue:** wire dispatch schedule.  
+4. **Queue:** ~~wire dispatch schedule~~ (done; set Vault secrets).  
 5. **Dispatch/invoke:** fix long-poll retry so GPU jobs cannot double-run.  
 6. **Presign/CDN:** prod CORS; optional LIST prefix guard.  
 7. **Normalize:** upload retries; defer valid_frames.  

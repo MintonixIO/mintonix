@@ -7,7 +7,8 @@ Where the two disagree on table shape, **this file wins** for Postgres.
 Status: **implemented** — squashed init
 `supabase/migrations/20260712000000_init_match_pipeline.sql` (tables + core
 RPCs) plus additive `20260726000000_ops_set_stage.sql` /
-`20260726010000_ops_set_stage_v2.sql` (`ops_set_stage`); edge functions
+`20260726010000_ops_set_stage_v2.sql` (`ops_set_stage`) and
+`20260726020000_jobs_dispatch_cron.sql` (auto-drain cron); edge functions
 `matches-ingest`, `jobs`, `cdn-access`, `ops`. Supersedes the multi-table video
 pipeline and normalized match-data migrations (deleted). Dev reshape drops
 legacy objects in the init migration; **prod** needs a planned cutover — see
@@ -337,11 +338,53 @@ SELECT * FROM jobs
 You lose visibility-timeout redelivery unless you add a lease column
 (`lease_expires_at`) and a reaper. **pgmq is the preferred default.**
 
-### Cron
+### Cron (dispatch drain)
 
-Schedule `POST /functions/v1/jobs/dispatch` via pg_cron + pg_net (Vault for
-URL + pipeline token), e.g. every minute. Until cron is wired, dispatch is
-manual/CI.
+**Auto-drain only.** A pg_cron job (`jobs-dispatch`, every minute) calls
+`public.invoke_jobs_dispatch()`, which POSTs `/functions/v1/jobs/dispatch`
+via pg_net. Nothing in this path enqueues work.
+
+| May enqueue | Must not auto-enqueue |
+|-------------|------------------------|
+| `matches-ingest` (user confirm / intentional system ingest) | Catalog load (`load_to_supabase.py`) |
+| `ops` set-stage with `enqueue=true` | Scraper / weekly match-data alone |
+| `complete_job` next-stage / retry re-queue | Any “process all matches” cron |
+
+Migration: `20260726020000_jobs_dispatch_cron.sql`.
+
+**Per-project Vault setup** (once per env after `db push`; secrets never in git):
+
+```sql
+-- Full dispatch URL for this project:
+select vault.create_secret(
+  'https://<PROJECT_REF>.supabase.co/functions/v1/jobs/dispatch',
+  'jobs_dispatch_url',
+  'pg_cron → jobs/dispatch'
+);
+
+-- Same value as edge secret PIPELINE_SERVICE_TOKEN:
+select vault.create_secret(
+  '<PIPELINE_SERVICE_TOKEN>',
+  'pipeline_service_token',
+  'x-pipeline-token for jobs/dispatch'
+);
+```
+
+If either secret is missing, the cron logs a WARNING and no-ops (safe right
+after migrate). To rotate, update the Vault secret row (Dashboard → Database →
+Vault, or `vault.update_secret`).
+
+Verify:
+
+```sql
+select jobid, jobname, schedule, active from cron.job where jobname = 'jobs-dispatch';
+-- after a minute with secrets set + something queued:
+select id, status_code, created from net._http_response order by created desc limit 5;
+```
+
+Manual dispatch (manage.py / curl) still works; cron is the steady-state drain.
+
+Default body: `{ "max": 2, "max_running": 2 }` (see `invoke_jobs_dispatch`).
 
 ---
 

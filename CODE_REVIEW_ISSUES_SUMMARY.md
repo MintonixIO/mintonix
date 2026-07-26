@@ -30,7 +30,7 @@ User-owned uploads work. Catalog (BWF) content has **no working path** through t
 **What to do:** Either enable read access for BWF content, or re-scope MVP to user-upload-only and fix the docs.
 
 ### 4. The job queue does not run by itself
-Dispatch is designed but **not scheduled** in-repo. Ingested matches sit until something external kicks dispatch.
+Dispatch auto-drain is scheduled in-repo (`jobs-dispatch` cron → `/jobs/dispatch`); still requires per-project Vault secrets.
 
 **What to do:** Turn on a regular dispatch schedule (cron or external).
 
@@ -94,7 +94,7 @@ Detection results are buffered entirely in memory before upload, which can fail 
 
 1. One BWF match ID everywhere; fix docs; annotate never invents IDs.  
 2. Annotate respects the selected env (dev/prod).  
-3. Wire dispatch on a schedule.  
+3. ~~Wire dispatch on a schedule.~~ (done — Vault secrets per env)  
 4. Stop double GPU runs (async accept + safer reclaim).  
 5. Normalize upload retries.  
 6. Detect: serial default + stream uploads.  

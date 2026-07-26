@@ -621,15 +621,6 @@ begin
   end if;
 end $$;
 
--- Cron sketch (left commented: URL + token are per-project Vault / secrets state —
--- re-applying this migration does not touch them):
--- select cron.schedule('jobs-dispatch', '* * * * *', $cron$
---   select net.http_post(
---     url     := (select decrypted_secret from vault.decrypted_secrets
---                 where name = 'jobs_dispatch_url'),
---     headers := jsonb_build_object('x-pipeline-token',
---                (select decrypted_secret from vault.decrypted_secrets
---                 where name = 'pipeline_service_token'),
---                'Content-Type', 'application/json'),
---     body    := '{}'::jsonb)
--- $cron$);
+-- Auto-drain is wired in 20260726020000_jobs_dispatch_cron.sql
+-- (pg_cron → invoke_jobs_dispatch → pg_net POST /jobs/dispatch).
+-- Vault secrets jobs_dispatch_url + pipeline_service_token are per-project.

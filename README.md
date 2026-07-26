@@ -101,8 +101,6 @@ Move fixed items to the module's *Resolved* list with the fixing commit.
 
 ### supabase/ — migrations + edge functions (`cdn-access`, `matches-ingest`, `jobs`) ✅/🚧
 
-- [ ] **P0** Dispatch is not scheduled — ingested matches sit in the queue until
-      something external kicks `jobs/dispatch`. Wire a cron schedule.
 - [ ] **P0** Double GPU dispatch — edge-function timeout / pgmq redelivery can
       reclaim and re-dispatch a job while a GPU run is still in flight (double
       cost, racing uploads). Treat worker acceptance as final for the attempt;
@@ -114,7 +112,12 @@ Move fixed items to the module's *Resolved* list with the fixing commit.
 - [ ] **P1** Shared contracts missing — the promised `packages/shared` fixtures
       don't exist; envelope/callback parsers are duplicated across TS and Python.
 
-**Resolved:** —
+**Resolved:**
+- Dispatch auto-drain — `20260726020000_jobs_dispatch_cron.sql` schedules
+  `jobs-dispatch` (every minute) → `invoke_jobs_dispatch` → `/jobs/dispatch`.
+  Enqueue stays intentional (ingest / ops / stage-advance only). Requires
+  Vault secrets `jobs_dispatch_url` + `pipeline_service_token` per project
+  (SUPABASE.md § Cron).
 
 ### workers/cloudflare/cdn — B2 delivery + `/presign` control plane ✅
 
@@ -205,11 +208,10 @@ Move fixed items to the module's *Resolved* list with the fixing commit.
 
 1. One BWF match ID everywhere; annotate never invents IDs.
 2. Annotate respects the selected env (dev/prod).
-3. Wire dispatch on a schedule.
-4. Stop double GPU runs (async accept + safer reclaim).
-5. Normalize upload retries.
-6. Detect: serial default + streamed uploads.
-7. BWF delivery path **or** user-only MVP + honest docs.
-8. Prod CORS / origin locks.
-9. Accept detect as terminal; defer analyze and OCR quality work.
-10. Freeze manage/web expansion until the pipeline is trustworthy.
+3. Stop double GPU runs (async accept + safer reclaim).
+4. Normalize upload retries.
+5. Detect: serial default + streamed uploads.
+6. BWF delivery path **or** user-only MVP + honest docs.
+7. Prod CORS / origin locks.
+8. Accept detect as terminal; defer analyze and OCR quality work.
+9. Freeze manage/web expansion until the pipeline is trustworthy.

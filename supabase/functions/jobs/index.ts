@@ -4,7 +4,7 @@
  * the pieces that must never drift apart: the stage routing table, the HMAC
  * job token (dispatch mints, callback verifies), and the queue semantics.
  *
- *   POST /functions/v1/jobs/dispatch    (cron / manual; x-pipeline-token auth)
+ *   POST /functions/v1/jobs/dispatch    (pg_cron every minute / manual; x-pipeline-token auth)
  *     Pops queued jobs (interactive before bulk) via the dispatch_next_job
  *     RPC, presigns every input/output through the CDN Worker's /presign
  *     control plane, and POSTs the stage envelope to the vast serverless
