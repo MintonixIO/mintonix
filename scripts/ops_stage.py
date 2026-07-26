@@ -16,8 +16,14 @@ from typing import Any
 STAGE_ORDER = ("normalize", "detect", "analyze")
 STAGE_OUTPUTS: dict[str, tuple[str, ...]] = {
     "normalize": (
-        "normalized.mp4", "thumbnail.jpg",
-        "valid.mp4", "frame_manifest.csv", "scores.csv",
+        "normalized.mp4",
+        "thumbnail.jpg",
+        # Live BWF compact range map (jobs + video-normalization).
+        "frame_ranges.csv",
+        # Legacy / deferred names still possible in older buckets.
+        "valid.mp4",
+        "frame_manifest.csv",
+        "scores.csv",
     ),
     "detect": ("detections.json",),
     "analyze": ("analysis.json",),

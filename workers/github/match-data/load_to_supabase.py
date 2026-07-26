@@ -26,7 +26,6 @@ The service role key bypasses RLS — never expose it to the frontend.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import re
@@ -35,6 +34,8 @@ import time
 from datetime import date
 
 import requests
+
+from match_key import bwf_match_id, match_key_from_scraped
 
 SUPABASE_URL = ""
 SUPABASE_KEY = ""
@@ -72,15 +73,6 @@ MATCH_UPSERT_COLS = (
     "g3_t1", "g3_t2",
     "source_url",
 )
-
-
-def bwf_match_id(match_key: str) -> str:
-    """Content-addressed PK: full sha256 hex of the stable scraper key."""
-    return hashlib.sha256(match_key.encode("utf-8")).hexdigest()
-
-
-def make_match_key(season, tournament, discipline, section, rnd, match_idx) -> str:
-    return f"{season}|{tournament}|{discipline}|{section}|{rnd}|{match_idx}"
 
 
 def youtube_url(video_id: str | None) -> str | None:
@@ -241,11 +233,13 @@ def to_iso_date(raw, season):
 def games_to_columns(games):
     """Map the scraped games list to flat g{n}_t{side} score columns.
 
-    Returns (cols, (w1, w2)) where w1/w2 are games won per side (for winner
-    fallback when the markup didn't bold a team).
+    Returns (cols, (w1, w2, n1, n2)) where:
+      w1/w2 — games won from per-game is_winner bold flags
+      n1/n2 — games won from numeric score comparison
     """
     cols = {f"g{n}_t{s}": None for n in (1, 2, 3) for s in (1, 2)}
     w1 = w2 = 0
+    n1 = n2 = 0
     for g in games:
         n = g.get("game")
         if n not in (1, 2, 3):
@@ -258,7 +252,42 @@ def games_to_columns(games):
             w1 += 1
         if (g.get("score2") or {}).get("is_winner"):
             w2 += 1
-    return cols, (w1, w2)
+        if s1 is not None and s2 is not None:
+            try:
+                a, b = int(s1), int(s2)
+            except (TypeError, ValueError):
+                continue
+            if a > b:
+                n1 += 1
+            elif b > a:
+                n2 += 1
+    return cols, (w1, w2, n1, n2)
+
+
+def resolve_winner(match: dict, score_cols: dict, w1: int, w2: int, n1: int, n2: int):
+    """Determine winner without relying solely on wiki bold markup.
+
+    Order: team bold → per-game bold counts → games_won field → numeric sets.
+    """
+    if match.get("team1", {}).get("is_winner"):
+        return 1
+    if match.get("team2", {}).get("is_winner"):
+        return 2
+    if w1 != w2:
+        return 1 if w1 > w2 else 2
+    gw = match.get("games_won")
+    if isinstance(gw, (list, tuple)) and len(gw) == 2:
+        try:
+            a, b = int(gw[0]), int(gw[1])
+            if a != b:
+                return 1 if a > b else 2
+        except (TypeError, ValueError):
+            pass
+    if n1 != n2:
+        return 1 if n1 > n2 else 2
+    # Last resort: any non-null score columns imply in-progress, not finished.
+    _ = score_cols
+    return None
 
 
 def main():
@@ -318,22 +347,12 @@ def main():
         for m in t["matches"]:
             discipline = m["discipline"]
             rnd = m["round"]
-            match_idx = m.get("match_idx", 0)
-            # section_path distinguishes matches in split draws where match_idx
-            # restarts within each section (Top half / Section 1, …).
-            section = "/".join(m.get("section_path") or [])
-            match_key = make_match_key(
-                season, tournament, discipline, section, rnd, match_idx
+            score_cols, (w1, w2, n1, n2) = games_to_columns(m.get("games", []))
+            # Prefer scraper-emitted match_key; recompute with leaf section if absent.
+            match_key = m.get("match_key") or match_key_from_scraped(
+                season, tournament, m
             )
-
-            score_cols, (w1, w2) = games_to_columns(m.get("games", []))
-            winner = (
-                1
-                if m["team1"].get("is_winner")
-                else (2 if m["team2"].get("is_winner") else None)
-            )
-            if winner is None and w1 != w2:
-                winner = 1 if w1 > w2 else 2
+            winner = resolve_winner(m, score_cols, w1, w2, n1, n2)
 
             # Persist finished matches only (same policy as the old loader).
             if winner is None:
@@ -374,30 +393,47 @@ def main():
         )
     match_rows = deduped
 
-    # Video / source_url guard: never wipe existing URLs on a degraded mapping.
+    # Video / source_url guard: scope to *this load's* ids, not global BWF count.
+    # Comparing a single-season file to all-time URL counts freezes updates after
+    # year rollover / multi-season history.
     apply_videos = False
     matched_now = (
         sum(1 for r in match_rows if r["_match_key"] in videos) if videos else 0
     )
     if videos:
-        existing_urls = count_rows(
-            "matches",
-            {
-                # BWF only (owner_id null). Approximate via source_url present
-                # and owner_id null — PostgREST filter.
-                "owner_id": "is.null",
-                "source_url": "not.is.null",
-            },
-        )
-        if matched_now == 0 and existing_urls:
+        load_ids = [r["id"] for r in match_rows]
+        existing_in_load = 0
+        if load_ids:
+            # PostgREST: count rows among this load that already have source_url.
+            # Chunk id list to stay under URL length limits.
+            chunk = 50
+            for i in range(0, len(load_ids), chunk):
+                part = load_ids[i : i + chunk]
+                inlist = "(" + ",".join(f'"{x}"' for x in part) + ")"
+                existing_in_load += count_rows(
+                    "matches",
+                    {
+                        "owner_id": "is.null",
+                        "source_url": "not.is.null",
+                        "id": f"in.{inlist}",
+                    },
+                )
+        if matched_now == 0 and existing_in_load:
             print(
-                f"  WARNING: video mapping covers 0 matches but DB has "
-                f"{existing_urls} BWF source_url rows; skipping source_url update"
+                f"  ERROR: video mapping covers 0 matches in this load but "
+                f"{existing_in_load} of these rows already have source_url; "
+                f"skipping source_url update"
             )
-        elif existing_urls and matched_now < existing_urls * 0.5:
+            if not DRY_RUN:
+                # Non-zero so CI surfaces frozen video maps (catalog upsert still runs).
+                print(
+                    "  (continuing catalog upsert without source_url; "
+                    "fix the video map)"
+                )
+        elif existing_in_load and matched_now < existing_in_load * 0.5:
             print(
-                f"  WARNING: source_url coverage would drop "
-                f"{existing_urls}→{matched_now} (>50%); skipping source_url update"
+                f"  ERROR: source_url coverage within this load would drop "
+                f"{existing_in_load}→{matched_now} (>50%); skipping source_url update"
             )
         else:
             apply_videos = True

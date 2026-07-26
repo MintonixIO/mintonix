@@ -19,9 +19,15 @@ class PoseResult:
 
 @dataclass
 class ShuttleCandidate:
-    """One heatmap peak. Coords normalized to the (stretched) network frame."""
+    """One heatmap peak in **source-frame** normalized UV [0, 1].
 
-    x: float
+    TrackNet preprocesses with anisotropic stretch to 512×288. Peak indices
+    are converted with ``(px+0.5)/net_w`` which equals source-frame UV under
+    pure stretch (``sx/W = px/net_w``). Same product space as pose keypoints
+    (letterbox undo → source UV). Analyze must not re-apply letterbox math.
+    """
+
+    x: float  # source-frame [0, 1]
     y: float
     conf: float
 

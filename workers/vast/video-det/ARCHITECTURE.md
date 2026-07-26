@@ -244,6 +244,7 @@ workers/vast/video-det/
 |---|---|
 | B2 credentials | Never on worker; presigned URLs only |
 | Worker identity | `callback_token` JWT (aud=`jobs-callback`), bound to job/stage/attempt |
+| Callback URL | Must match `CALLBACK_URL_PREFIX` or `SUPABASE_URL` + path `/functions/v1/jobs/callback` (fail-closed if prefix unset; `ALLOW_UNSAFE_CALLBACK=1` for local only) |
 | Service role key | Never passed to the worker |
 | Replay | Callback marks job terminal / CAS on attempt+stage |
 

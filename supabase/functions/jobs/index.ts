@@ -232,119 +232,32 @@ interface Settlement {
 }
 
 /**
- * Thin map of B2 annotation.json → worker valid_frames_config.
- * Field renames only: court.corners → court_corners; labels[].display_name
- * (or match roster) → player_names. Passes scoreboard_crop / score_sub_crop /
- * row_split_y through **only if present** — does not invent geometry.
- * Worker is sole defaulting authority: after probe, apply_valid_frames_defaults
- * fills missing scoreboard geometry (top-left quadrant convention).
- *
- * Returns null when annotation is absent/unusable (fail-closed for BWF).
+ * Load raw annotation.json for system/BWF matches.
+ * Mapping to valid_frames_config is **worker-owned** (annotation_map.py).
+ * Throws when missing so the job fails instead of silently full-timeline
+ * normalizing an uncleaned BWF master into detect.
  */
-export function annotationToValidFramesConfig(
-  annotation: unknown,
-  roster: {
-    team1_player1?: string | null;
-    team1_player2?: string | null;
-    team2_player1?: string | null;
-    team2_player2?: string | null;
-  },
-): Record<string, unknown> | null {
-  if (!annotation || typeof annotation !== "object") return null;
-  const ann = annotation as Record<string, unknown>;
-  const court = ann.court;
-  if (!court || typeof court !== "object") return null;
-  const c = court as Record<string, unknown>;
-  const corners = c.corners;
-  if (
-    !Array.isArray(corners) || corners.length !== 4 ||
-    !corners.every((p) =>
-      Array.isArray(p) && p.length === 2 &&
-      typeof p[0] === "number" && typeof p[1] === "number"
-    )
-  ) {
-    return null;
-  }
-
-  const names: string[] = [];
-  const labels = ann.labels;
-  if (Array.isArray(labels)) {
-    for (const lab of labels) {
-      if (lab && typeof lab === "object") {
-        const n = (lab as Record<string, unknown>).display_name;
-        if (typeof n === "string" && n.trim()) names.push(n.trim());
-      }
-    }
-  }
-  if (names.length === 0) {
-    for (const key of [
-      "team1_player1",
-      "team1_player2",
-      "team2_player1",
-      "team2_player2",
-    ] as const) {
-      const n = roster[key];
-      if (typeof n === "string" && n.trim()) names.push(n.trim());
-    }
-  }
-  if (names.length === 0) return null;
-
-  const cfg: Record<string, unknown> = {
-    court_corners: corners,
-    player_names: names,
-  };
-
-  const asCrop = (obj: unknown): Record<string, number> | null => {
-    if (!obj || typeof obj !== "object") return null;
-    const o = obj as Record<string, unknown>;
-    const keys = ["x", "y", "w", "h"] as const;
-    if (!keys.every((k) => typeof o[k] === "number")) return null;
-    return {
-      x: o.x as number,
-      y: o.y as number,
-      w: o.w as number,
-      h: o.h as number,
-    };
-  };
-  const crop = asCrop(c.scoreboard_crop);
-  if (crop) cfg.scoreboard_crop = crop;
-  const sub = asCrop(c.score_sub_crop);
-  if (sub) cfg.score_sub_crop = sub;
-  if (typeof c.row_split_y === "number") cfg.row_split_y = c.row_split_y;
-
-  return cfg;
-}
-
-/**
- * Load annotation.json for system/BWF matches.
- * Throws when missing/unusable so the job fails instead of silently
- * full-timeline normalizing an uncleaned BWF master into detect.
- */
-async function loadBwfValidFramesConfig(
-  job: DispatchedJob,
-): Promise<Record<string, unknown>> {
+async function loadBwfAnnotation(job: DispatchedJob): Promise<unknown> {
   const url = await presign(`${job.b2_prefix}annotation.json`, "GET");
   const resp = await fetch(url);
   if (!resp.ok) {
     throw new Error(
       `BWF match ${job.match_id}: annotation.json missing or unreadable ` +
-        `(HTTP ${resp.status}); cannot build valid_frames_config`,
+        `(HTTP ${resp.status}); cannot run valid-frames path`,
     );
   }
-  const annotation = await resp.json();
-  const cfg = annotationToValidFramesConfig(annotation, {
-    team1_player1: job.team1_player1,
-    team1_player2: job.team1_player2,
-    team2_player1: job.team2_player1,
-    team2_player2: job.team2_player2,
-  });
-  if (!cfg) {
-    throw new Error(
-      `BWF match ${job.match_id}: annotation.json unusable ` +
-        `(need court.corners + player names/labels or roster)`,
-    );
+  return await resp.json();
+}
+
+/** True if a B2 object exists (Range probe on presigned GET). */
+async function b2ObjectExists(key: string): Promise<boolean> {
+  try {
+    const url = await presign(key, "GET");
+    const resp = await fetch(url, { headers: { Range: "bytes=0-0" } });
+    return resp.ok || resp.status === 206;
+  } catch {
+    return false;
   }
-  return cfg;
 }
 
 /**
@@ -373,33 +286,46 @@ const STAGES: Record<string, {
         callback_token: token,
       };
 
+      // Independent presigns in parallel to shrink dispatch latency while
+      // the job is already claimed as processing.
+      const outputP = presignMultipart(`${prefix}normalized.mp4`);
+      const thumbP = presign(`${prefix}thumbnail.jpg`, "PUT");
+
       // User-owned: original already in B2 as original.mp4 (matches-ingest).
-      // System/BWF with YouTube: always yt-dlp + multipart archive. Retries must
-      // not be B2-only — if original.mkv never landed, a GET would hard-fail.
-      // (Worker overwrites the same key on successful archive.)
-      // System/backlog without URL: original already under the prefix as mp4.
-      // Downloads use parallel byte-ranges on the presigned GET (worker DL_CONNECTIONS).
+      // YouTube: prefer archived original.mkv on retry when present; else yt-dlp
+      // + multipart archive. System/backlog without URL: original.mp4 under prefix.
       if (job.owner_id) {
         env.input_url = await presign(`${prefix}original.mp4`, "GET");
       } else if (isYoutubeUrl(job.source_url)) {
-        env.input_url = job.source_url;
-        env.original_upload = await presignMultipart(`${prefix}original.mkv`);
+        const mkvKey = `${prefix}original.mkv`;
+        if (await b2ObjectExists(mkvKey)) {
+          env.input_url = await presign(mkvKey, "GET");
+        } else {
+          env.input_url = job.source_url;
+          env.original_upload = await presignMultipart(mkvKey);
+        }
       } else {
         env.input_url = await presign(`${prefix}original.mp4`, "GET");
       }
 
-      // Primary cleaned deliverable (BWF cut or full normalize) — multipart so
-      // multi-GB uploads hit line rate (worker UL_CONNECTIONS).
-      env.output_upload = await presignMultipart(`${prefix}normalized.mp4`);
-      // Small side assets: single PUT is enough.
-      env.thumbnail_upload_url = await presign(`${prefix}thumbnail.jpg`, "PUT");
+      env.output_upload = await outputP;
+      env.thumbnail_upload_url = await thumbP;
 
-      // BWF / system: require annotation.json → valid_frames_config; fail the
-      // job if missing (no silent full-timeline fallback). Worker does
-      // detect-then-single-encode into normalized.mp4.
+      // BWF / system: pass raw annotation.json + roster; worker maps to
+      // valid_frames_config (sole authority). Fail if annotation missing.
       if (!job.owner_id) {
-        env.valid_frames_config = await loadBwfValidFramesConfig(job);
-        env.manifest_upload_url = await presign(`${prefix}frame_ranges.csv`, "PUT");
+        const [annotation, manifestUrl] = await Promise.all([
+          loadBwfAnnotation(job),
+          presign(`${prefix}frame_ranges.csv`, "PUT"),
+        ]);
+        env.annotation = annotation;
+        env.roster = {
+          team1_player1: job.team1_player1,
+          team1_player2: job.team1_player2,
+          team2_player1: job.team2_player1,
+          team2_player2: job.team2_player2,
+        };
+        env.manifest_upload_url = manifestUrl;
       }
       return env;
     },
@@ -640,7 +566,21 @@ async function handleDispatch(request: Request): Promise<Response> {
 
     const spec = STAGES[job.stage];
     try {
-      if (!spec) throw new Error(`no dispatcher for stage '${job.stage}'`);
+      if (!spec) {
+        // Unwired stages (e.g. analyze): terminal fail — retry cannot help.
+        await failJob(
+          service,
+          job,
+          `no dispatcher for stage '${job.stage}' (not implemented)`,
+          false,
+        );
+        dispatched.push({
+          job_id: job.job_id,
+          stage: job.stage,
+          error: "stage not implemented",
+        });
+        continue;
+      }
       const token = await mintJobToken({
         job_id: job.job_id,
         match_id: job.match_id,
@@ -662,8 +602,15 @@ async function handleDispatch(request: Request): Promise<Response> {
         // Re-queue (or terminal-fail) so the job does not sit processing forever.
         await failJob(service, job, `invoke: ${e}`, job.attempt < MAX_ATTEMPTS);
       });
+      // Fail closed if waitUntil is unavailable: await invoke so the job
+      // cannot be left processing with no background work scheduled.
       // deno-lint-ignore no-explicit-any
-      (globalThis as any).EdgeRuntime?.waitUntil?.(invocation);
+      const edgeRt = (globalThis as any).EdgeRuntime;
+      if (edgeRt?.waitUntil) {
+        edgeRt.waitUntil(invocation);
+      } else {
+        await invocation;
+      }
       dispatched.push({ job_id: job.job_id, stage: job.stage, attempt: job.attempt });
     } catch (e) {
       await failJob(service, job, `dispatch: ${e}`, job.attempt < MAX_ATTEMPTS);
@@ -686,7 +633,20 @@ async function handleCallback(request: Request): Promise<Response> {
       audience: TOKEN_AUD,
       algorithms: ["HS256"],
     });
-    claims = payload as unknown as JobClaims;
+    if (
+      typeof payload.job_id !== "string" ||
+      typeof payload.match_id !== "string" ||
+      typeof payload.stage !== "string" ||
+      typeof payload.attempt !== "number"
+    ) {
+      return json(401, { error: "Job token missing required claims" });
+    }
+    claims = {
+      job_id: payload.job_id,
+      match_id: payload.match_id,
+      stage: payload.stage,
+      attempt: payload.attempt,
+    };
   } catch {
     return json(403, { error: "Invalid or expired job token" });
   }

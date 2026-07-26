@@ -235,10 +235,10 @@ engine on many cards. Concurrency and segment-parallel knobs:
 | `OCR_WORKERS` | `max(2, min(8, cores//4))` | Parallel PaddleOCR threads (override to pin) |
 | `DL_CONNECTIONS` / `UL_CONNECTIONS` | `8` | Parallel B2 range download / multipart upload |
 | `DL_MIN_PARALLEL_BYTES` | `16 MiB` | Min object size before range-parallel download |
-| `CALLBACK_URL_PREFIX` / `SUPABASE_URL` | (optional) | When set, `callback_url` must match this prefix. When unset (stock image), only `https://…/functions/v1/jobs/callback` is allowed |
+| `CALLBACK_URL_PREFIX` / `SUPABASE_URL` | **required in prod** | `callback_url` must match this prefix and end with `/functions/v1/jobs/callback`. **Fail-closed** if unset (no host-open path-suffix). |
 | `ALLOW_FILE_URLS` | `0` | Set `1` for arbitrary `file://` (local tests/CLI). Production leave off — stock PyWorker benchmark paths (`file:///app/sample.mov` or `BENCHMARK_INPUT_URL`, and `file:///tmp/benchmark_*.mp4`) are path-allowlisted without this flag |
 | `ALLOWED_HTTP_HOSTS` | (empty) | Optional comma-separated host allowlist for download/upload (single PUT and multipart part/complete/abort) |
-| `ALLOW_UNSAFE_CALLBACK` | `0` | Dev-only: allow any `callback_url` (bypasses prefix and path-suffix checks) |
+| `ALLOW_UNSAFE_CALLBACK` | `0` | Dev-only: allow any `callback_url` |
 
 **NVENC concurrency:** product of `MAX_INFLIGHT × SEGMENT_PARALLEL_N` concurrent
 encodes can oversubscribe NVENC. Keep `MAX_INFLIGHT=1` when using segment-

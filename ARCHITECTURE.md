@@ -9,7 +9,7 @@ Status legend: ✅ built · 🚧 partially built · 📐 designed, not built.
 ```
                  ┌─────────────── INGESTION ───────────────┐
   BWF backlog ──▶│                                          │
-  BWF scraper ──▶│  match-data pipeline (GitHub Actions) ✅ │──▶ matches / players tables
+  BWF scraper ──▶│  match-data pipeline (GitHub Actions) ✅ │──▶ matches table
   User upload ──▶│  cdn-access presigned PUT ✅             │──▶ B2  users/<uid>/…
                  └──────────────────┬──────────────────────┘
                                     ▼  enqueue
@@ -60,9 +60,9 @@ row in `matches` + objects in B2 under that match's constructable prefix**
   `source_url`). PRs apply to dev; master/schedule applies to prod. ✅
 - **Backlog** — existing footage is staged under `bwf/<match_id>/original.mp4`
   via service `/presign`, then `matches-ingest` enqueues normalize. 📐
-- **Steady state** — scraper sets `source_url` on `matches` and calls
-  `matches-ingest`; normalize fetches YouTube (yt-dlp ✅) and archives to B2.
-  (enqueue intentional ✅ / dispatch cron ✅)
+- **Steady state** — scraper sets `source_url` on `matches` only (catalog).
+  Pipeline enqueue is separate (`matches-ingest` / ops); normalize then fetches
+  YouTube (yt-dlp ✅) and archives to B2. (dispatch cron ✅)
 
 **Rule: B2 is canonical.** A YouTube URL is fetched exactly once, at
 normalize time; the normalized output lands in B2 and no later stage ever
@@ -143,7 +143,7 @@ the CDN cache.
 
 ## 4. The job pipeline
 
-### Queue 📐
+### Queue ✅
 
 A Postgres-backed queue in Supabase (**pgmq via Supabase Queues**) plus a
 `jobs` state table. **Enqueue is intentional only** (upload confirm /
@@ -158,48 +158,49 @@ preempt backlog), retries with visibility timeout, rate/cost caps on GPU
 spend, and a single place to observe pipeline state. Two queues (or a priority
 column): `interactive` (user-initiated) and `bulk` (backlog/scraper).
 
-### One job contract for every stage 📐 (generalizes what normalize ✅ does)
+### One job contract for every stage ✅ (live wire format)
 
-All stages speak the same envelope — this is the existing `normalize-video`
-pattern promoted to a standard:
+Stages share one **flat** envelope style (not a nested generic `source`/`outputs`
+map). Fixtures live under `contracts/` (callback status + stage basenames).
 
 ```jsonc
-// dispatcher → worker
-{ "input": {
-    "job_id": "…",
-    "source":       { "kind": "b2", "url": "<presigned GET>" }   // or
-                 // { "kind": "youtube", "url": "https://youtu.be/…" },
-    "outputs":      { "<asset kind>": "<presigned PUT or multipart set>", … },
-    "params":       { /* stage-specific: valid_frames_config, court corners… */ },
-    "callback_url": "https://<ref>.supabase.co/functions/v1/jobs/callback",
-    "callback_token": "<HMAC(job_id, attempt…), aud=jobs-callback>",
-    "realtime_channel": "job:<job_id>"   // stages that stream progress
-} }
+// dispatcher → worker (normalize example; PyWorker may wrap as { input: env })
+{
+  "request_id": "<job_id>",
+  "input_url": "<presigned GET | YouTube URL>",
+  "output_upload": { "part_urls": […], "complete_url": "…", "abort_url": "…", "part_size": 67108864 },
+  // or output_upload_url for single PUT (detect)
+  "thumbnail_upload_url": "<presigned PUT>",
+  "annotation": { /* raw annotation.json; BWF — worker maps */ },
+  "roster": { "team1_player1": "…", /* … */ },
+  "manifest_upload_url": "<presigned PUT frame_ranges.csv>",  // BWF
+  "original_upload": { /* multipart archive for first YouTube fetch */ },
+  "callback_url": "https://<ref>.supabase.co/functions/v1/jobs/callback",
+  "callback_token": "<HS256 JWT: job_id, match_id, stage, attempt; aud=jobs-callback; 12h>"
+}
 // worker → callback (Bearer callback_token)
-{ "job_id": "…", "status": "complete" | "failed",
-  "assets": { "<kind>": { "sha256": "…", "meta": { … } } }, "error?": "…" }
+{ "request_id": "<job_id>", "status": "success" | "failed",
+  "error?": "…", /* + stage probe fields on success */ }
+// jobs maps status success → DB jobs.status complete
 ```
 
-- Workers hold no credentials; the callback token is the only authorization
-  and is bound to one job (single-use: the callback marks the job terminal on
-  first valid call).
-- Progress Realtime (worker → `job:<job_id>`) is optional UX; **MVP detect
-  omits mid-job streaming** and reports only via `jobs/callback` (same as
-  normalize). Re-add progress later if the client needs a progress bar.
-- The jobs function's `/callback` route records assets, then **enqueues the
-  next stage** (normalize → detect → analyze), making the pipeline a chain of
-  queue messages rather than a long-lived orchestrator. Dispatch and callback
-  live in ONE function (`jobs`) because they share what must never drift: the
-  stage routing table, the token mint/verify pair, the queue semantics.
-  Workers POST the callback from inside their own job thread — the
-  dispatching edge function disconnects long before a real job finishes.
+- Workers hold no credentials; the callback token is the only authorization.
+  Single-use is state-machine based (`processing` + attempt/stage CAS), not a
+  jti store.
+- Progress Realtime is optional UX; **MVP detect/normalize omit mid-job
+  streaming** and report only via `jobs/callback`.
+- The jobs function's `/callback` route settles via `complete_job`, then
+  **advances or requeues** (normalize → detect; analyze not wired). Dispatch
+  and callback live in ONE function (`jobs`) because they share what must never
+  drift: the stage routing table, the token mint/verify pair, the queue
+  semantics.
 
 ### Stages
 
 | Stage | Worker | Status | In | Out |
 |---|---|---|---|---|
 | `normalize` | `workers/vast/video-normalization` | ✅ (scores.csv deferred) | original / YouTube URL (worker yt-dlps ✅); BWF: annotation.json → valid_frames_config | normalized.mp4 (full or BWF cleaned cut), thumbnail.jpg; youtube: + original.mkv; BWF: + frame_ranges.csv |
-| `detect` | `workers/vast/video-det` | 🚧 worker + `STAGES.detect` wired; analyze next; embedding module 📐 | normalized.mp4 (BWF cut already primary) | detections.json (pose + TrackNetV5 **top-K shuttle candidates** per frame for high recall + optional exclusive ReID). `server.py` + `detect/` + `pose/` |
+| `detect` | `workers/vast/video-det` | 🚧 worker + `STAGES.detect` wired; analyze next; embedding module 📐 | normalized.mp4 (BWF cut already primary) | detections.json (pose + TrackNetV5 **top-K shuttle candidates** in **source-frame** UV [0,1] + optional exclusive ReID). `server.py` + `detect/` + `pose/` |
 | `analyze` | `workers/…/analysis` | 📐 | detections.json + annotation.json | analysis.json: 3D shuttle trajectory (physics fit), player ground-plane positions (homography), metrics (TBD) |
 
 `analyze` is CPU-dominant (geometry + curve fitting, no NN inference) — it can

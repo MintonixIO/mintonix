@@ -1,0 +1,66 @@
+# Cross-pipeline contract checks: stage artifact basenames, callback fixtures,
+# and pure unit tests that must not drift between edge / scripts / workers.
+
+name: Contracts
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "contracts/**"
+      - "scripts/ops_stage.py"
+      - "scripts/test_stage_outputs.py"
+      - "supabase/functions/ops/**"
+      - "supabase/functions/jobs/**"
+      - "workers/vast/video-normalization/server.py"
+      - "workers/vast/video-det/server.py"
+      - ".github/workflows/contracts.yml"
+  pull_request:
+    paths:
+      - "contracts/**"
+      - "scripts/ops_stage.py"
+      - "scripts/test_stage_outputs.py"
+      - "supabase/functions/ops/**"
+      - "supabase/functions/jobs/**"
+      - "workers/vast/video-normalization/server.py"
+      - "workers/vast/video-det/server.py"
+      - ".github/workflows/contracts.yml"
+
+jobs:
+  stage-artifacts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Python stage_outputs goldens
+        run: python3 scripts/test_stage_outputs.py
+
+      - name: Deno stage_outputs unit tests
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Run deno tests
+        run: deno test supabase/functions/ops/stage_outputs_test.ts
+
+      - name: Assert contracts/stage_artifacts.json matches Python map
+        run: |
+          python3 <<'PY'
+          import json, os, sys
+          sys.path.insert(0, "scripts")
+          import ops_stage as s
+          with open("contracts/stage_artifacts.json") as f:
+              c = json.load(f)
+          assert list(s.STAGE_ORDER) == c["stage_order"]
+          for stage, names in c["outputs"].items():
+              assert tuple(names) == tuple(s.STAGE_OUTPUTS[stage]), (
+                  f"{stage}: contracts={names} py={s.STAGE_OUTPUTS[stage]}"
+              )
+          assert "frame_ranges.csv" in s.STAGE_OUTPUTS["normalize"]
+          # Callback wire vocabulary fixture
+          with open("contracts/callback.success.json") as f:
+              assert json.load(f)["status"] == "success"
+          with open("contracts/callback.failed.json") as f:
+              assert json.load(f)["status"] == "failed"
+          print("contracts OK")
+          PY

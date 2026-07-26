@@ -16,8 +16,8 @@ valid_frames_config (worker thin shape from jobs / annotation_to_valid_frames_co
   + optional scoreboard_crop, score_sub_crop, row_split_y as stored
   (+ optional ncc_on/off, ocr_conf_min, min_valid_run)
 
-Ownership: mappers (jobs annotationToValidFramesConfig + this module's
-annotation_to_valid_frames_config) are pure rename/pass-through. Geometry
+Ownership: this module is the sole annotation → valid_frames_config mapper
+(jobs passes raw annotation.json). Geometry
 defaults (top-left quadrant, full-band sub-crop, row_split_y = h/2) are
 filled only by apply_valid_frames_defaults after probe — worker is sole
 defaulting/validation authority for valid_frames geometry.
@@ -97,12 +97,13 @@ def annotation_to_valid_frames_config(
     *,
     roster: dict | None = None,
 ) -> dict | None:
-    """Pure rename/pass-through mapper (local/CLI/tests; jobs has the TS twin).
+    """Sole annotation → valid_frames_config mapper (production + CLI/tests).
 
-    Requires court.corners (4 points) + non-empty player names (labels or
-    roster). Passes scoreboard_crop / score_sub_crop / row_split_y only if
-    present — does **not** invent geometry. Missing scoreboard fields are
-    filled later by apply_valid_frames_defaults after probe.
+    jobs edge passes raw ``annotation.json`` + roster; this function owns the
+    mapping. Requires court.corners (4 points) + non-empty player names
+    (labels or roster). Passes scoreboard_crop / score_sub_crop / row_split_y
+    only if present — does **not** invent geometry. Missing scoreboard fields
+    are filled later by apply_valid_frames_defaults after probe.
     Returns None when annotation is unusable.
     """
     if not isinstance(annotation, dict):

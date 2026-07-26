@@ -23,6 +23,7 @@ GOLDEN_STAGE_OUTPUTS = {
     "normalize": (
         "normalized.mp4",
         "thumbnail.jpg",
+        "frame_ranges.csv",
         "valid.mp4",
         "frame_manifest.csv",
         "scores.csv",
@@ -52,6 +53,7 @@ class StageOutputsTests(unittest.TestCase):
             [
                 "normalized.mp4",
                 "thumbnail.jpg",
+                "frame_ranges.csv",
                 "valid.mp4",
                 "frame_manifest.csv",
                 "scores.csv",
