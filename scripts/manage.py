@@ -19,6 +19,9 @@ Match detail (stage control)
   Inspect B2, Set stage… (pick stage; optional purge; optional enqueue)
   via ops edge. Dual truth: jobs.stage vs B2 objects.
 
+Queue / ingest only enqueue (pgmq). Dispatch is automatic (pg_cron every
+minute → /jobs/dispatch). Home still has an emergency “Force dispatch”.
+
 Reconcile
   Diffs B2 ↔ Supabase (orphans either side + asset/status drift)
   and offers fix actions (delete, re-queue, set status).
@@ -142,7 +145,7 @@ SECRET_FIELDS: list[SecretField] = [
     SecretField(
         "PIPELINE_SERVICE_TOKEN", "Pipeline service token", "Required · Pipeline",
         required=True, secret=True,
-        help="x-pipeline-token for matches-ingest, /jobs/dispatch, and /ops/set-stage.",
+        help="x-pipeline-token for matches-ingest, /ops/set-stage, and emergency dispatch.",
     ),
     SecretField(
         "SUPABASE_SERVICE_ROLE_KEY", "Supabase service role key", "Required · Pipeline",
@@ -186,7 +189,7 @@ SECRET_FIELDS: list[SecretField] = [
     SecretField(
         "VAST_API_KEY", "Vast API key", "Infrastructure · Optional",
         required=False, secret=True,
-        help="Vast.ai key (if dispatch / workers need it locally).",
+        help="Vast.ai key (workers; not required for enqueue-only ops).",
     ),
     SecretField(
         "CLOUDFLARE_API_TOKEN", "Cloudflare API token", "Infrastructure · Optional",
@@ -919,6 +922,7 @@ def run_dispatch(
     vt: int | None = None,
     max_running: int | None = None,
 ) -> dict:
+    """Emergency manual drain. Steady-state is pg_cron → /jobs/dispatch."""
     require(secrets, "PIPELINE_SERVICE_TOKEN")
     body: dict[str, Any] = {"max": max_jobs}
     if vt is not None:
@@ -1635,7 +1639,7 @@ def screen_switch_env(app: App) -> None:
                 "cdn      cdn.mintonix.com",
                 f"secrets  {PROFILES['prod'].secrets_path}",
                 "",
-                "Deletes, queues, and dispatches will affect real users.",
+                "Deletes and queue enqueues will affect real users.",
             ],
             danger=True,
             default_no=True,
@@ -2149,7 +2153,7 @@ def screen_match_detail(app: App, m: dict) -> None:
         a = menu_select(app, "Match actions", [
             ("Inspect B2 objects", "LIST prefix · stage completeness"),
             ("Set stage…", "Pick stage; optional purge + enqueue"),
-            ("Queue this match", "Call matches-ingest (normalize job from source)"),
+            ("Queue this match", "Enqueue only — cron dispatch picks it up"),
             ("Delete this match", "B2 + DB cleanup"),
             ("Back", "Return to list"),
         ])
@@ -2270,7 +2274,7 @@ def _set_stage_flow(app: App, m: dict) -> None:
     enqueue = _pick_yes_no(
         app,
         "Enqueue on jobs_interactive?",
-        "pgmq.send — dispatch will pick it up",
+        "pgmq.send — cron drain will claim it (~1 min)",
         "Job at stage, no pgmq — still holds one-live slot (blocks ingest)",
         default_yes=True,
     )
@@ -2334,7 +2338,7 @@ def _set_stage_flow(app: App, m: dict) -> None:
         f"Environment  {app.env.label}",
         f"Match        {mid}",
         f"Stage        {stage}",
-        f"Enqueue      {'yes — jobs_interactive' if enqueue else 'no — not dispatchable'}",
+        f"Enqueue      {'yes — jobs_interactive (cron drains)' if enqueue else 'no — not dispatchable'}",
         f"Cancel live  {cancel_live}"
         + (
             f"  (live={live.get('status')} stage={live.get('stage')})"
@@ -2426,7 +2430,8 @@ def _queue_one(app: App, m: dict) -> None:
             f"Tournament   {m.get('tournament') or '—'}",
             f"Source       {m.get('source_url') or '(none)'}",
             "",
-            "Queue jobs_bulk · priority 100",
+            "Enqueue jobs_bulk · priority 100",
+            "Does not dispatch — pg_cron drains the queue.",
         ],
         danger=app.env.is_prod,
         default_no=app.env.is_prod,
@@ -2439,7 +2444,9 @@ def _queue_one(app: App, m: dict) -> None:
         if result.get("already_queued"):
             app.flash_warn(f"Already queued  job={result.get('job_id')}")
         else:
-            app.flash_ok(f"Queued  job={result.get('job_id')}")
+            app.flash_ok(
+                f"Enqueued  job={result.get('job_id')}  (cron will dispatch)"
+            )
         show_text(app, "Queue result", json.dumps(result, indent=2).splitlines())
     except Exception as e:
         app.flash_error(str(e))
@@ -2503,6 +2510,7 @@ def screen_queue(app: App) -> None:
     lines = [
         f"Environment  {app.env.label}",
         f"Will enqueue {len(matches)} match(es) on jobs_bulk.",
+        "Enqueue only — pg_cron drains /jobs/dispatch (~1 min).",
     ]
     if skipped:
         lines.append(f"Skipped {skipped} already live.")
@@ -2531,22 +2539,15 @@ def screen_queue(app: App) -> None:
                 results.append(f"already  {m['id'][:16]}  job={r.get('job_id')}")
             else:
                 ok += 1
-                results.append(f"queued   {m['id'][:16]}  job={r.get('job_id')}")
+                results.append(f"enqueued {m['id'][:16]}  job={r.get('job_id')}")
         except Exception as e:
             failed += 1
             results.append(f"FAILED   {m['id'][:16]}  {e}")
 
-    summary = f"queued={ok} already={already} failed={failed}"
+    summary = f"enqueued={ok} already={already} failed={failed}"
+    if ok and failed == 0:
+        summary += "  ·  cron will dispatch"
     (app.flash_ok if failed == 0 else app.flash_warn)(summary)
-
-    if confirm(app, "Dispatch now?", [summary, "", "Send one job to vast?"], default_no=True):
-        try:
-            d = run_dispatch(app.env, app.secrets, max_jobs=1)
-            results += ["", "dispatch:", *json.dumps(d, indent=2).splitlines()]
-            app.flash_ok("Dispatched")
-        except Exception as e:
-            results.append(f"dispatch FAILED: {e}")
-            app.flash_error(str(e))
 
     show_text(app, "Queue results", results)
 
@@ -2571,10 +2572,6 @@ def screen_ingest(app: App) -> None:
         if not os.path.isfile(file_path):
             raise RuntimeError(f"File not found: {file_path}")
 
-    dispatch = confirm(
-        app, "Dispatch after ingest?",
-        ["Also POST /jobs/dispatch when done?"], default_no=True,
-    )
     dry = confirm(
         app, "Dry-run?",
         ["Annotate only — write nothing?"], default_no=True,
@@ -2584,6 +2581,7 @@ def screen_ingest(app: App) -> None:
     if not os.path.isfile(script):
         raise RuntimeError(f"annotate_and_ingest.py not found at {script}")
 
+    # Enqueue only — never pass --dispatch; pg_cron drains the queue.
     cmd = [sys.executable, script]
     if url:
         cmd += ["--url", url]
@@ -2593,8 +2591,6 @@ def screen_ingest(app: App) -> None:
         cmd += ["--tournament", tournament]
     if lane != 1:
         cmd += ["--queue", "jobs_bulk"]
-    if dispatch:
-        cmd.append("--dispatch")
     if dry:
         cmd.append("--dry-run")
 
@@ -2728,26 +2724,32 @@ def screen_delete(app: App) -> None:
 
 
 def screen_dispatch(app: App) -> None:
-    max_jobs_s = text_input(app, "Dispatch", "Max jobs to claim", default="1")
+    """Emergency manual drain. Prefer the jobs-dispatch cron (every minute)."""
+    max_jobs_s = text_input(
+        app, "Force dispatch", "Max jobs to claim (emergency)", default="1",
+    )
     try:
         max_jobs = max(1, int(max_jobs_s))
     except ValueError:
         max_jobs = 1
 
     if not confirm(
-        app, "Dispatch",
+        app, "Force dispatch",
         [
             f"Environment  {app.env.label}",
             f"Claim up to {max_jobs} job(s) and POST to vast.",
+            "",
+            "Normally unnecessary: pg_cron drains the queue every minute.",
+            "Use only if the cron/Vault path is broken or you need a kick now.",
         ],
         danger=app.env.is_prod,
-        default_no=app.env.is_prod,
+        default_no=True,
     ):
         return
     try:
         app.set_status("  dispatching…", "dim")
         result = run_dispatch(app.env, app.secrets, max_jobs=max_jobs)
-        app.flash_ok("Dispatch done")
+        app.flash_ok("Force dispatch done")
         show_text(app, "Dispatch result", json.dumps(result, indent=2).splitlines())
     except Exception as e:
         app.flash_error(str(e))
@@ -2903,7 +2905,7 @@ def _reconcile_queue_matches(app: App, matches: list[dict]) -> None:
 
     lines = [
         f"Environment  {app.env.label}",
-        f"Re-queue {len(queueable)} match(es) via matches-ingest.",
+        f"Re-queue {len(queueable)} match(es) via matches-ingest (enqueue only).",
     ]
     if skipped:
         lines.append(f"Skipped {skipped} without source/owner.")
@@ -2921,10 +2923,10 @@ def _reconcile_queue_matches(app: App, matches: list[dict]) -> None:
             if result.get("already_queued"):
                 log.append(f"already  {m['id']}  job={result.get('job_id')}")
             else:
-                log.append(f"queued   {m['id']}  job={result.get('job_id')}")
+                log.append(f"enqueued {m['id']}  job={result.get('job_id')}")
         except Exception as e:
             log.append(f"FAILED   {m['id']}  {e}")
-    app.flash_ok("Queue complete")
+    app.flash_ok("Enqueued · cron will dispatch")
     show_text(app, "Re-queue log", log)
 
 
@@ -3383,11 +3385,11 @@ def screen_reconcile(app: App) -> None:
 
 HOME_ITEMS: list[tuple[str, str]] = [
     ("Browse matches", "Scroll the catalog. Filter by origin or status. Open a match for details."),
-    ("Queue for processing", "Enqueue BWF scraper matches into the GPU pipeline (one or many)."),
-    ("Ingest a video", "Annotate court/players, then create a match + job (OpenCV UI)."),
+    ("Queue for processing", "Enqueue BWF matches only — cron dispatches to vast (~1 min)."),
+    ("Ingest a video", "Annotate, create match + job (enqueue only; cron dispatches)."),
     ("Delete a match", "Remove B2 objects and/or the database row (jobs cascade)."),
     ("Reconcile storage", "Find B2↔Supabase orphans and asset/status drift; fix or clean up."),
-    ("Dispatch jobs", "Pop the queue and send work to vast workers."),
+    ("Force dispatch", "Emergency drain — normally pg_cron pops the queue every minute."),
     ("Pipeline snapshot", "Counts by status + currently live jobs."),
     ("Settings", "Edit secrets & variables for this environment. Test connections."),
     ("Switch environment", "Toggle between DEV and PROD databases / CDN / secrets."),
