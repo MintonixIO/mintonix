@@ -144,7 +144,7 @@ Move fixed items to the module's *Resolved* list with the fixing commit.
 - [ ] **P1** Missing GPU-scale support fails mid-job after download instead of
       failing fast at accept time.
 - [ ] **P1** Huge single module — needs structural split (no behavior change).
-- [ ] **P2** Score-timeline (`scores.csv`) output still owed by the stage.
+- [x] **P2** Score-timeline (`scores.csv`) — **deferred / not implemented** (BWF cleaned path is court∧scoreboard cut → `normalized.mp4` + `frame_ranges.csv`).
 
 **Resolved:** —
 

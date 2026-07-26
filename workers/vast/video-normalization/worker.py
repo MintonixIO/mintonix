@@ -57,10 +57,14 @@ MODEL_ERROR_LOG_MSGS = [
 MODEL_INFO_LOG_MSGS = ['"download(start)', "ffmpeg(command)"]
 
 # One 4K60 normalization saturates a single GPU's NVDEC decode engine (see
-# FINDINGS.md: the workload is decode-bound). Packing a second job onto the same
-# GPU yields ~no extra throughput on a 4090 and only ~2x on a 5080, so we keep a
-# worker to one job at a time and let the autoscaler add GPUs for parallelism.
-ALLOW_PARALLEL = False
+# FINDINGS.md: the workload is decode-bound). Default max in-flight is 1; set
+# MAX_INFLIGHT=2 on high-NVDEC GPUs (e.g. 5080) for ~2× batch throughput.
+# ALLOW_PARALLEL is derived from MAX_INFLIGHT for the PyWorker handler flag.
+MAX_INFLIGHT = max(1, int(os.environ.get("MAX_INFLIGHT", "1")))
+ALLOW_PARALLEL = MAX_INFLIGHT > 1
+BENCHMARK_CONCURRENCY = max(1, int(os.environ.get(
+    "BENCHMARK_CONCURRENCY", str(MAX_INFLIGHT),
+)))
 
 # A long, roughly fixed-cost job. The autoscaler uses this as the per-request
 # load weight; a large constant keeps it from over-packing a busy worker.
@@ -79,6 +83,8 @@ def request_parser(request: dict) -> dict:
 # (/app/sample.mov) as input and a throwaway local file as output, so the
 # benchmark is self-contained — no external hosting or upload target needed.
 # Each call gets a unique output path so concurrent benchmark runs don't clobber.
+# These file:// paths are on io_util's path-scoped allowlist (no ALLOW_FILE_URLS
+# required). Arbitrary other file:// still needs ALLOW_FILE_URLS=1.
 BENCHMARK_INPUT_URL = os.environ.get("BENCHMARK_INPUT_URL", "file:///app/sample.mov")
 
 
@@ -105,12 +111,11 @@ worker_config = WorkerConfig(
             # a worker before a queued request times out.
             max_queue_time=900.0,
             # Required by the SDK (Worker() raises "Missing EndpointHandler with
-            # BenchmarkConfig" without it). concurrency=1 because the workload is
-            # decode-bound — one job saturates a GPU's NVDEC, so measuring with a
-            # single in-flight job reflects real per-worker capacity.
+            # BenchmarkConfig" without it). Concurrency follows MAX_INFLIGHT so
+            # high-NVDEC hosts (MAX_INFLIGHT=2) measure real multi-job capacity.
             benchmark_config=BenchmarkConfig(
                 generator=benchmark_generator,
-                concurrency=1,
+                concurrency=BENCHMARK_CONCURRENCY,
                 runs=2,
             ),
         ),

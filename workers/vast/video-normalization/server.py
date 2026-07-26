@@ -14,28 +14,30 @@ this server receives the inner object):
           # optional, youtube sources: presigned PUT archiving the pristine
           # download to B2 (required upload — B2 is canonical after this job)
           "original_upload_url": "...",
-          # exactly one output destination:
-          "output_upload_url": "...",        # single presigned PUT, OR
-          "output_upload": {                 # parallel multipart (preferred)
+          # exactly one primary output destination:
+          # Production jobs: parallel multipart (CDN op=MULTIPART + jobs dispatcher).
+          "output_upload": {                 # preferred: parallel multipart
               "part_urls": [...], "complete_url": "...",
               "abort_url": "...", "part_size": 67108864 },
+          # Single presigned PUT (local file:// / small CLI); production uses multipart.
+          "output_upload_url": "...",
           # optional: presigned PUT for a random-frame JPEG thumbnail; presign a
           # .jpg key in the same directory as the output.
           "thumbnail_upload_url": "...",
-          # optional: filter the normalized output down to "valid" frames
-          # (main court camera visible AND scoreboard present) -- see
-          # valid_frames.extract_valid_frames for the config shape. All three
-          # of valid_frames_config, a valid_frames upload destination, and
-          # manifest_upload_url are required together.
+          # optional BWF cleaned path: detect court∧scoreboard on source, one
+          # GPU encode of keep-ranges into the primary output (normalized.mp4).
+          # manifest_upload_url required; scoreboard geometry optional (defaults).
           "valid_frames_config": {
               "court_corners": [[x,y],[x,y],[x,y],[x,y]],
-              "scoreboard_crop": {"x":0,"y":0,"w":0,"h":0},
-              "score_sub_crop": {"x":0,"y":0,"w":0,"h":0},
-              "row_split_y": 0,
-              "player_names": ["...", "..."] },
-          "valid_frames_upload_url": "...",     # single presigned PUT, OR
-          "valid_frames_upload": { "...": "... (same shape as output_upload)" },
-          "manifest_upload_url": "...",         # presigned PUT for the frame manifest CSV
+              "player_names": ["...", "..."],
+              "scoreboard_crop": {"x":0,"y":0,"w":0,"h":0},  # optional
+              "score_sub_crop": {"x":0,"y":0,"w":0,"h":0},   # optional
+              "row_split_y": 0 },                             # optional
+          "manifest_upload_url": "...",         # ranges CSV (old/new start/end)
+          # optional youtube pristine archive (multipart preferred, or single PUT)
+          "original_upload": { "part_urls": [...], "complete_url": "...",
+                               "abort_url": "...", "part_size": 67108864 },
+          "original_upload_url": "...",
           # optional async report channel: when given, the worker POSTs the
           # result (success or failure, same shape as the HTTP response body,
           # plus "status": "success"|"failed") to callback_url with
@@ -67,6 +69,7 @@ on_load) — keep that line emitted on stdout.
 
 import logging
 import os
+from urllib.parse import urlparse
 
 import uvicorn
 from fastapi import FastAPI, Request
@@ -84,7 +87,48 @@ log = logging.getLogger("video-normalization.server")
 HOST = os.environ.get("MODEL_SERVER_HOST", "127.0.0.1")
 PORT = int(os.environ.get("MODEL_SERVER_PORT", "18000"))
 
+# Production-safe default path when CALLBACK_URL_PREFIX / SUPABASE_URL unset:
+# stock jobs edge function endpoint (any https host).
+_DEFAULT_CALLBACK_PATH_SUFFIX = "/functions/v1/jobs/callback"
+
 app = FastAPI(title="video-normalization")
+
+
+def _callback_prefix() -> str:
+    return (
+        os.environ.get("CALLBACK_URL_PREFIX")
+        or os.environ.get("SUPABASE_URL")
+        or ""
+    ).rstrip("/")
+
+
+def _callback_url_allowed(url: str | None) -> bool:
+    """Allow callback_url under a tight allowlist.
+
+    Priority:
+      1. ALLOW_UNSAFE_CALLBACK=1 — any URL (local/dev only).
+      2. CALLBACK_URL_PREFIX or SUPABASE_URL set — must match that prefix.
+      3. Prefix empty (stock image) — https only, path ends with
+         /functions/v1/jobs/callback (rejects arbitrary evil hosts/paths).
+    """
+    if not url:
+        return True
+    if os.environ.get("ALLOW_UNSAFE_CALLBACK", "0").lower() in (
+        "1", "true", "yes",
+    ):
+        return True
+    prefix = _callback_prefix()
+    if prefix:
+        return url.startswith(prefix + "/") or url == prefix
+    # Stock deploy: no prefix env. Allow only the jobs edge callback path.
+    try:
+        parsed = urlparse(url)
+    except Exception:  # noqa: BLE001 — reject unparseable URLs
+        return False
+    if parsed.scheme != "https":
+        return False
+    path = parsed.path or ""
+    return path.endswith(_DEFAULT_CALLBACK_PATH_SUFFIX)
 
 
 @app.get("/health")
@@ -108,10 +152,9 @@ async def normalize_sync(request: Request) -> JSONResponse:
     output_upload = body.get("output_upload")  # multipart spec (dict) or None
     thumbnail_upload_url = body.get("thumbnail_upload_url")  # presigned PUT or None
     valid_frames_config = body.get("valid_frames_config")
-    valid_frames_upload_url = body.get("valid_frames_upload_url")
-    valid_frames_upload = body.get("valid_frames_upload")
     manifest_upload_url = body.get("manifest_upload_url")
-    original_upload_url = body.get("original_upload_url")  # archive PUT for youtube sources
+    original_upload_url = body.get("original_upload_url")  # archive PUT (legacy / local)
+    original_upload = body.get("original_upload")  # archive multipart (production youtube)
     # Async report channel: the dispatcher disconnects long before a real job
     # finishes (it runs in an edge function with a wall-clock limit), so when
     # it provides callback_url the worker POSTs the result there itself,
@@ -124,12 +167,18 @@ async def normalize_sync(request: Request) -> JSONResponse:
              "error": "input_url and one of output_upload_url / output_upload are required"},
             status_code=422,
         )
+    if callback_url and not _callback_url_allowed(callback_url):
+        return JSONResponse(
+            {"request_id": request_id,
+             "error": ("callback_url not allowed (must match CALLBACK_URL_PREFIX "
+                       "/ SUPABASE_URL, or https …/functions/v1/jobs/callback)")},
+            status_code=422,
+        )
     if valid_frames_config is not None:
-        # Reject a malformed valid-frames request here, before the job burns a
-        # download + full transcode only to fail on it at the end.
+        # Primary cleaned asset is output_upload(_url). Manifest (ranges CSV) required.
         err = normalize.validate_valid_frames_request(
             valid_frames_config,
-            has_destination=bool(valid_frames_upload or valid_frames_upload_url),
+            has_destination=bool(output_upload or output_upload_url),
             has_manifest=bool(manifest_upload_url),
         )
         if err:
@@ -148,14 +197,14 @@ async def normalize_sync(request: Request) -> JSONResponse:
             result = normalize.normalize_job(
                 input_url, output_upload_url, output_upload,
                 thumbnail_upload_url, valid_frames_config,
-                valid_frames_upload_url, valid_frames_upload,
-                manifest_upload_url, original_upload_url, progress=progress,
+                manifest_upload_url, original_upload_url,
+                original_upload=original_upload, progress=progress,
             )
         except Exception as e:
             if callback_url:
                 normalize.post_callback(callback_url, callback_token, {
                     "request_id": request_id, "status": "failed",
-                    "error": str(e), **progress,
+                    "error": normalize.sanitize_error(e), **progress,
                 })
             raise
         if callback_url:
@@ -170,7 +219,8 @@ async def normalize_sync(request: Request) -> JSONResponse:
     except Exception as e:  # noqa: BLE001 — report any job failure as 500
         log.exception("normalize(failed): request_id=%s", request_id)
         return JSONResponse(
-            {"request_id": request_id, "error": str(e)}, status_code=500
+            {"request_id": request_id, "error": normalize.sanitize_error(e)},
+            status_code=500,
         )
 
 

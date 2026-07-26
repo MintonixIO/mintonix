@@ -110,19 +110,21 @@ sequenceDiagram
 
   Cron->>Cron: dispatch_next_job RPC → claim job
   Note over Cron: prefix = bwf/<match_id>/ or users/<uid>/<match_id>/
-  Cron->>W: /presign ×N (GET/PUT)
-  W-->>Cron: input_url, output_upload_url, thumbnail_upload_url
+  Cron->>W: /presign GET + MULTIPART + PUT
+  W-->>Cron: input_url, output_upload (parts), thumbnail_upload_url
   Note over Cron: mint HMAC job token<br/>{job_id,match_id,stage,attempt} aud=jobs-callback
   Cron->>V: POST /normalize/sync envelope
-  V->>B: GET input_url → NVDEC/nvenc transcode
-  V->>B: PUT normalized.mp4 + thumbnail.jpg (presigned)
+  V->>B: GET input_url (parallel Range) → NVDEC/nvenc
+  V->>B: multipart part PUTs → Complete normalized.mp4
+  V->>B: PUT thumbnail.jpg (single)
   V->>K: POST result Bearer callback_token
   Note over K: verify token + complete_job RPC
   K-->>V: 200 ack
 ```
 
-> **Current state:** `jobs` edge function routes normalize only in `STAGES`;
-> detect/analyze wire-up is a follow-up. Callback settles via `complete_job`.
+> **Current state:** `jobs` edge function routes normalize → detect; analyze is
+> a follow-up. Large objects use CDN `op=MULTIPART`. Callback settles via
+> `complete_job`.
 
 The transcode target: **≤1920×1080, ≤30 fps, H.264/yuv420p, AAC**.
 

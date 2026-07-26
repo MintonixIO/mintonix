@@ -224,14 +224,14 @@ Objects under the prefix:
 
 ```text
 original.<ext>            raw source (upload or yt-dlp archive)
-normalized.mp4
+normalized.mp4            primary cleaned asset (full normalize OR BWF cut)
 thumbnail.jpg
-valid.mp4                 BWF optional (valid-frames cut)
-frame_manifest.csv        BWF optional
-scores.csv                BWF optional (score timeline)
+frame_ranges.csv          BWF optional (compact old/new range map)
 annotation.json           court geometry + player labels (single file)
 detections.json           detect output
 analysis.json             analyze output
+# scores.csv              NOT implemented (score timeline deferred)
+# valid.mp4               legacy name; primary BWF cut is normalized.mp4
 ```
 
 ### `annotation.json` (collapsed court + labels)
@@ -517,11 +517,12 @@ pgmq and RPCs: `EXECUTE` only for `service_role` (security definer + fixed
 2. Dispatch (cron)
    pgmq.read → jobs.processing, attempt++
    presign I/O under constructable prefix
+     (GET + MULTIPART for large outputs; single PUT for small side assets)
    POST vast worker for current stage
    matches.status = processing
 
 3. Worker
-   GET/PUT only presigned URLs
+   Parallel Range GET + multipart PUT on large objects (presigned only)
    optional Realtime progress (not stored on jobs)
    POST jobs/callback with HMAC job token
 
@@ -541,8 +542,8 @@ presigned URLs + single-use callback token bound to `(job_id, attempt)`.
 
 | Stage | Worker | Inputs (B2 / URL) | Outputs (B2) |
 |-------|--------|-------------------|--------------|
-| `normalize` | vast video-normalization | `source_url` or `original.*`; optional `annotation.json` for valid-frames | `normalized.mp4`, `thumbnail.jpg`; BWF: `valid.mp4`, `frame_manifest.csv`, …; archive `original.*` if YouTube |
-| `detect` | vast video-det | `normalized.mp4` or `valid.mp4` | `detections.json` |
+| `normalize` | vast video-normalization | `source_url` or `original.*`; BWF: `annotation.json` → valid_frames_config | `normalized.mp4` (full or BWF cleaned cut), `thumbnail.jpg`; BWF: `frame_ranges.csv`; archive `original.*` if YouTube |
+| `detect` | vast video-det | `normalized.mp4` (always; BWF cut already written there) | `detections.json` |
 | `analyze` | CPU/worker TBD | detections + `annotation.json` | `analysis.json` |
 
 Same chain for BWF and user; BWF simply has richer `annotation.json` / valid-frames.
@@ -558,7 +559,7 @@ When **regressing to** stage S, delete outputs for S **and every later stage**:
 
 | Stage | Outputs deleted on regress *to* this stage (and later) | Always keep |
 |-------|--------------------------------------------------------|-------------|
-| `normalize` | `normalized.mp4`, `thumbnail.jpg`, `valid.mp4`, `frame_manifest.csv`, `scores.csv` | `original.*`, `annotation.json` |
+| `normalize` | `normalized.mp4`, `thumbnail.jpg`, `frame_ranges.csv` (BWF); legacy `valid.mp4` / `scores.csv` if present | `original.*`, `annotation.json` |
 | `detect` | `detections.json` | earlier outputs |
 | `analyze` | `analysis.json` | earlier outputs |
 
@@ -590,6 +591,9 @@ access.
 | `ops` | `/set-stage` only (`PIPELINE_SERVICE_TOKEN` / `x-pipeline-token`) — set stage; purge uses non-dispatchable stage then optional enqueue |
 
 CDN worker remains the only holder of B2 credentials (`/presign` + delivery).
+`/presign` supports `GET` | `PUT` | `DELETE` | `MULTIPART` | `LIST`. Normalize
+dispatch uses **MULTIPART** for `normalized.mp4` (and YouTube `original.mkv`)
+so the GPU worker uploads at line rate; thumbnail / CSV / JSON stay single PUT.
 
 **Ops auth:** same pipeline token as `matches-ingest` / `/jobs/dispatch`
 (`PIPELINE_SERVICE_TOKEN`, header `x-pipeline-token`). No separate ops token
@@ -605,12 +609,17 @@ for MVP.
 | `cancel_live` | Default true — if false and a job is `processing`, reject without mutate |
 | `purge` | Default false — stage with enqueue=false, LIST+DELETE stage+later basenames, then enqueue if requested |
 
-MVP notes: **normalize → detect** are wired in `jobs` STAGES; analyze and
-loading `annotation.json` into `valid_frames_config` are follow-ups. Detect is
-terminal until analyze lands (match → `ready` after successful detect).
-Optional `VAST_DETECT_ENDPOINT_NAME` for the video-det vast endpoint (falls
-back to `VAST_ENDPOINT_NAME`). User confirm does not HEAD-check B2 before
-enqueue (empty keys fail at normalize).
+MVP notes: **normalize → detect** are wired in `jobs` STAGES. For system/BWF
+(`owner_id` null), dispatch loads `annotation.json` (presign GET) into a
+**thin** `valid_frames_config` (court corners + player names; scoreboard crops
+only if stored — no jobs-side geometry invention) and presigns
+`frame_ranges.csv`. The worker defaults missing scoreboard geometry after
+probe via `apply_valid_frames_defaults` and writes the cleaned cut to
+`normalized.mp4`. Detect always GETs `normalized.mp4`. Analyze is not wired
+yet (detect is terminal → match `ready`). Optional
+`VAST_DETECT_ENDPOINT_NAME` for the video-det vast endpoint (falls back to
+`VAST_ENDPOINT_NAME`). User confirm does not HEAD-check B2 before enqueue
+(empty keys fail at normalize).
 
 ---
 
@@ -650,9 +659,10 @@ unless product requires service-only BWF before launch (RLS).
    next stage inside callback without a new queue hop (callback path must stay short).
 3. **Wire analyze** in `jobs` STAGES once its worker contract is pinned; detect
    is already wired and currently terminal.
-4. **Load `annotation.json` at dispatch** for BWF `valid_frames_config`.
+4. ~~**Load `annotation.json` at dispatch** for BWF `valid_frames_config`.~~ done (system matches).
 5. **Annotation presets** for BWF tournaments — config file vs small table when
-   many events share geometry.
+   many events share geometry. Materialize `annotation.json` under `bwf/` when
+   the service upload path lands (annotate still prints BWF geometry today).
 6. **Players table** — only if player pages / shared identity become product.
 7. **BWF read visibility** — authenticated public vs service-only until launch.
 8. **Optional B2 existence check / per-owner live-job cap** on user ingest if abuse appears.

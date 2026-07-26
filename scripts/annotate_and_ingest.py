@@ -44,13 +44,14 @@ row_split_y = quadrant midline). With a crop that coarse the digit-rows
 fallback is a guess, so valid-frames hinges on the NAME matches.
 
 Coordinate contract (SUPABASE.md annotation.json / valid_frames.py):
-    corners          video-native pixels
-    scoreboard_crop  {x,y,w,h} absolute pixels — ffmpeg-cropped verbatim
-    score_sub_crop   {x,y,w,h} INSIDE scoreboard_crop
+    corners          video-native (source) pixels
+    scoreboard_crop  {x,y,w,h} absolute pixels on the source frame
+    score_sub_crop   {x,y,w,h} INSIDE scoreboard_crop (band-relative 0,0)
     row_split_y      y INSIDE score_sub_crop
-The pipeline runs valid-frames on normalized.mp4 (source resolution), and the
-worker downloads YouTube's best format (bv*+ba/b) — so annotate on that same
-stream; a --file whose resolution differs from the stream is refused.
+Detection runs on the *source* (not pre-normalized video). The worker then
+writes the cleaned court∧scoreboard cut to normalized.mp4 (detect always
+reads that key). Annotate on the same stream the worker will fetch
+(YouTube best format bv*+ba/b, or --file); refuse mismatched resolution.
 
 Secrets from ~/.mintonix/dev-secrets.env: PIPELINE_SERVICE_TOKEN (BWF ingest
 + dispatch), SUPABASE_ANON_KEY + SUPABASE_TEST_EMAIL/PASSWORD (upload lane).

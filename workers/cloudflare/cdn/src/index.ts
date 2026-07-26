@@ -8,10 +8,11 @@
  *     view token. End-user delivery — proxied so it stays cached + free egress.
  *
  *   - Control plane (POST /presign): the Supabase orchestrator, authed by a
- *     shared service token, asks for a presigned B2 URL (GET | PUT | DELETE)
- *     or a LIST of keys under a prefix. GET/PUT/DELETE URLs are hit DIRECTLY
- *     against B2 by the client/worker; LIST is executed here (no useful
- *     single-shot presign for paginated listing).
+ *     shared service token, asks for a presigned B2 URL (GET | PUT | DELETE),
+ *     a parallel multipart upload session (MULTIPART), or a LIST of keys under
+ *     a prefix. GET/PUT/DELETE/part URLs are hit DIRECTLY against B2 by the
+ *     client/worker; LIST and CreateMultipartUpload are executed here (need
+ *     credentials / UploadId).
  *
  * Trust boundary:
  *   - Vast / RunPod compute workers hold NO credentials (unchanged).
@@ -111,22 +112,41 @@ function timingSafeEqual(a: string, b: string): boolean {
   return diff === 0;
 }
 
+/** Unescape XML text entities from S3/B2 responses. */
+function unescapeXml(s: string): string {
+  return s
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'");
+}
+
+function presignExpirySeconds(bodyExpiresIn: number | undefined, env: Env): number {
+  const maxExpiry = Number(env.PRESIGN_MAX_EXPIRY_SECONDS ?? "3600");
+  return Math.min(Math.max(Number(bodyExpiresIn) || 900, 60), maxExpiry);
+}
+
 /**
- * Control plane: mint a presigned B2 URL (or list keys) for the orchestrator.
+ * Control plane: mint a presigned B2 URL (or list keys / multipart session)
+ * for the orchestrator.
  *
  * Auth: `Authorization: Bearer <PRESIGN_SERVICE_TOKEN>` (server-to-server).
  * Body:
  *   { "key": string, "op": "GET" | "PUT" | "DELETE", "expiresIn"?: number }
+ *   { "key": string, "op": "MULTIPART", "parts"?: number, "partSize"?: number,
+ *     "expiresIn"?: number }
  *   { "op": "LIST", "prefix": string, "maxKeys"?: number, "continuationToken"?: string }
  *
- * GET/PUT/DELETE presigns are scoped to exactly `key`, so one call can't grant
- * access to arbitrary objects. Content-Type is intentionally NOT signed: only
- * `host` is, so the uploading client can set any Content-Type without breaking
- * the signature (signing it would force a byte-exact echo and yield
+ * GET/PUT/DELETE/part presigns are scoped to exactly `key`, so one call can't
+ * grant access to arbitrary objects. Content-Type is intentionally NOT signed:
+ * only `host` is, so the uploading client can set any Content-Type without
+ * breaking the signature (signing it would force a byte-exact echo and yield
  * SignatureDoesNotMatch on most browser PUTs).
  *
- * LIST is executed in-Worker (paginated ListObjectsV2) — used by admin delete
- * of a match prefix. The B2 app key needs listFiles + deleteFiles for these.
+ * LIST and CreateMultipartUpload run in-Worker (need credentials / UploadId).
+ * The B2 app key needs listFiles + writeFiles (+ deleteFiles for abort/LIST
+ * cleanup) for these.
  */
 async function handlePresign(request: Request, env: Env): Promise<Response> {
   if (request.method !== "POST") return deny(405, "Method not allowed", env);
@@ -143,6 +163,8 @@ async function handlePresign(request: Request, env: Env): Promise<Response> {
     prefix?: string;
     maxKeys?: number;
     continuationToken?: string;
+    parts?: number;
+    partSize?: number;
   };
   try {
     body = await request.json();
@@ -155,18 +177,17 @@ async function handlePresign(request: Request, env: Env): Promise<Response> {
   if (op === "LIST") {
     return handleList(body, env);
   }
+  if (op === "MULTIPART") {
+    return handleMultipart(body, env);
+  }
 
   const key = body.key ?? "";
   if (!isValidKey(key)) return deny(400, "Invalid or missing key", env);
   if (op !== "GET" && op !== "PUT" && op !== "DELETE") {
-    return deny(400, "op must be GET, PUT, DELETE, or LIST", env);
+    return deny(400, "op must be GET, PUT, DELETE, MULTIPART, or LIST", env);
   }
 
-  const maxExpiry = Number(env.PRESIGN_MAX_EXPIRY_SECONDS ?? "3600");
-  const expiresIn = Math.min(
-    Math.max(Number(body.expiresIn) || 900, 60),
-    maxExpiry,
-  );
+  const expiresIn = presignExpirySeconds(body.expiresIn, env);
 
   const b2Url = new URL(`${env.B2_S3_ENDPOINT}/${env.B2_BUCKET}/${encodeURI(key)}`);
   b2Url.searchParams.set("X-Amz-Expires", String(expiresIn));
@@ -184,6 +205,104 @@ async function handlePresign(request: Request, env: Env): Promise<Response> {
       expiresAt: new Date(Date.now() + expiresIn * 1000).toISOString(),
     }),
     { status: 200, headers: { "Content-Type": "application/json", ...corsHeaders(env) } },
+  );
+}
+
+/**
+ * Start an S3 multipart upload and return presigned part/complete/abort URLs.
+ *
+ * Orchestrator (jobs) calls this once per large output; the GPU worker holds no
+ * B2 credentials — only the returned URLs. `parts` is the max part count
+ * (default 256 × 64 MiB ≈ 16 GiB headroom). The worker uses only as many part
+ * URLs as the final file needs.
+ */
+async function handleMultipart(
+  body: { key?: string; expiresIn?: number; parts?: number; partSize?: number },
+  env: Env,
+): Promise<Response> {
+  const key = body.key ?? "";
+  if (!isValidKey(key)) return deny(400, "Invalid or missing key", env);
+
+  const expiresIn = presignExpirySeconds(body.expiresIn, env);
+  // S3 allows up to 10_000 parts. Default covers multi-hour 1080p30 masters.
+  const parts = Math.min(Math.max(Number(body.parts) || 256, 1), 10_000);
+  // S3 minimum part size (except last) is 5 MiB; cap at 128 MiB for parallelism.
+  const partSize = Math.min(
+    Math.max(Number(body.partSize) || 64 * 1024 * 1024, 5 * 1024 * 1024),
+    128 * 1024 * 1024,
+  );
+
+  const objectUrl = `${env.B2_S3_ENDPOINT}/${env.B2_BUCKET}/${encodeURI(key)}`;
+  const aws = getAws(env);
+
+  // CreateMultipartUpload — must execute (returns uploadId).
+  const createUrl = new URL(objectUrl);
+  createUrl.searchParams.set("uploads", "");
+  const createSigned = await aws.sign(createUrl.toString(), {
+    method: "POST",
+    aws: { signQuery: true },
+  });
+  const createResp = await fetch(createSigned.url, { method: "POST" });
+  if (!createResp.ok) {
+    const t = await createResp.text();
+    return deny(
+      502,
+      `CreateMultipartUpload failed: ${createResp.status} ${t.slice(0, 200)}`,
+      env,
+    );
+  }
+  const createXml = await createResp.text();
+  const uploadIdMatch = createXml.match(/<UploadId>([^<]+)<\/UploadId>/);
+  if (!uploadIdMatch) {
+    return deny(502, "CreateMultipartUpload: no UploadId in response", env);
+  }
+  const uploadId = unescapeXml(uploadIdMatch[1]);
+
+  const part_urls: string[] = [];
+  for (let n = 1; n <= parts; n++) {
+    const partUrl = new URL(objectUrl);
+    partUrl.searchParams.set("partNumber", String(n));
+    partUrl.searchParams.set("uploadId", uploadId);
+    partUrl.searchParams.set("X-Amz-Expires", String(expiresIn));
+    const signed = await aws.sign(partUrl.toString(), {
+      method: "PUT",
+      aws: { signQuery: true },
+    });
+    part_urls.push(signed.url);
+  }
+
+  const completeUrl = new URL(objectUrl);
+  completeUrl.searchParams.set("uploadId", uploadId);
+  completeUrl.searchParams.set("X-Amz-Expires", String(expiresIn));
+  const completeSigned = await aws.sign(completeUrl.toString(), {
+    method: "POST",
+    aws: { signQuery: true },
+  });
+
+  const abortUrl = new URL(objectUrl);
+  abortUrl.searchParams.set("uploadId", uploadId);
+  abortUrl.searchParams.set("X-Amz-Expires", String(expiresIn));
+  const abortSigned = await aws.sign(abortUrl.toString(), {
+    method: "DELETE",
+    aws: { signQuery: true },
+  });
+
+  return new Response(
+    JSON.stringify({
+      op: "MULTIPART",
+      key,
+      uploadId,
+      part_urls,
+      complete_url: completeSigned.url,
+      abort_url: abortSigned.url,
+      part_size: partSize,
+      parts,
+      expiresAt: new Date(Date.now() + expiresIn * 1000).toISOString(),
+    }),
+    {
+      status: 200,
+      headers: { "Content-Type": "application/json", ...corsHeaders(env) },
+    },
   );
 }
 
@@ -223,22 +342,12 @@ async function handleList(
 
   const xml = await resp.text();
   const keys = [...xml.matchAll(/<Key>([^<]*)<\/Key>/g)].map((m) =>
-    m[1]
-      .replace(/&amp;/g, "&")
-      .replace(/&lt;/g, "<")
-      .replace(/&gt;/g, ">")
-      .replace(/&quot;/g, '"')
-      .replace(/&apos;/g, "'"),
+    unescapeXml(m[1]),
   );
   const truncated = /<IsTruncated>\s*true\s*<\/IsTruncated>/i.test(xml);
   const nextMatch = xml.match(/<NextContinuationToken>([^<]*)<\/NextContinuationToken>/);
   const nextContinuationToken = nextMatch
-    ? nextMatch[1]
-      .replace(/&amp;/g, "&")
-      .replace(/&lt;/g, "<")
-      .replace(/&gt;/g, ">")
-      .replace(/&quot;/g, '"')
-      .replace(/&apos;/g, "'")
+    ? unescapeXml(nextMatch[1])
     : null;
 
   return new Response(
