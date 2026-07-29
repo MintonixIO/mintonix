@@ -1,3 +1,5 @@
+"use client";
+
 import {
   Check,
   RotateCcw,
@@ -5,29 +7,22 @@ import {
   UserMinus,
   UserRound,
 } from "lucide-react";
-import type { Dispatch, SetStateAction } from "react";
 import { Avatar } from "@/components/ui/avatar";
 import { Input } from "@/components/ui/input";
-import type { PlayerState } from "@/lib/calibration/geometry";
+import { usePlayers } from "@/components/calibration/calibration-context";
 import { DIR, PA, PB } from "@/lib/calibration/constants";
 
-export type PlayersPanelProps = {
-  players: Record<"a" | "b", PlayerState>;
-  setPlayers: Dispatch<SetStateAction<Record<"a" | "b", PlayerState>>>;
-  identify: Record<"a" | "b", { q: string; id: string | null }>;
-  setIdentify: Dispatch<
-    SetStateAction<Record<"a" | "b", { q: string; id: string | null }>>
-  >;
-  results: (k: "a" | "b") => typeof DIR;
-};
+export function PlayersPanel() {
+  const {
+    players,
+    identify,
+    setPlayer,
+    resetIdentifyKey,
+    setIdentifyQ,
+    setIdentifyId,
+    results,
+  } = usePlayers();
 
-export function PlayersPanel({
-  players,
-  setPlayers,
-  identify,
-  setIdentify,
-  results,
-}: PlayersPanelProps) {
   return (
     <div className="flex flex-col gap-3.5">
       {(["a", "b"] as const).map((k) => {
@@ -127,12 +122,7 @@ export function PlayersPanel({
                     </div>
                     <button
                       type="button"
-                      onClick={() =>
-                        setIdentify((s) => ({
-                          ...s,
-                          [k]: { q: "", id: null },
-                        }))
-                      }
+                      onClick={() => resetIdentifyKey(k)}
                       className="inline-flex h-[30px] items-center rounded-lg border border-[var(--border)] px-2.5 text-[12.5px] text-[var(--text-secondary)] hover:border-[var(--border-strong)] hover:text-[var(--text-strong)]"
                     >
                       Change
@@ -143,12 +133,7 @@ export function PlayersPanel({
                     <Input
                       size="sm"
                       value={q}
-                      onChange={(e) =>
-                        setIdentify((s) => ({
-                          ...s,
-                          [k]: { ...s[k], q: e.target.value },
-                        }))
-                      }
+                      onChange={(e) => setIdentifyQ(k, e.target.value)}
                       placeholder="Search Mintonix players"
                       aria-label={`Search players for ${tag}`}
                     />
@@ -161,12 +146,7 @@ export function PlayersPanel({
                           <button
                             key={u.id}
                             type="button"
-                            onClick={() =>
-                              setIdentify((s) => ({
-                                ...s,
-                                [k]: { q: "", id: u.id },
-                              }))
-                            }
+                            onClick={() => setIdentifyId(k, u.id)}
                             className="flex w-full items-center gap-2.5 rounded-[9px] border border-transparent px-2 py-1.5 text-left hover:border-[var(--border)] hover:bg-[var(--surface-hover)]"
                           >
                             <Avatar name={u.name} size="sm" />
@@ -192,12 +172,7 @@ export function PlayersPanel({
                     )}
                     <button
                       type="button"
-                      onClick={() =>
-                        setIdentify((s) => ({
-                          ...s,
-                          [k]: { q: "", id: null },
-                        }))
-                      }
+                      onClick={() => resetIdentifyKey(k)}
                       className="inline-flex h-[30px] items-center gap-1.5 self-start rounded-lg border border-dashed border-[var(--border-strong)] px-2.5 text-[12.5px] text-[var(--text-secondary)] hover:text-[var(--text-strong)]"
                     >
                       <UserMinus className="h-3.5 w-3.5" />
@@ -208,9 +183,7 @@ export function PlayersPanel({
                 <div className="flex px-3 py-2.5">
                   <button
                     type="button"
-                    onClick={() =>
-                      setPlayers((s) => ({ ...s, [k]: "idle" }))
-                    }
+                    onClick={() => setPlayer(k, "idle")}
                     className="inline-flex h-7 items-center gap-1.5 rounded-lg border border-[var(--border)] px-2.5 text-xs text-[var(--text-muted)] hover:border-[var(--border-strong)] hover:text-[var(--text-strong)]"
                   >
                     <RotateCcw className="h-3 w-3" />

@@ -1,3 +1,5 @@
+"use client";
+
 import {
   Check,
   ChevronRight,
@@ -6,47 +8,25 @@ import {
   Scissors,
   X,
 } from "lucide-react";
-import type { Dispatch, SetStateAction } from "react";
 import { CourtSchematic } from "@/components/calibration/court-schematic";
-import {
-  computeQuality,
-  lmById,
-  type Landmark,
-  type Marks,
-} from "@/lib/calibration/geometry";
+import { useMarks } from "@/components/calibration/calibration-context";
+import { lmById } from "@/lib/calibration/geometry";
 import { cn } from "@/lib/utils";
 
-type Quality = ReturnType<typeof computeQuality>;
+export function PointsPanel() {
+  const {
+    marks,
+    selectedLm,
+    setSelectedLm,
+    pointsPhase,
+    armedLm,
+    Q,
+    linesDetected,
+    detectLines,
+    placedIds,
+    removeMark,
+  } = useMarks();
 
-export type PointsPanelProps = {
-  marks: Marks;
-  selectedLm: string | null;
-  setSelectedLm: Dispatch<SetStateAction<string | null>>;
-  pointsPhase: {
-    corners: number;
-    net: number;
-    phase: string;
-  };
-  armedLm: Landmark | null;
-  Q: Quality;
-  linesDetected: false | "scanning" | true;
-  detectLines: () => void;
-  placedIds: string[];
-  removeMark: (id: string) => void;
-};
-
-export function PointsPanel({
-  marks,
-  selectedLm,
-  setSelectedLm,
-  pointsPhase,
-  armedLm,
-  Q,
-  linesDetected,
-  detectLines,
-  placedIds,
-  removeMark,
-}: PointsPanelProps) {
   return (
     <div>
       {/* Phase banner */}

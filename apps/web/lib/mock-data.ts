@@ -1,103 +1,15 @@
-import type { VideoCardData } from "@/components/app/video-card";
+/**
+ * Marketing / docs fixtures. Match & pipeline data lives in `@/lib/matches`.
+ */
+export {
+  pipelineVideos,
+  recentVideos,
+  libraryMatches,
+  comparePlayers,
+} from "@/lib/matches";
 
-export const pipelineVideos: VideoCardData[] = [
-  {
-    id: "1",
-    title: "Club finals — Court 2",
-    players: "Koster vs Nguyen",
-    event: "Velocity Club · MS",
-    duration: "48:12",
-    status: "analyzing",
-    progress: 62,
-    date: "Today",
-    tags: ["singles", "1080p"],
-  },
-  {
-    id: "2",
-    title: "U19 sparring set",
-    players: "Park / Lee vs Chen / Wu",
-    event: "National Team · MD",
-    duration: "36:40",
-    status: "queued",
-    date: "Today",
-    tags: ["doubles"],
-  },
-];
-
-export const recentVideos: VideoCardData[] = [
-  {
-    id: "3",
-    title: "Axelsen vs Momota",
-    players: "V. Axelsen vs K. Momota",
-    event: "All England · MS SF",
-    duration: "1:12:04",
-    status: "ready",
-    href: "/video-analysis",
-    date: "Mon",
-    tags: ["BWF", "MS"],
-  },
-  {
-    id: "4",
-    title: "League night — Court 1",
-    players: "Koster vs Alvarez",
-    event: "Velocity Club · MS",
-    duration: "41:22",
-    status: "ready",
-    href: "/video-analysis",
-    date: "Sun",
-    tags: ["singles"],
-  },
-  {
-    id: "5",
-    title: "Training block B",
-    players: "Squad · multi-rally",
-    event: "Practice · mixed",
-    duration: "22:08",
-    status: "ready",
-    href: "/video-analysis",
-    date: "Sat",
-    tags: ["drills"],
-  },
-];
-
-export const blogPosts = [
-  {
-    slug: "rally-length-trends",
-    title: "Rally length is rising — what the data says",
-    excerpt:
-      "Across 2,400 recent MS matches, average rally length is up 0.6 shots. Here's where the extra strokes are coming from.",
-    date: "2026-06-18",
-    category: "Insights",
-    readTime: "6 min",
-  },
-  {
-    slug: "smash-speed-baselines",
-    title: "Smash speed baselines by level",
-    excerpt:
-      "Club, college, and pro smash distributions — and how to set thresholds that actually surface winners.",
-    date: "2026-06-04",
-    category: "Coaching",
-    readTime: "5 min",
-  },
-  {
-    slug: "highlight-workflows",
-    title: "Building shareable reels in under a minute",
-    excerpt:
-      "A coach workflow: filter by outcome and speed, trim the noise, and ship a link before the next session.",
-    date: "2026-05-22",
-    category: "Product",
-    readTime: "4 min",
-  },
-  {
-    slug: "court-heatmaps",
-    title: "Reading court heatmaps without the noise",
-    excerpt:
-      "Zone intensity is only useful when you normalize for rally count. A short guide to what the grid is telling you.",
-    date: "2026-05-10",
-    category: "Insights",
-    readTime: "7 min",
-  },
-];
+/** Re-export catalog entries from the full blog content model. */
+export { blogCatalogEntries as blogPosts } from "@/lib/blog/posts";
 
 export const changelogEntries = [
   {

@@ -1,4 +1,3 @@
-import Link from "next/link";
 import {
   Gauge,
   Grid2x2,
@@ -6,8 +5,12 @@ import {
   Scissors,
   Tags,
 } from "lucide-react";
-import { Button } from "@/components/ui/button";
 import { AnalysisDemo } from "@/components/marketing/analysis-demo";
+import {
+  FeatureCTA,
+  FeatureHero,
+  FeatureSection,
+} from "@/components/marketing/feature-page";
 import { Reveal } from "@/components/marketing/reveal";
 
 export const metadata = {
@@ -75,106 +78,77 @@ function heat(v: number) {
 export default function FeatureVideoAnalysisPage() {
   return (
     <div className="overflow-x-clip">
-      <section className="relative">
-        <div
-          className="pointer-events-none absolute inset-0"
-          style={{
-            background:
-              "radial-gradient(110% 60% at 15% -10%, rgba(54,147,255,0.16), transparent 55%)",
-          }}
-        />
-        <div className="relative mx-auto max-w-[1320px] px-8 pt-[92px]">
-          <div className="grid items-center gap-10 lg:grid-cols-[1.05fr_0.95fr] lg:gap-14">
-            <div>
-              <div className="inline-flex items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--accent-soft)] px-2.5 py-1.5 font-mono text-[11px] uppercase tracking-[0.14em] text-[var(--accent)]">
-                <ScanLine className="h-3.5 w-3.5" />
-                Video analysis
-              </div>
-              <h1 className="mt-[22px] font-display text-[clamp(36px,5vw,60px)] font-semibold leading-[1.04] tracking-[-0.03em] text-[var(--text-strong)] text-balance">
-                Every shot, measured.
-              </h1>
-              <p className="mt-5 max-w-[50ch] text-[clamp(15px,1.5vw,18px)] leading-[1.62] text-[var(--text-secondary)]">
-                Upload raw footage and Mintonix watches it the way a coach does —
-                splitting the match into rallies, naming every shot, mapping where
-                players move, and clocking the shuttle. No tagging, no
-                spreadsheets.
-              </p>
-              <div className="mt-8 flex flex-wrap gap-3">
-                <Link href="/auth">
-                  <Button size="lg">Analyze a match</Button>
-                </Link>
-                <Link href="/video-analysis">
-                  <Button variant="outline" size="lg">
-                    See it live
-                  </Button>
-                </Link>
-              </div>
-            </div>
-
-            <div className="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface-1)] shadow-[var(--shadow-xl),var(--shadow-edge)]">
-              <div className="flex items-center gap-2 border-b border-[var(--border-subtle)] px-4 py-3">
-                <span className="mx-pulse-dot h-2 w-2 rounded-full bg-[#f4515c]" />
-                <span className="font-mono text-[11px] uppercase tracking-wide text-[var(--text-muted)]">
-                  Analyzing · rally 14
+      <FeatureHero
+        EyebrowIcon={ScanLine}
+        eyebrow="Video analysis"
+        title="Every shot, measured."
+        body="Upload raw footage and Mintonix watches it the way a coach does — splitting the match into rallies, naming every shot, mapping where players move, and clocking the shuttle. No tagging, no spreadsheets."
+        ctas={[
+          { href: "/auth", label: "Analyze a match" },
+          { href: "/video-analysis", label: "See it live", variant: "outline" },
+        ]}
+        glow="radial-gradient(110% 60% at 15% -10%, rgba(54,147,255,0.16), transparent 55%)"
+      >
+        <div className="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface-1)] shadow-[var(--shadow-xl),var(--shadow-edge)]">
+          <div className="flex items-center gap-2 border-b border-[var(--border-subtle)] px-4 py-3">
+            <span className="mx-pulse-dot h-2 w-2 rounded-full bg-[#f4515c]" />
+            <span className="font-mono text-[11px] uppercase tracking-wide text-[var(--text-muted)]">
+              Analyzing · rally 14
+            </span>
+            <div className="flex-1" />
+            <span className="font-mono text-[11px] text-[var(--accent)]">
+              live
+            </span>
+          </div>
+          <div className="px-1.5 py-2">
+            {READOUT.map((r) => (
+              <div
+                key={r.t + r.shot}
+                className="flex items-center gap-2.5 rounded-[10px] px-3 py-2.5"
+              >
+                <span className="min-w-[30px] font-mono text-xs tabular-nums text-[var(--text-faint)]">
+                  {r.t}
                 </span>
-                <div className="flex-1" />
-                <span className="font-mono text-[11px] text-[var(--accent)]">
-                  live
+                <span
+                  className="h-2 w-2 shrink-0 rounded-sm"
+                  style={{ background: r.color }}
+                />
+                <span className="min-w-0 flex-1 text-[13.5px] text-[var(--text-strong)]">
+                  {r.shot}
+                </span>
+                <span className="font-mono text-xs tabular-nums text-[var(--text-secondary)]">
+                  {r.speed}
                 </span>
               </div>
-              <div className="px-1.5 py-2">
-                {READOUT.map((r) => (
-                  <div
-                    key={r.t + r.shot}
-                    className="flex items-center gap-2.5 rounded-[10px] px-3 py-2.5"
-                  >
-                    <span className="min-w-[30px] font-mono text-xs tabular-nums text-[var(--text-faint)]">
-                      {r.t}
-                    </span>
-                    <span
-                      className="h-2 w-2 shrink-0 rounded-sm"
-                      style={{ background: r.color }}
-                    />
-                    <span className="min-w-0 flex-1 text-[13.5px] text-[var(--text-strong)]">
-                      {r.shot}
-                    </span>
-                    <span className="font-mono text-xs tabular-nums text-[var(--text-secondary)]">
-                      {r.speed}
-                    </span>
-                  </div>
-                ))}
-              </div>
-              <div className="flex items-center justify-between border-t border-[var(--border-subtle)] bg-[var(--surface-2)] px-4 py-3">
-                <span className="text-[12.5px] text-[var(--text-muted)]">
-                  Shots detected this rally
-                </span>
-                <span className="font-mono text-[15px] font-semibold tabular-nums text-[var(--text-strong)]">
-                  27
-                </span>
-              </div>
-            </div>
+            ))}
+          </div>
+          <div className="flex items-center justify-between border-t border-[var(--border-subtle)] bg-[var(--surface-2)] px-4 py-3">
+            <span className="text-[12.5px] text-[var(--text-muted)]">
+              Shots detected this rally
+            </span>
+            <span className="font-mono text-[15px] font-semibold tabular-nums text-[var(--text-strong)]">
+              27
+            </span>
           </div>
         </div>
-      </section>
+      </FeatureHero>
 
-      <section className="relative mx-auto max-w-[1256px] px-8 pt-20">
+      <FeatureSection
+        className="relative pt-20"
+        maxWidthClassName="max-w-[1256px]"
+      >
         <Reveal className="overflow-hidden rounded-[14px] shadow-[var(--shadow-xl)]">
           <AnalysisDemo className="min-h-[560px]" />
         </Reveal>
-      </section>
+      </FeatureSection>
 
-      <section className="mx-auto max-w-[1180px] px-8 pt-[120px]">
-        <Reveal className="mb-16 max-w-[620px]">
-          <div className="mb-3.5 font-mono text-[11px] uppercase tracking-[0.12em] text-[var(--accent)]">
-            What the engine sees
-          </div>
-          <h2 className="font-display text-[clamp(28px,3.4vw,42px)] font-semibold leading-[1.1] tracking-[-0.025em] text-[var(--text-strong)] text-balance">
-            Four passes over your footage. One complete picture.
-          </h2>
-        </Reveal>
-
+      <FeatureSection
+        className="pt-[120px]"
+        eyebrow="What the engine sees"
+        title="Four passes over your footage. One complete picture."
+        headerClassName="mb-16 max-w-[620px]"
+      >
         <div className="flex flex-col gap-24">
-          {/* Rally segmentation */}
           <Reveal className="grid items-center gap-10 lg:grid-cols-[0.9fr_1.1fr] lg:gap-14">
             <div>
               <span className="inline-flex h-11 w-11 items-center justify-center rounded-xl border border-[var(--border)] bg-[var(--accent-soft)] text-[var(--accent)]">
@@ -221,7 +195,6 @@ export default function FeatureVideoAnalysisPage() {
             </div>
           </Reveal>
 
-          {/* Shot classification */}
           <Reveal className="grid items-center gap-10 lg:grid-cols-[1.1fr_0.9fr] lg:gap-14">
             <div className="order-2 rounded-[14px] border border-[var(--border)] bg-[var(--surface-1)] p-[22px] lg:order-1">
               <div className="mb-[18px] font-mono text-[11px] uppercase tracking-[0.06em] text-[var(--text-faint)]">
@@ -265,7 +238,6 @@ export default function FeatureVideoAnalysisPage() {
             </div>
           </Reveal>
 
-          {/* Heatmaps */}
           <Reveal className="grid items-center gap-10 lg:grid-cols-[0.9fr_1.1fr] lg:gap-14">
             <div>
               <span className="inline-flex h-11 w-11 items-center justify-center rounded-xl border border-[var(--border)] bg-[var(--accent-soft)] text-[var(--accent)]">
@@ -308,7 +280,6 @@ export default function FeatureVideoAnalysisPage() {
             </div>
           </Reveal>
 
-          {/* Shuttle speed */}
           <Reveal className="grid items-center gap-10 lg:grid-cols-[1.1fr_0.9fr] lg:gap-14">
             <div className="order-2 rounded-[14px] border border-[var(--border)] bg-[var(--surface-1)] p-[26px] lg:order-1">
               <div className="font-mono text-[11px] uppercase tracking-[0.06em] text-[var(--text-faint)]">
@@ -354,9 +325,9 @@ export default function FeatureVideoAnalysisPage() {
             </div>
           </Reveal>
         </div>
-      </section>
+      </FeatureSection>
 
-      <section className="mx-auto max-w-[1180px] px-8 pt-[110px]">
+      <FeatureSection className="pt-[110px]">
         <Reveal className="grid gap-9 rounded-[18px] border border-[var(--border)] bg-[var(--surface-1)] p-10 shadow-[var(--shadow-edge)] sm:grid-cols-3">
           {STATS.map((st) => (
             <div key={st.big}>
@@ -369,35 +340,20 @@ export default function FeatureVideoAnalysisPage() {
             </div>
           ))}
         </Reveal>
-      </section>
+      </FeatureSection>
 
-      <section className="mx-auto max-w-[1180px] px-8 pb-[140px] pt-[110px]">
-        <Reveal
-          className="relative rounded-[20px] border border-[var(--border)] px-8 py-[72px] text-center"
-          style={{
-            background:
-              "radial-gradient(120% 140% at 50% -20%, rgba(54,147,255,0.16), transparent 60%), var(--surface-1)",
-          }}
-        >
-          <h2 className="mx-auto max-w-[18ch] font-display text-[clamp(28px,3.6vw,44px)] font-semibold leading-[1.08] tracking-[-0.03em] text-[var(--text-strong)] text-balance">
-            Point a camera. Get the numbers.
-          </h2>
-          <p className="mx-auto mt-4 max-w-[48ch] text-[16px] leading-[1.6] text-[var(--text-secondary)]">
-            Your first match is free to analyze — no card, no setup. Or open a
-            pro match from the BWF library and explore the analysis right now.
-          </p>
-          <div className="mt-[30px] flex flex-wrap items-center justify-center gap-3">
-            <Link href="/auth">
-              <Button size="lg">Analyze your first match</Button>
-            </Link>
-            <Link href="/bwf">
-              <Button variant="ghost" size="lg">
-                Browse BWF matches
-              </Button>
-            </Link>
-          </div>
-        </Reveal>
-      </section>
+      <FeatureCTA
+        title="Point a camera. Get the numbers."
+        body="Your first match is free to analyze — no card, no setup. Or open a pro match from the BWF library and explore the analysis right now."
+        ctas={[
+          { href: "/auth", label: "Analyze your first match" },
+          {
+            href: "/bwf",
+            label: "Browse BWF matches",
+            variant: "ghost",
+          },
+        ]}
+      />
     </div>
   );
 }

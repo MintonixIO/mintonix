@@ -6,152 +6,21 @@ import { AppTopbar } from "@/components/app/app-topbar";
 import { Avatar } from "@/components/ui/avatar";
 import { ProgressBar } from "@/components/ui/progress-bar";
 import { Select } from "@/components/ui/select";
+import { comparePlayers } from "@/lib/matches";
 import { cn } from "@/lib/utils";
+import { METRICS, SHOT_TYPES } from "./metrics";
 
-type Player = {
-  name: string;
-  record: string;
-  winRate: number;
-  rally: number;
-  smash: number;
-  net: number;
-  attack: number;
-  errors: number;
-  mix: [number, number, number, number];
-};
-
-const PLAYERS: Record<string, Player> = {
-  viktor: {
-    name: "Viktor Koster",
-    record: "24–9",
-    winRate: 66,
-    rally: 9.4,
-    smash: 372,
-    net: 71,
-    attack: 58,
-    errors: 7,
-    mix: [24, 16, 15, 14],
-  },
-  momota: {
-    name: "Kento Momota",
-    record: "31–6",
-    winRate: 71,
-    rally: 11.2,
-    smash: 348,
-    net: 74,
-    attack: 49,
-    errors: 6,
-    mix: [29, 14, 11, 12],
-  },
-  axelsen: {
-    name: "Viktor Axelsen",
-    record: "29–7",
-    winRate: 69,
-    rally: 8.6,
-    smash: 388,
-    net: 66,
-    attack: 64,
-    errors: 9,
-    mix: [21, 17, 22, 10],
-  },
-  ansy: {
-    name: "An Se-young",
-    record: "33–4",
-    winRate: 78,
-    rally: 10.4,
-    smash: 332,
-    net: 76,
-    attack: 55,
-    errors: 5,
-    mix: [26, 18, 12, 15],
-  },
-  ginting: {
-    name: "Anthony Ginting",
-    record: "22–12",
-    winRate: 61,
-    rally: 8.1,
-    smash: 369,
-    net: 63,
-    attack: 67,
-    errors: 11,
-    mix: [19, 15, 25, 13],
-  },
-  sindhu: {
-    name: "P.V. Sindhu",
-    record: "20–13",
-    winRate: 58,
-    rally: 9.7,
-    smash: 351,
-    net: 60,
-    attack: 61,
-    errors: 12,
-    mix: [23, 16, 19, 11],
-  },
-};
-
-const METRICS = [
-  {
-    key: "winRate" as const,
-    label: "Win rate",
-    unit: "%",
-    hint: "higher is better",
-    dir: "hi" as const,
-  },
-  {
-    key: "rally" as const,
-    label: "Avg rally length",
-    unit: "",
-    hint: "patience index",
-    dir: "hi" as const,
-  },
-  {
-    key: "smash" as const,
-    label: "Top smash",
-    unit: " km/h",
-    hint: "peak shuttle speed",
-    dir: "hi" as const,
-  },
-  {
-    key: "net" as const,
-    label: "Net points won",
-    unit: "%",
-    hint: "forecourt control",
-    dir: "hi" as const,
-  },
-  {
-    key: "attack" as const,
-    label: "Attacking share",
-    unit: "%",
-    hint: "aggression",
-    dir: "hi" as const,
-  },
-  {
-    key: "errors" as const,
-    label: "Unforced errors",
-    unit: " /match",
-    hint: "lower is better",
-    dir: "lo" as const,
-  },
-];
-
-const SHOT_TYPES = [
-  { t: "Clear", c: "var(--viz-1, #3693ff)" },
-  { t: "Drop", c: "var(--viz-2, #50deff)" },
-  { t: "Smash", c: "var(--viz-6, #f4515c)" },
-  { t: "Net", c: "var(--viz-3, #2dd4a7)" },
-];
-
-const ROSTER = Object.keys(PLAYERS).map((id) => ({
+const ROSTER = Object.keys(comparePlayers).map((id) => ({
   value: id,
-  label: PLAYERS[id].name,
+  label: comparePlayers[id].name,
 }));
 
 export function CompareApp() {
   const [aId, setAId] = useState("viktor");
   const [bId, setBId] = useState("momota");
 
-  const A = PLAYERS[aId];
-  const B = PLAYERS[bId];
+  const A = comparePlayers[aId];
+  const B = comparePlayers[bId];
 
   const metrics = useMemo(
     () =>

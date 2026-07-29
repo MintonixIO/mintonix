@@ -4,66 +4,25 @@ import Link from "next/link";
 import { Check, Film, X } from "lucide-react";
 import { CalibrationCanvas } from "@/components/calibration/calibration-canvas";
 import {
-  CalibrationFooter,
+  CalibrationFooterConnected,
   CalibrationTransport,
 } from "@/components/calibration/calibration-transport";
+import {
+  CalibrationProvider,
+  TITLE_MAP,
+  useCalibrationStep,
+} from "@/components/calibration/calibration-context";
 import { PlayersPanel } from "@/components/calibration/players-panel";
 import { PointsPanel } from "@/components/calibration/points-panel";
 import { ReviewPanel } from "@/components/calibration/review-panel";
-import { useCalibrationState } from "@/components/calibration/use-calibration-state";
 import { PA, STEPS } from "@/lib/calibration/constants";
 import { cn } from "@/lib/utils";
 
-export function CalibrationApp() {
-  const s = useCalibrationState();
+function CalibrationShell() {
+  const { step, maxStep, stepIdx, filename, goTo } = useCalibrationStep();
 
   return (
     <div className="flex h-screen min-h-[640px] flex-col overflow-hidden bg-[var(--bg-base)] text-[var(--text-primary)]">
-      <style jsx global>{`
-        @keyframes mxPing {
-          0% {
-            opacity: 0.55;
-            transform: translate(-50%, -50%) scale(0.55);
-          }
-          100% {
-            opacity: 0;
-            transform: translate(-50%, -50%) scale(1.9);
-          }
-        }
-        @keyframes mxSpin {
-          to {
-            transform: rotate(360deg);
-          }
-        }
-        @keyframes mxScanY {
-          0% {
-            top: 2%;
-          }
-          100% {
-            top: 98%;
-          }
-        }
-        @keyframes mxRise {
-          from {
-            opacity: 0;
-            transform: translateY(7px);
-          }
-          to {
-            opacity: 1;
-            transform: none;
-          }
-        }
-        @media (prefers-reduced-motion: reduce) {
-          .motion-safe\\:animate-\\[mxPing_1\\.5s_ease-out_infinite\\],
-          [style*="mxPing"],
-          [style*="mxSpin"],
-          [style*="mxScanY"],
-          [style*="mxRise"] {
-            animation: none !important;
-          }
-        }
-      `}</style>
-
       {/* Top bar */}
       <header className="flex h-[58px] shrink-0 items-center gap-3.5 border-b border-[var(--border)] bg-[var(--surface-1)] px-5">
         {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -79,12 +38,12 @@ export function CalibrationApp() {
           </span>
           <span className="inline-flex max-w-[240px] items-center gap-1.5 truncate font-mono text-[11px] text-[var(--text-muted)]">
             <Film className="h-3 w-3 shrink-0" aria-hidden />
-            <span className="truncate">{s.filename}</span>
+            <span className="truncate">{filename}</span>
           </span>
         </div>
         <div className="flex-1" />
         <span className="font-mono text-[11px] tracking-wide text-[var(--text-muted)]">
-          STEP {s.stepIdx + 1} / {STEPS.length}
+          STEP {stepIdx + 1} / {STEPS.length}
         </span>
         <Link
           href="/dashboard"
@@ -98,46 +57,8 @@ export function CalibrationApp() {
       <div className="mxRow flex min-h-0 flex-1 max-[880px]:flex-col">
         {/* Canvas */}
         <section className="flex min-w-0 flex-1 flex-col bg-[var(--bg-sunken)]">
-          <CalibrationCanvas
-            canvasRef={s.canvasRef}
-            videoRef={s.videoRef}
-            loupeVidRef={s.loupeVidRef}
-            step={s.step}
-            selectedLm={s.selectedLm}
-            marks={s.marks}
-            players={s.players}
-            linesDetected={s.linesDetected}
-            draggingId={s.draggingId}
-            vidReady={s.vidReady}
-            vidErr={s.vidErr}
-            cursor={s.cursor}
-            loupe={s.loupe}
-            Q={s.Q}
-            activeCorners={s.activeCorners}
-            gridPaths={s.gridPaths}
-            showFit={s.showFit}
-            hintText={s.hintText}
-            onCanvasPointerMove={s.onCanvasPointerMove}
-            onCanvasClick={s.onCanvasClick}
-            setCursor={s.setCursor}
-            setVidReady={s.setVidReady}
-            setVidErr={s.setVidErr}
-            onMarkerPointerDown={s.onMarkerPointerDown}
-            onMarkerPointerMove={s.onMarkerPointerMove}
-            onMarkerPointerUp={s.onMarkerPointerUp}
-          />
-
-          <CalibrationTransport
-            trackRef={s.trackRef}
-            frame={s.frame}
-            setFrame={s.setFrame}
-            calibFrame={s.calibFrame}
-            isCal={s.isCal}
-            scrubAt={s.scrubAt}
-            onScrubDown={s.onScrubDown}
-            useThisFrame={s.useThisFrame}
-            resetStep={s.resetStep}
-          />
+          <CalibrationCanvas />
+          <CalibrationTransport />
         </section>
 
         {/* Wizard panel */}
@@ -145,13 +66,13 @@ export function CalibrationApp() {
           {/* Stepper */}
           <div className="shrink-0 border-b border-[var(--border-subtle)] px-5 pb-4 pt-[18px]">
             <div className="flex items-start gap-0.5">
-              {STEPS.map((step, i) => {
-                const done = i < s.stepIdx;
-                const active = i === s.stepIdx;
-                const reachable = i <= s.maxStep;
+              {STEPS.map((s, i) => {
+                const done = i < stepIdx;
+                const active = i === stepIdx;
+                const reachable = i <= maxStep;
                 return (
                   <div
-                    key={step.key}
+                    key={s.key}
                     className="flex flex-1 flex-col items-center gap-1.5"
                   >
                     <div className="flex w-full items-center">
@@ -161,7 +82,7 @@ export function CalibrationApp() {
                           background:
                             i === 0
                               ? "transparent"
-                              : i <= s.stepIdx
+                              : i <= stepIdx
                                 ? PA
                                 : "var(--border)",
                         }}
@@ -169,9 +90,9 @@ export function CalibrationApp() {
                       <button
                         type="button"
                         disabled={!reachable}
-                        onClick={() => s.goTo(step.key)}
+                        onClick={() => goTo(s.key)}
                         aria-current={active ? "step" : undefined}
-                        aria-label={`Step ${i + 1}: ${step.label}`}
+                        aria-label={`Step ${i + 1}: ${s.label}`}
                         className={cn(
                           "flex h-7 w-7 shrink-0 items-center justify-center rounded-full border-[1.5px] font-mono text-[11.5px] font-semibold",
                           active &&
@@ -193,7 +114,7 @@ export function CalibrationApp() {
                           background:
                             i === STEPS.length - 1
                               ? "transparent"
-                              : i < s.stepIdx
+                              : i < stepIdx
                                 ? PA
                                 : "var(--border)",
                         }}
@@ -207,7 +128,7 @@ export function CalibrationApp() {
                           : "text-[var(--text-muted)]",
                       )}
                     >
-                      {step.label}
+                      {s.label}
                     </span>
                   </div>
                 );
@@ -218,62 +139,31 @@ export function CalibrationApp() {
           {/* Title */}
           <div className="shrink-0 px-5 pb-1 pt-[18px]">
             <h2 className="font-display text-[19px] font-semibold tracking-[-0.015em] text-[var(--text-strong)]">
-              {s.titleMap[s.step][0]}
+              {TITLE_MAP[step][0]}
             </h2>
             <p className="mt-1.5 text-[13.5px] leading-[1.5] text-[var(--text-secondary)]">
-              {s.titleMap[s.step][1]}
+              {TITLE_MAP[step][1]}
             </p>
           </div>
 
           {/* Body */}
           <div className="mxsc min-h-0 flex-1 overflow-y-auto px-5 py-4 pb-[22px]">
-            {s.step === "points" && (
-              <PointsPanel
-                marks={s.marks}
-                selectedLm={s.selectedLm}
-                setSelectedLm={s.setSelectedLm}
-                pointsPhase={s.pointsPhase}
-                armedLm={s.armedLm}
-                Q={s.Q}
-                linesDetected={s.linesDetected}
-                detectLines={s.detectLines}
-                placedIds={s.placedIds}
-                removeMark={s.removeMark}
-              />
-            )}
-
-            {s.step === "players" && (
-              <PlayersPanel
-                players={s.players}
-                setPlayers={s.setPlayers}
-                identify={s.identify}
-                setIdentify={s.setIdentify}
-                results={s.results}
-              />
-            )}
-
-            {s.step === "review" && (
-              <ReviewPanel
-                reviewVidRef={s.reviewVidRef}
-                marks={s.marks}
-                Q={s.Q}
-                activeCorners={s.activeCorners}
-                identify={s.identify}
-                calibFrame={s.calibFrame}
-              />
-            )}
+            {step === "points" && <PointsPanel />}
+            {step === "players" && <PlayersPanel />}
+            {step === "review" && <ReviewPanel />}
           </div>
 
-          <CalibrationFooter
-            step={s.step}
-            stepIdx={s.stepIdx}
-            stepComplete={s.stepComplete}
-            starting={s.starting}
-            onBack={s.onBack}
-            onPrimary={s.onPrimary}
-          />
+          <CalibrationFooterConnected />
         </aside>
       </div>
     </div>
+  );
+}
+
+export function CalibrationApp() {
+  return (
+    <CalibrationProvider>
+      <CalibrationShell />
+    </CalibrationProvider>
   );
 }

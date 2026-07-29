@@ -1,4 +1,3 @@
-import Link from "next/link";
 import {
   Crown,
   Film,
@@ -11,7 +10,12 @@ import {
   Zap,
   type LucideIcon,
 } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import {
+  FeatureCTA,
+  FeatureHero,
+  FeatureSection,
+  FeatureValueGrid,
+} from "@/components/marketing/feature-page";
 import { Reveal } from "@/components/marketing/reveal";
 import { HighlightsDemo } from "@/components/marketing/highlights-demo";
 
@@ -100,39 +104,25 @@ const REEL = [
 export default function FeatureHighlightsPage() {
   return (
     <div className="overflow-x-clip">
-      <section className="relative">
-        <div
-          className="pointer-events-none absolute inset-0"
-          style={{
-            background:
-              "radial-gradient(110% 60% at 50% -10%, rgba(45,212,167,0.14), transparent 56%)",
-          }}
-        />
-        <div className="relative mx-auto max-w-[900px] px-8 pt-24 text-center">
-          <div className="inline-flex items-center gap-2 rounded-full border border-[var(--border)] bg-[rgba(45,212,167,0.16)] px-2.5 py-1.5 font-mono text-[11px] uppercase tracking-[0.14em] text-[#2dd4a7]">
-            <Film className="h-3.5 w-3.5" />
-            Highlights
-          </div>
-          <h1 className="mx-auto mt-[22px] max-w-[16ch] font-display text-[clamp(36px,5.4vw,64px)] font-semibold leading-[1.03] tracking-[-0.03em] text-[var(--text-strong)] text-balance">
-            The best of the match, without the editing.
-          </h1>
-          <p className="mx-auto mt-5 max-w-[52ch] text-[clamp(15px,1.5vw,18px)] leading-[1.62] text-[var(--text-secondary)]">
-            Set what counts as a highlight — a shot type, a speed, an outcome —
-            and Mintonix pulls every matching rally into one reel. Trim, preview,
-            and share it with a link.
-          </p>
-          <div className="mt-8 flex flex-wrap justify-center gap-3">
-            <Link href="/auth">
-              <Button size="lg">Build a reel</Button>
-            </Link>
-            <Link href="/dashboard/highlights">
-              <Button variant="outline" size="lg">
-                See the reel library
-              </Button>
-            </Link>
-          </div>
-        </div>
-
+      <FeatureHero
+        align="center"
+        EyebrowIcon={Film}
+        eyebrow="Highlights"
+        eyebrowClassName="bg-[rgba(45,212,167,0.16)] text-[#2dd4a7]"
+        titleClassName="max-w-[16ch] text-[clamp(36px,5.4vw,64px)] leading-[1.03]"
+        title="The best of the match, without the editing."
+        body="Set what counts as a highlight — a shot type, a speed, an outcome — and Mintonix pulls every matching rally into one reel. Trim, preview, and share it with a link."
+        ctas={[
+          { href: "/auth", label: "Build a reel" },
+          {
+            href: "/dashboard/highlights",
+            label: "See the reel library",
+            variant: "outline",
+          },
+        ]}
+        glow="radial-gradient(110% 60% at 50% -10%, rgba(45,212,167,0.14), transparent 56%)"
+        bleedChildren
+      >
         <div className="mt-16 overflow-hidden px-4 [mask-image:linear-gradient(90deg,transparent,#000_8%,#000_92%,transparent)]">
           <div className="flex gap-3">
             {STRIP.map((clip) => (
@@ -166,50 +156,37 @@ export default function FeatureHighlightsPage() {
             ))}
           </div>
         </div>
-      </section>
+      </FeatureHero>
 
-      <section className="mx-auto max-w-[1180px] px-8 pt-[100px]">
-        <Reveal className="mb-10 max-w-[640px]">
-          <div className="mb-3.5 font-mono text-[11px] uppercase tracking-[0.12em] text-[#2dd4a7]">
-            One tap to a reel
-          </div>
-          <h2 className="font-display text-[clamp(28px,3.4vw,42px)] font-semibold leading-[1.1] tracking-[-0.025em] text-[var(--text-strong)] text-balance">
-            Start from a preset. Or invent your own.
-          </h2>
-        </Reveal>
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {PRESETS.map((p) => (
-            <Reveal
-              key={p.title}
-              className="rounded-[14px] border border-[var(--border)] bg-[var(--surface-1)] p-[22px] transition-transform hover:-translate-y-0.5"
-            >
-              <span className="inline-flex h-10 w-10 items-center justify-center rounded-[11px] border border-[var(--border)] bg-[rgba(45,212,167,0.16)] text-[#2dd4a7]">
-                <p.icon className="h-[19px] w-[19px]" />
-              </span>
-              <div className="mt-4 font-display text-base font-semibold text-[var(--text-strong)]">
-                {p.title}
-              </div>
-              <p className="mt-1.5 text-[13.5px] leading-[1.55] text-[var(--text-secondary)]">
-                {p.body}
-              </p>
+      <FeatureSection
+        className="pt-[100px]"
+        eyebrow="One tap to a reel"
+        eyebrowClassName="text-[#2dd4a7]"
+        title="Start from a preset. Or invent your own."
+      >
+        <FeatureValueGrid
+          iconWrapClassName="bg-[rgba(45,212,167,0.16)] text-[#2dd4a7]"
+          items={PRESETS.map((p) => ({
+            icon: p.icon,
+            title: p.title,
+            body: p.body,
+            meta: (
               <div className="mt-3.5 inline-flex items-center gap-1.5 font-mono text-[11px] text-[var(--text-muted)]">
                 <Film className="h-[13px] w-[13px]" />
                 {p.count}
               </div>
-            </Reveal>
-          ))}
-        </div>
-      </section>
+            ),
+          }))}
+        />
+      </FeatureSection>
 
-      <section className="mx-auto max-w-[1180px] px-8 pt-[116px]">
-        <Reveal className="mx-auto mb-[52px] max-w-[620px] text-center">
-          <div className="mb-3.5 font-mono text-[11px] uppercase tracking-[0.12em] text-[#2dd4a7]">
-            How it works
-          </div>
-          <h2 className="font-display text-[clamp(28px,3.4vw,42px)] font-semibold leading-[1.1] tracking-[-0.025em] text-[var(--text-strong)] text-balance">
-            Filter. Assemble. Share.
-          </h2>
-        </Reveal>
+      <FeatureSection
+        className="pt-[116px]"
+        align="center"
+        eyebrow="How it works"
+        eyebrowClassName="text-[#2dd4a7]"
+        title="Filter. Assemble. Share."
+      >
         <div className="grid gap-[18px] md:grid-cols-3">
           {STEPS.map((s) => (
             <Reveal
@@ -228,9 +205,9 @@ export default function FeatureHighlightsPage() {
             </Reveal>
           ))}
         </div>
-      </section>
+      </FeatureSection>
 
-      <section className="mx-auto max-w-[1100px] px-8 pt-[100px]">
+      <FeatureSection className="pt-[100px]" maxWidthClassName="max-w-[1100px]">
         <Reveal className="relative">
           <div
             className="pointer-events-none absolute -inset-px rounded-2xl"
@@ -357,46 +334,30 @@ export default function FeatureHighlightsPage() {
             <HighlightsDemo />
           </Reveal>
         </div>
-      </section>
+      </FeatureSection>
 
-      <section className="mx-auto max-w-[1180px] px-8 pb-[140px] pt-[110px]">
-        <Reveal
-          className="grid items-center gap-10 rounded-[20px] border border-[var(--border)] p-[52px] md:grid-cols-2"
-          style={{
-            background:
-              "radial-gradient(120% 140% at 0% 0%, rgba(45,212,167,0.14), transparent 55%), var(--surface-1)",
-          }}
-        >
-          <div>
-            <h2 className="max-w-[16ch] font-display text-[clamp(26px,3.2vw,38px)] font-semibold leading-[1.08] tracking-[-0.025em] text-[var(--text-strong)] text-balance">
-              A reel your whole squad can watch.
-            </h2>
-            <p className="mt-4 max-w-[46ch] text-[15.5px] leading-[1.6] text-[var(--text-secondary)]">
-              Share generates a link that respects your library permissions —
-              players, coaches, anyone, no account needed. Revoke it any time.
-            </p>
-            <div className="mt-[26px]">
-              <Link href="/auth">
-                <Button size="lg">Build your first reel</Button>
-              </Link>
-            </div>
+      <FeatureCTA
+        layout="split"
+        title="A reel your whole squad can watch."
+        body="Share generates a link that respects your library permissions — players, coaches, anyone, no account needed. Revoke it any time."
+        ctas={[{ href: "/auth", label: "Build your first reel" }]}
+        glow="radial-gradient(120% 140% at 0% 0%, rgba(45,212,167,0.14), transparent 55%), var(--surface-1)"
+      >
+        <div className="rounded-[14px] border border-[var(--border)] bg-[var(--surface-2)] p-[18px]">
+          <div className="flex items-center gap-2.5 rounded-[10px] border border-[var(--border-subtle)] bg-[var(--surface-1)] px-[13px] py-[11px]">
+            <Share2 className="h-4 w-4 text-[#2dd4a7]" />
+            <span className="min-w-0 flex-1 truncate font-mono text-[12.5px] text-[var(--text-secondary)]">
+              mintonix.com/r/smashes-300
+            </span>
+            <span className="rounded-md bg-[#2dd4a7] px-2 py-1 text-[11px] font-semibold text-[#06281f]">
+              Copy
+            </span>
           </div>
-          <div className="rounded-[14px] border border-[var(--border)] bg-[var(--surface-2)] p-[18px]">
-            <div className="flex items-center gap-2.5 rounded-[10px] border border-[var(--border-subtle)] bg-[var(--surface-1)] px-[13px] py-[11px]">
-              <Share2 className="h-4 w-4 text-[#2dd4a7]" />
-              <span className="min-w-0 flex-1 truncate font-mono text-[12.5px] text-[var(--text-secondary)]">
-                mintonix.com/r/smashes-300
-              </span>
-              <span className="rounded-md bg-[#2dd4a7] px-2 py-1 text-[11px] font-semibold text-[#06281f]">
-                Copy
-              </span>
-            </div>
-            <p className="mt-3 text-[13px] leading-[1.55] text-[var(--text-muted)]">
-              Anyone with the link can play the reel. No sign-in required.
-            </p>
-          </div>
-        </Reveal>
-      </section>
+          <p className="mt-3 text-[13px] leading-[1.55] text-[var(--text-muted)]">
+            Anyone with the link can play the reel. No sign-in required.
+          </p>
+        </div>
+      </FeatureCTA>
     </div>
   );
 }

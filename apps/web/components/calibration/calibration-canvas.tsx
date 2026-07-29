@@ -1,99 +1,46 @@
+"use client";
+
 import {
   CheckCircle2,
   Crosshair,
   Film,
   ScanSearch,
 } from "lucide-react";
-import type {
-  Dispatch,
-  MouseEvent as ReactMouseEvent,
-  PointerEvent as ReactPointerEvent,
-  RefObject,
-  SetStateAction,
-} from "react";
-import {
-  PBOX,
-  POLE,
-  computeQuality,
-  lmById,
-  type Marks,
-  type PlayerState,
-  type StepKey,
-} from "@/lib/calibration/geometry";
+import { useCanvas } from "@/components/calibration/calibration-context";
+import { PBOX, POLE, lmById } from "@/lib/calibration/geometry";
 import { PA, PB } from "@/lib/calibration/constants";
 import { cn } from "@/lib/utils";
 
-type Quality = ReturnType<typeof computeQuality>;
+export function CalibrationCanvas() {
+  const {
+    canvasRef,
+    videoRef,
+    loupeVidRef,
+    step,
+    selectedLm,
+    marks,
+    players,
+    linesDetected,
+    draggingId,
+    vidReady,
+    vidErr,
+    cursor,
+    loupe,
+    Q,
+    activeCorners,
+    gridPaths,
+    showFit,
+    hintText,
+    onCanvasPointerMove,
+    onCanvasClick,
+    setCursor,
+    setVidReady,
+    setVidErr,
+    onMarkerPointerDown,
+    onMarkerPointerMove,
+    onMarkerPointerUp,
+  } = useCanvas();
 
-type Loupe = {
-  lx: number;
-  ly: number;
-  S: number;
-  ox: number;
-  oy: number;
-  innerW: number;
-  innerH: number;
-} | null;
-
-type Cursor = { nx: number; ny: number; x: number; y: number } | null;
-
-export type CalibrationCanvasProps = {
-  canvasRef: RefObject<HTMLDivElement | null>;
-  videoRef: RefObject<HTMLVideoElement | null>;
-  loupeVidRef: RefObject<HTMLVideoElement | null>;
-  step: StepKey;
-  selectedLm: string | null;
-  marks: Marks;
-  players: Record<"a" | "b", PlayerState>;
-  linesDetected: false | "scanning" | true;
-  draggingId: string | null;
-  vidReady: boolean;
-  vidErr: boolean;
-  cursor: Cursor;
-  loupe: Loupe;
-  Q: Quality;
-  activeCorners: [number, number][];
-  gridPaths: string;
-  showFit: boolean;
-  hintText: string;
-  onCanvasPointerMove: (e: ReactPointerEvent) => void;
-  onCanvasClick: (e: ReactMouseEvent) => void;
-  setCursor: Dispatch<SetStateAction<Cursor>>;
-  setVidReady: Dispatch<SetStateAction<boolean>>;
-  setVidErr: Dispatch<SetStateAction<boolean>>;
-  onMarkerPointerDown: (id: string, e: ReactPointerEvent) => void;
-  onMarkerPointerMove: (id: string, e: ReactPointerEvent) => void;
-  onMarkerPointerUp: (id: string) => void;
-};
-
-export function CalibrationCanvas({
-  canvasRef,
-  videoRef,
-  loupeVidRef,
-  step,
-  selectedLm,
-  marks,
-  players,
-  linesDetected,
-  draggingId,
-  vidReady,
-  vidErr,
-  cursor,
-  loupe,
-  Q,
-  activeCorners,
-  gridPaths,
-  showFit,
-  hintText,
-  onCanvasPointerMove,
-  onCanvasClick,
-  setCursor,
-  setVidReady,
-  setVidErr,
-  onMarkerPointerDown,
-  onMarkerPointerMove,
-  onMarkerPointerUp,
-}: CalibrationCanvasProps) {
   return (
     <div className="flex min-h-0 flex-1 items-center justify-center p-[22px] max-[880px]:flex-none max-[880px]:p-[11px]">
       <div

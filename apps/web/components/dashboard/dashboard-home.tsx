@@ -13,10 +13,15 @@ import {
 } from "lucide-react";
 import { useCallback, useRef, useState } from "react";
 import { AppTopbar } from "@/components/app/app-topbar";
-import { VideoCard, type VideoCardData } from "@/components/app/video-card";
+import { VideoCard } from "@/components/app/video-card";
+import { CourtThumb } from "@/components/media/court-thumb";
 import { Button } from "@/components/ui/button";
 import { REELS } from "@/lib/highlights/reels";
-import { pipelineVideos, recentVideos } from "@/lib/mock-data";
+import {
+  pipelineVideos,
+  recentVideos,
+  type MatchSummary,
+} from "@/lib/matches";
 import { cn } from "@/lib/utils";
 
 const DASHBOARD_REELS = REELS.filter((r) => r.status !== "rendering").slice(0, 3);
@@ -24,14 +29,14 @@ const DASHBOARD_REELS = REELS.filter((r) => r.status !== "rendering").slice(0, 3
 export function DashboardHome() {
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
-  const [extra, setExtra] = useState<VideoCardData[]>([]);
+  const [extra, setExtra] = useState<MatchSummary[]>([]);
 
   const pickFiles = () => inputRef.current?.click();
 
   const addFiles = useCallback((fileList: FileList | null) => {
     const files = Array.from(fileList || []);
     if (!files.length) return;
-    const created: VideoCardData[] = files.map((f, i) => ({
+    const created: MatchSummary[] = files.map((f, i) => ({
       id: `up-${Date.now()}-${i}`,
       title: f.name.replace(/\.[a-z0-9]+$/i, "").replace(/[_-]+/g, " ") || "New upload",
       players: "New upload",
@@ -45,13 +50,7 @@ export function DashboardHome() {
     setExtra((prev) => [...created, ...prev]);
   }, []);
 
-  const pipeline = [
-    ...extra,
-    ...pipelineVideos.map((v) => ({
-      ...v,
-      // Map design labels: analyzing/queued stay as pipeline
-    })),
-  ];
+  const pipeline = [...extra, ...pipelineVideos];
   const recent = recentVideos;
 
   return (
@@ -222,14 +221,7 @@ export function DashboardHome() {
                 href="/dashboard/highlights"
                 className="group flex flex-col overflow-hidden rounded-[14px] border border-[var(--border)] bg-[var(--surface-1)] shadow-[var(--shadow-edge)] transition-colors hover:border-[var(--border-strong)]"
               >
-                <div className="relative aspect-video overflow-hidden bg-[linear-gradient(160deg,#0f1b34_0%,#070b16_100%)]">
-                  <div
-                    className="absolute inset-0 opacity-50"
-                    style={{
-                      backgroundImage:
-                        "linear-gradient(90deg, transparent 28%, rgba(54,147,255,0.16) 28%, rgba(54,147,255,0.16) calc(28% + 1px), transparent calc(28% + 1px)), linear-gradient(90deg, transparent 72%, rgba(54,147,255,0.16) 72%, rgba(54,147,255,0.16) calc(72% + 1px), transparent calc(72% + 1px)), linear-gradient(180deg, transparent calc(50% - 1px), rgba(154,168,194,0.28) 50%, transparent calc(50% + 1px))",
-                    }}
-                  />
+                <CourtThumb className="aspect-video">
                   <div
                     className="absolute inset-0"
                     style={{
@@ -246,7 +238,7 @@ export function DashboardHome() {
                   <span className="absolute top-1/2 left-1/2 inline-flex h-[46px] w-[46px] -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-[rgba(54,147,255,0.92)] text-white shadow-[var(--glow-blue)]">
                     <Play className="ml-0.5 h-[19px] w-[19px]" />
                   </span>
-                </div>
+                </CourtThumb>
                 <div className="flex flex-1 flex-col gap-3 px-[15px] pt-3.5 pb-[15px]">
                   <div className="flex items-start gap-2.5">
                     <div className="min-w-0 flex-1">

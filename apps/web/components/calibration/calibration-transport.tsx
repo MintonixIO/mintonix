@@ -1,3 +1,5 @@
+"use client";
+
 import {
   Check,
   CheckCircle2,
@@ -7,45 +9,33 @@ import {
   Image as ImageIcon,
   RotateCcw,
 } from "lucide-react";
-import type {
-  Dispatch,
-  PointerEvent as ReactPointerEvent,
-  RefObject,
-  SetStateAction,
-} from "react";
+import {
+  useCalibrationStep,
+  useTransport,
+} from "@/components/calibration/calibration-context";
 import { timecodeOf, type StepKey } from "@/lib/calibration/geometry";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
-export type CalibrationTransportProps = {
-  trackRef: RefObject<HTMLDivElement | null>;
-  frame: number;
-  setFrame: Dispatch<SetStateAction<number>>;
-  calibFrame: number;
-  isCal: boolean;
-  scrubAt: (cx: number) => void;
-  onScrubDown: (e: ReactPointerEvent) => void;
-  useThisFrame: () => void;
-  resetStep: () => void;
-};
+export function CalibrationTransport() {
+  const {
+    trackRef,
+    frame,
+    calibFrame,
+    isCal,
+    nudgeFrame,
+    scrubAt,
+    onScrubDown,
+    useThisFrame,
+    resetStep,
+  } = useTransport();
 
-export function CalibrationTransport({
-  trackRef,
-  frame,
-  setFrame,
-  calibFrame,
-  isCal,
-  scrubAt,
-  onScrubDown,
-  useThisFrame,
-  resetStep,
-}: CalibrationTransportProps) {
   return (
     <div className="mxStrip flex shrink-0 items-center gap-3.5 border-t border-[var(--border-subtle)] bg-[var(--surface-1)] px-[22px] py-[11px] max-[880px]:flex-wrap max-[880px]:gap-2.5 max-[880px]:px-3.5 max-[880px]:py-2.5">
       <button
         type="button"
         aria-label="Previous frame"
-        onClick={() => setFrame((f) => Math.max(0, f - 1))}
+        onClick={() => nudgeFrame(-1)}
         className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--surface-2)] text-[var(--text-secondary)] hover:text-[var(--text-strong)]"
       >
         <ChevronLeft className="h-4 w-4" />
@@ -53,7 +43,7 @@ export function CalibrationTransport({
       <button
         type="button"
         aria-label="Next frame"
-        onClick={() => setFrame((f) => Math.min(99, f + 1))}
+        onClick={() => nudgeFrame(1)}
         className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--surface-2)] text-[var(--text-secondary)] hover:text-[var(--text-strong)]"
       >
         <ChevronRight className="h-4 w-4" />
@@ -76,8 +66,8 @@ export function CalibrationTransport({
           if (e.buttons === 1) scrubAt(e.clientX);
         }}
         onKeyDown={(e) => {
-          if (e.key === "ArrowLeft") setFrame((f) => Math.max(0, f - 1));
-          if (e.key === "ArrowRight") setFrame((f) => Math.min(99, f + 1));
+          if (e.key === "ArrowLeft") nudgeFrame(-1);
+          if (e.key === "ArrowRight") nudgeFrame(1);
         }}
         className="relative flex h-4 flex-1 cursor-pointer touch-none items-center"
       >
@@ -179,5 +169,21 @@ export function CalibrationFooter({
           : "Continue"}
       </Button>
     </div>
+  );
+}
+
+/** Convenience footer that reads from context instead of props. */
+export function CalibrationFooterConnected() {
+  const { step, stepIdx, stepComplete, starting, onBack, onPrimary } =
+    useCalibrationStep();
+  return (
+    <CalibrationFooter
+      step={step}
+      stepIdx={stepIdx}
+      stepComplete={stepComplete}
+      starting={starting}
+      onBack={onBack}
+      onPrimary={onPrimary}
+    />
   );
 }
