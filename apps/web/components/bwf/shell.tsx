@@ -7,12 +7,13 @@ import {
   ChevronRight,
   Search,
   ShieldAlert,
+  Swords,
   Trophy,
   User,
   X,
 } from "lucide-react";
-import { useMemo, useState } from "react";
-import { MATCHES, PLAYERS } from "@/lib/bwf/data";
+import { useEffect, useMemo, useState } from "react";
+import type { SearchHit } from "@/lib/bwf/types";
 import { cn } from "@/lib/utils";
 
 function viewFromPath(pathname: string) {
@@ -29,49 +30,67 @@ const VIEW_HREF: Record<string, string> = {
   h2h: "/bwf/h2h",
 };
 
-export function BwfShell({ children }: { children: React.ReactNode }) {
+export function BwfShell({
+  children,
+  searchIndex = [],
+}: {
+  children: React.ReactNode;
+  /** Lightweight server-built index for instant client search. */
+  searchIndex?: SearchHit[];
+}) {
   const pathname = usePathname();
   const router = useRouter();
   const view = viewFromPath(pathname);
 
   const [query, setQuery] = useState("");
   const [searchFocused, setSearchFocused] = useState(false);
+  const [remoteHits, setRemoteHits] = useState<SearchHit[]>([]);
+  const [remoteQuery, setRemoteQuery] = useState("");
 
-  const searchResults = useMemo(() => {
+  const localResults = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return [];
-    const players = PLAYERS.filter(
-      (p) =>
-        p.name.toLowerCase().includes(q) ||
-        p.countryName.toLowerCase().includes(q) ||
-        p.country.toLowerCase().includes(q),
-    ).map((p) => ({
-      kind: "Player" as const,
-      icon: User,
-      label: p.name,
-      sub: `${p.countryName} · #${p.rank} ${p.disc}`,
-      onClick: () => {
-        router.push(`/bwf/players/${p.id}`);
-        setQuery("");
-        setSearchFocused(false);
-      },
-    }));
-    const matches = MATCHES.filter(
-      (m) =>
-        m.pa.name.toLowerCase().includes(q) ||
-        m.pb.name.toLowerCase().includes(q) ||
-        m.event.toLowerCase().includes(q),
-    ).map((m) => ({
-      kind: "Match" as const,
-      icon: Trophy,
-      label: `${m.pa.name} vs ${m.pb.name}`,
-      sub: `${m.event} · ${m.round}`,
-      onClick: () => {
-        router.push("/video-analysis");
-      },
-    }));
-    return [...players, ...matches].slice(0, 8);
-  }, [query, router]);
+    return searchIndex
+      .filter(
+        (h) =>
+          h.label.toLowerCase().includes(q) ||
+          h.sub.toLowerCase().includes(q),
+      )
+      .slice(0, 8);
+  }, [query, searchIndex]);
+
+  useEffect(() => {
+    const q = query.trim();
+    if (q.length < 2) return;
+
+    const controller = new AbortController();
+    const t = setTimeout(async () => {
+      try {
+        const res = await fetch(
+          `/api/bwf/search?q=${encodeURIComponent(q.slice(0, 100))}`,
+          { signal: controller.signal },
+        );
+        if (!res.ok) return;
+        const data = (await res.json()) as { hits?: SearchHit[] };
+        if (controller.signal.aborted) return;
+        setRemoteHits(data.hits ?? []);
+        setRemoteQuery(q);
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") return;
+        /* keep local results on network failure */
+      }
+    }, 220);
+
+    return () => {
+      clearTimeout(t);
+      controller.abort();
+    };
+  }, [query]);
+
+  const searchResults =
+    query.trim().length >= 2 && remoteQuery === query.trim()
+      ? remoteHits
+      : localResults;
 
   return (
     <div className="min-h-screen bg-[var(--bg-base)] font-sans text-[var(--text-primary)] antialiased">
@@ -92,9 +111,7 @@ export function BwfShell({ children }: { children: React.ReactNode }) {
         <div className="hidden items-center gap-2 font-mono text-xs text-[var(--text-muted)] sm:flex">
           <span>Mintonix</span>
           <ChevronRight className="h-[13px] w-[13px]" />
-          <span className="text-[var(--text-secondary)]">
-            BWF singles library
-          </span>
+          <span className="text-[var(--text-secondary)]">BWF library</span>
         </div>
         <div className="flex-1" />
 
@@ -123,14 +140,23 @@ export function BwfShell({ children }: { children: React.ReactNode }) {
           {searchFocused && query.trim().length >= 1 ? (
             <div className="absolute left-0 right-0 top-11 z-60 max-h-96 overflow-y-auto rounded-xl border border-[var(--border-strong)] bg-[var(--surface-1)] p-1.5 shadow-[var(--shadow-xl)]">
               {searchResults.length ? (
-                searchResults.map((r, i) => {
-                  const Icon = r.icon;
+                searchResults.map((r) => {
+                  const Icon =
+                    r.kind === "Player"
+                      ? User
+                      : r.kind === "Match"
+                        ? Swords
+                        : Trophy;
                   return (
                     <button
-                      key={i}
+                      key={`${r.kind}-${r.id}`}
                       type="button"
                       onMouseDown={(e) => e.preventDefault()}
-                      onClick={r.onClick}
+                      onClick={() => {
+                        router.push(r.href);
+                        setQuery("");
+                        setSearchFocused(false);
+                      }}
                       className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left hover:bg-[var(--surface-2)]"
                     >
                       <span className="inline-flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-2)] text-[var(--accent)]">
@@ -202,10 +228,9 @@ export function BwfShell({ children }: { children: React.ReactNode }) {
                 &quot;BWF&quot;, &quot;BWF World Tour&quot;, event names, and all
                 associated marks are the property of their respective owners and
                 are used here for identification and descriptive purposes only.
-                Player names are used factually to identify public sporting
-                figures. All statistics, charts, and insights shown are
-                illustrative demonstrations of the Mintonix analysis engine and
-                do not represent official records or real match data.
+                Match scores and rosters are loaded from the Mintonix catalog
+                (scraped public results). Pipeline analysis fields appear only
+                when a match has been processed.
               </p>
             </div>
           </div>
@@ -215,12 +240,6 @@ export function BwfShell({ children }: { children: React.ReactNode }) {
             </span>
             <div className="flex-1" />
             <div className="flex gap-[22px]">
-              <span className="text-xs text-[var(--text-muted)]">
-                Data sources
-              </span>
-              <span className="text-xs text-[var(--text-muted)]">
-                Trademark notice
-              </span>
               <Link
                 href="/terms"
                 className="text-xs text-[var(--text-muted)] hover:text-[var(--text-secondary)]"

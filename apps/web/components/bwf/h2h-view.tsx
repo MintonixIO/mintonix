@@ -1,67 +1,120 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ChevronsUpDown, Search } from "lucide-react";
-import { useState } from "react";
-import { byId, h2hRecord, PLAYERS } from "@/lib/bwf/data";
-import { PA, PB } from "@/lib/bwf/types";
+import { useMemo, useState } from "react";
+import {
+  displayDate,
+  formatScoreLine,
+  formatTeam,
+  playerWon,
+} from "@/lib/bwf/data";
+import {
+  PA,
+  PB,
+  type CatalogMatch,
+  type CatalogPlayer,
+  type H2hPickerPlayer,
+} from "@/lib/bwf/types";
 import { cn } from "@/lib/utils";
-
-function shortStyle(style: string) {
-  return style
-    .replace("All-court aggressor", "All-court")
-    .replace("Defensive counter-puncher", "Counter-puncher")
-    .replace("Balanced all-court", "Balanced");
-}
+import { Avatar } from "@/components/ui/avatar";
 
 export function H2hView({
-  initialA = "axelsen",
-  initialB = "antonsen",
+  players,
+  initialA,
+  initialB,
+  meetings,
+  aWins,
+  bWins,
+  a,
+  b,
 }: {
-  initialA?: string;
-  initialB?: string;
+  /** Slim options for the picker only. */
+  players: H2hPickerPlayer[];
+  initialA: string;
+  initialB: string;
+  meetings: CatalogMatch[];
+  aWins: number;
+  bWins: number;
+  a: CatalogPlayer | null;
+  b: CatalogPlayer | null;
 }) {
   const router = useRouter();
-  const [h2hA, setH2hA] = useState(
-    PLAYERS.some((p) => p.id === initialA) ? initialA : "axelsen",
-  );
-  const [h2hB, setH2hB] = useState(
-    PLAYERS.some((p) => p.id === initialB) ? initialB : "antonsen",
-  );
+  const [h2hA, setH2hA] = useState(initialA);
+  const [h2hB, setH2hB] = useState(initialB);
   const [pickAOpen, setPickAOpen] = useState(false);
   const [pickBOpen, setPickBOpen] = useState(false);
   const [pickAQuery, setPickAQuery] = useState("");
   const [pickBQuery, setPickBQuery] = useState("");
 
-  const syncUrl = (a: string, b: string) => {
-    router.replace(`/bwf/h2h?a=${a}&b=${b}`, { scroll: false });
+  const pickerA = players.find((p) => p.id === h2hA) ?? players[0] ?? null;
+  const pickerB = players.find((p) => p.id === h2hB) ?? null;
+  const pa = a ?? (pickerA
+    ? {
+        id: pickerA.id,
+        name: pickerA.name,
+        disc: pickerA.disc,
+        discs: pickerA.disc ? [pickerA.disc] : [],
+        matches: pickerA.matches,
+        wins: 0,
+        losses: 0,
+        winRate: 0,
+        threeGames: 0,
+        withVideo: 0,
+        form: [],
+        rivals: [],
+        recentMatchIds: [],
+        imageUrl: null,
+      }
+    : null);
+  const pb = b ?? (pickerB
+    ? {
+        id: pickerB.id,
+        name: pickerB.name,
+        disc: pickerB.disc,
+        discs: pickerB.disc ? [pickerB.disc] : [],
+        matches: pickerB.matches,
+        wins: 0,
+        losses: 0,
+        winRate: 0,
+        threeGames: 0,
+        withVideo: 0,
+        form: [],
+        rivals: [],
+        recentMatchIds: [],
+        imageUrl: null,
+      }
+    : null);
+
+  const syncUrl = (aid: string, bid: string) => {
+    router.replace(`/bwf/h2h?a=${aid}&b=${bid}`, { scroll: false });
   };
 
-  const pa = byId(h2hA) ?? PLAYERS[0];
-  if (!pa) return null;
-  const pbCandidate = PLAYERS.find(
-    (p) => p.id === h2hB && p.disc === pa.disc && p.id !== pa.id,
-  );
-  const pb =
-    pbCandidate ||
-    PLAYERS.find((p) => p.disc === pa.disc && p.id !== pa.id);
-  if (!pb) return null;
-  const rec = h2hRecord(pa.id, pb.id);
+  const h2hAOptions = useMemo(() => {
+    const q = pickAQuery.trim().toLowerCase();
+    return players
+      .filter((p) => !q || p.name.toLowerCase().includes(q))
+      .slice(0, 40);
+  }, [players, pickAQuery]);
 
-  const h2hAOptions = PLAYERS.filter(
-    (p) =>
-      !pickAQuery.trim() ||
-      p.name.toLowerCase().includes(pickAQuery.toLowerCase()) ||
-      p.country.toLowerCase().includes(pickAQuery.toLowerCase()),
-  );
-  const h2hBOptions = PLAYERS.filter(
-    (p) =>
-      p.disc === pa.disc &&
-      p.id !== pa.id &&
-      (!pickBQuery.trim() ||
-        p.name.toLowerCase().includes(pickBQuery.toLowerCase()) ||
-        p.country.toLowerCase().includes(pickBQuery.toLowerCase())),
-  );
+  const h2hBOptions = useMemo(() => {
+    const q = pickBQuery.trim().toLowerCase();
+    return players
+      .filter((p) => p.id !== h2hA)
+      .filter((p) => !q || p.name.toLowerCase().includes(q))
+      .slice(0, 40);
+  }, [players, pickBQuery, h2hA]);
+
+  if (!pa) {
+    return (
+      <section className="rounded-[14px] border border-dashed border-[var(--border)] px-6 py-16 text-center text-[13px] text-[var(--text-muted)]">
+        No players in the catalog yet.
+      </section>
+    );
+  }
+
+  const n = meetings.length;
 
   return (
     <section>
@@ -70,8 +123,8 @@ export function H2hView({
           Head-to-Head
         </h1>
         <p className="mt-[7px] max-w-[60ch] text-[14.5px] leading-[1.55] text-[var(--text-secondary)]">
-          Put two players side by side on the same metrics the engine pulls from
-          every match — the record, the styles, and the gap between them.
+          Career meetings computed from the BWF match catalog — not simulated
+          records.
         </p>
       </div>
 
@@ -95,7 +148,7 @@ export function H2hView({
                   {pa.name}
                 </span>
                 <span className="shrink-0 font-mono text-[11px] text-[var(--text-muted)]">
-                  {pa.country} · #{pa.rank}
+                  {pa.disc ?? "—"} · {pa.matches}
                 </span>
                 <ChevronsUpDown className="h-[15px] w-[15px] shrink-0 text-[var(--text-muted)]" />
               </button>
@@ -121,10 +174,8 @@ export function H2hView({
                       onClick={() => {
                         setH2hA(p.id);
                         let nextB = h2hB;
-                        if (pb.disc !== p.disc || pb.id === p.id) {
-                          const opp = PLAYERS.find(
-                            (x) => x.disc === p.disc && x.id !== p.id,
-                          );
+                        if (nextB === p.id) {
+                          const opp = players.find((x) => x.id !== p.id);
                           if (opp) {
                             setH2hB(opp.id);
                             nextB = opp.id;
@@ -139,7 +190,7 @@ export function H2hView({
                         {p.name}
                       </span>
                       <span className="shrink-0 font-mono text-[10.5px] text-[var(--text-muted)]">
-                        {p.country} · {p.disc} #{p.rank}
+                        {p.disc ?? "—"} · {p.matches}
                       </span>
                     </button>
                   ))}
@@ -163,11 +214,13 @@ export function H2hView({
                 className="flex h-[38px] w-full items-center gap-2.5 rounded-[9px] border border-[var(--border)] bg-[var(--surface-1)] px-3 text-left hover:border-[var(--border-strong)]"
               >
                 <span className="min-w-0 flex-1 truncate text-[13.5px] text-[var(--text-strong)]">
-                  {pb.name}
+                  {pb?.name ?? "Select opponent"}
                 </span>
-                <span className="shrink-0 font-mono text-[11px] text-[var(--text-muted)]">
-                  {pb.country} · #{pb.rank}
-                </span>
+                {pb ? (
+                  <span className="shrink-0 font-mono text-[11px] text-[var(--text-muted)]">
+                    {pb.disc ?? "—"} · {pb.matches}
+                  </span>
+                ) : null}
                 <ChevronsUpDown className="h-[15px] w-[15px] shrink-0 text-[var(--text-muted)]" />
               </button>
             ) : (
@@ -206,7 +259,7 @@ export function H2hView({
                         {p.name}
                       </span>
                       <span className="shrink-0 font-mono text-[10.5px] text-[var(--text-muted)]">
-                        {p.country} · {p.disc} #{p.rank}
+                        {p.disc ?? "—"} · {p.matches}
                       </span>
                     </button>
                   ))}
@@ -225,53 +278,51 @@ export function H2hView({
         <div className="relative overflow-hidden rounded-[14px] border border-[var(--border)] bg-[var(--surface-1)] p-[22px] shadow-[var(--shadow-edge)]">
           <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
             <div className="text-center">
-              <div
-                className="mx-auto mb-2.5 flex h-[52px] w-[52px] items-center justify-center rounded-full font-display text-lg font-semibold text-[#0a1426]"
-                style={{ background: PA }}
-              >
-                {pa.name
-                  .split(" ")
-                  .map((s) => s[0])
-                  .slice(0, 2)
-                  .join("")}
-              </div>
+              <Avatar
+                name={pa.name}
+                src={pa.imageUrl ?? undefined}
+                size={52}
+                className="mx-auto mb-2.5"
+              />
               <div className="font-display text-sm font-semibold text-[var(--text-strong)]">
                 {pa.name}
               </div>
               <div className="mt-1 font-mono text-[10.5px] text-[var(--text-muted)]">
-                {shortStyle(pa.style)} ·{" "}
-                {pa.hand.toLowerCase().startsWith("left") ? "LH" : "RH"}
+                {pa.winRate}% career · {pa.matches} matches
               </div>
             </div>
             <div className="text-center">
               <div className="font-mono text-[10px] uppercase tracking-wide text-[var(--text-faint)]">
-                Career H2H
+                Catalog H2H
               </div>
               <div className="mt-1 font-display text-[32px] font-semibold tabular-nums text-[var(--text-strong)]">
-                {rec.aWins}–{rec.bWins}
+                {aWins}–{bWins}
               </div>
               <div className="mt-1 font-mono text-[10.5px] text-[var(--text-muted)]">
-                {rec.n} meetings
+                {n} meeting{n === 1 ? "" : "s"}
               </div>
             </div>
             <div className="text-center">
-              <div
-                className="mx-auto mb-2.5 flex h-[52px] w-[52px] items-center justify-center rounded-full font-display text-lg font-semibold text-[#0a1426]"
-                style={{ background: PB }}
-              >
-                {pb.name
-                  .split(" ")
-                  .map((s) => s[0])
-                  .slice(0, 2)
-                  .join("")}
-              </div>
-              <div className="font-display text-sm font-semibold text-[var(--text-strong)]">
-                {pb.name}
-              </div>
-              <div className="mt-1 font-mono text-[10.5px] text-[var(--text-muted)]">
-                {shortStyle(pb.style)} ·{" "}
-                {pb.hand.toLowerCase().startsWith("left") ? "LH" : "RH"}
-              </div>
+              {pb ? (
+                <>
+                  <Avatar
+                    name={pb.name}
+                    src={pb.imageUrl ?? undefined}
+                    size={52}
+                    className="mx-auto mb-2.5"
+                  />
+                  <div className="font-display text-sm font-semibold text-[var(--text-strong)]">
+                    {pb.name}
+                  </div>
+                  <div className="mt-1 font-mono text-[10.5px] text-[var(--text-muted)]">
+                    {pb.winRate}% career · {pb.matches} matches
+                  </div>
+                </>
+              ) : (
+                <div className="text-[13px] text-[var(--text-muted)]">
+                  Pick an opponent
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -282,200 +333,168 @@ export function H2hView({
               Meeting history
             </div>
             <div className="mt-[3px] font-mono text-[10.5px] text-[var(--text-muted)]">
-              Last {Math.min(rec.n, 5)} of {rec.n} meetings
+              {n === 0
+                ? "No shared matches in the catalog"
+                : `All ${n} meeting${n === 1 ? "" : "s"}`}
             </div>
           </div>
-          <div className="space-y-2">
-            {Array.from({ length: Math.min(rec.n, 5) }).map((_, i) => {
-              const events = [
-                "All England Open",
-                "World Championships",
-                "World Tour Finals",
-                "China Open",
-                "Japan Open",
-              ];
-              const rounds = [
-                "Final",
-                "Semifinal",
-                "Quarterfinal",
-                "Final",
-                "Semifinal",
-              ];
-              const years = ["2025", "2025", "2024", "2024", "2023"];
-              const aWon = i < rec.aWins;
-              return (
-                <div
-                  key={i}
-                  className="flex items-center gap-2 rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-2)] px-3 py-2"
-                >
-                  <span
-                    className={cn(
-                      "inline-flex h-6 w-6 items-center justify-center rounded-md font-mono text-[10px] font-semibold",
-                      aWon
-                        ? "bg-[rgba(54,147,255,0.16)] text-[var(--player-a)]"
-                        : "bg-[rgba(251,191,36,0.16)] text-[#d99a1a]",
-                    )}
-                  >
-                    {aWon ? "A" : "B"}
-                  </span>
-                  <span className="min-w-0 flex-1 truncate text-[12.5px] text-[var(--text-strong)]">
-                    {events[i % events.length]} · {rounds[i % rounds.length]}
-                  </span>
-                  <span className="font-mono text-[10.5px] text-[var(--text-muted)]">
-                    {years[i % years.length]}
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      </div>
-
-      <div className="mb-3.5 rounded-[14px] border border-[var(--border)] bg-[var(--surface-1)] px-5 py-[18px]">
-        <div className="mb-4 flex items-center justify-between">
-          <span className="text-[13px] font-medium text-[var(--text-strong)]">
-            Shot selection
-          </span>
-          <span className="font-mono text-[10.5px] uppercase tracking-[0.08em] text-[var(--text-faint)]">
-            share of shots played
-          </span>
-        </div>
-        <div className="space-y-3">
-          {["Smash", "Clear", "Drop", "Net", "Drive", "Lift"].map((type) => {
-            const aPct = pa.mix.find((m) => m.type === type)?.pct ?? 0;
-            const bPct = pb.mix.find((m) => m.type === type)?.pct ?? 0;
-            const max = Math.max(aPct, bPct, 1);
-            return (
-              <div
-                key={type}
-                className="grid grid-cols-[64px_1fr_56px_1fr_64px] items-center gap-2"
-              >
-                <span className="text-right font-mono text-xs tabular-nums text-[var(--player-a)]">
-                  {aPct}%
-                </span>
-                <div className="flex h-2 justify-end overflow-hidden rounded-full bg-[var(--surface-3)]">
-                  <div
-                    className="h-full rounded-full"
-                    style={{
-                      width: `${(aPct / max) * 100}%`,
-                      background: PA,
-                    }}
-                  />
-                </div>
-                <span className="text-center font-mono text-[10px] uppercase tracking-wide text-[var(--text-faint)]">
-                  {type}
-                </span>
-                <div className="flex h-2 justify-start overflow-hidden rounded-full bg-[var(--surface-3)]">
-                  <div
-                    className="h-full rounded-full"
-                    style={{
-                      width: `${(bPct / max) * 100}%`,
-                      background: PB,
-                    }}
-                  />
-                </div>
-                <span className="font-mono text-xs tabular-nums text-[#d99a1a]">
-                  {bPct}%
-                </span>
+          <div className="max-h-[280px] space-y-2 overflow-y-auto">
+            {n === 0 ? (
+              <div className="rounded-lg border border-dashed border-[var(--border)] px-3 py-8 text-center text-[12.5px] text-[var(--text-muted)]">
+                These two players have not met in the loaded BWF data.
               </div>
-            );
-          })}
+            ) : (
+              meetings.map((m) => {
+                const aWon = playerWon(m, pa.id);
+                return (
+                  <Link
+                    key={m.id}
+                    href={`/bwf/matches/${m.id}`}
+                    className="flex items-center gap-2 rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-2)] px-3 py-2 hover:border-[var(--border)]"
+                  >
+                    <span
+                      className={cn(
+                        "inline-flex h-6 w-6 items-center justify-center rounded-md font-mono text-[10px] font-semibold",
+                        aWon === true
+                          ? "bg-[rgba(54,147,255,0.16)] text-[var(--player-a)]"
+                          : aWon === false
+                            ? "bg-[rgba(251,191,36,0.16)] text-[#d99a1a]"
+                            : "bg-[var(--surface-3)] text-[var(--text-muted)]",
+                      )}
+                    >
+                      {aWon === true ? "A" : aWon === false ? "B" : "—"}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate text-[12.5px] text-[var(--text-strong)]">
+                      {m.event}
+                      {m.round ? ` · ${m.round}` : ""}
+                    </span>
+                    <span className="font-mono text-[10.5px] tabular-nums text-[var(--text-muted)]">
+                      {formatScoreLine(m.games)}
+                    </span>
+                    <span className="hidden font-mono text-[10.5px] text-[var(--text-faint)] sm:inline">
+                      {displayDate(m)}
+                    </span>
+                  </Link>
+                );
+              })
+            )}
+          </div>
         </div>
       </div>
 
       <div className="rounded-[14px] border border-[var(--border)] bg-[var(--surface-1)] px-5 py-[18px]">
         <div className="mb-[18px] flex items-center justify-between">
           <span className="text-[13px] font-medium text-[var(--text-strong)]">
-            Stat comparison
+            Catalog comparison
           </span>
           <span className="font-mono text-[10.5px] uppercase tracking-[0.08em] text-[var(--text-faint)]">
-            career averages
+            from match rows
           </span>
         </div>
-        <div className="space-y-3">
-          {[
-            { k: "Win rate", a: pa.winRate, b: pb.winRate, unit: "%" },
-            {
-              k: "Fastest smash",
-              a: pa.fastestSmash,
-              b: pb.fastestSmash,
-              unit: " km/h",
-            },
-            {
-              k: "Attack rate",
-              a: pa.attackPct,
-              b: pb.attackPct,
-              unit: "%",
-            },
-            { k: "Avg rally", a: pa.avgRally, b: pb.avgRally, unit: "" },
-            {
-              k: "Net winners",
-              a: pa.netWinPct,
-              b: pb.netWinPct,
-              unit: "%",
-            },
-            {
-              k: "Court speed",
-              a: pa.movementSpeed,
-              b: pb.movementSpeed,
-              unit: " km/h",
-            },
-          ].map((m) => {
-            const aHi = m.a >= m.b;
-            const max = Math.max(m.a, m.b, 1);
-            return (
+        {pb ? (
+          <div className="space-y-3">
+            {[
+              { k: "Win rate", a: pa.winRate, b: pb.winRate, unit: "%" },
+              { k: "Wins", a: pa.wins, b: pb.wins, unit: "" },
+              { k: "Matches", a: pa.matches, b: pb.matches, unit: "" },
+              {
+                k: "Three-game",
+                a: pa.threeGames,
+                b: pb.threeGames,
+                unit: "",
+              },
+              {
+                k: "With video",
+                a: pa.withVideo,
+                b: pb.withVideo,
+                unit: "",
+              },
+            ].map((m) => {
+              const aHi = m.a >= m.b;
+              const max = Math.max(m.a, m.b, 1);
+              return (
+                <div
+                  key={m.k}
+                  className="grid grid-cols-[72px_1fr_100px_1fr_72px] items-center gap-2"
+                >
+                  <span
+                    className={cn(
+                      "text-right font-mono text-sm tabular-nums",
+                      aHi
+                        ? "font-semibold text-[var(--player-a)]"
+                        : "text-[var(--text-secondary)]",
+                    )}
+                  >
+                    {m.a}
+                    {m.unit}
+                  </span>
+                  <div className="flex h-2 justify-end overflow-hidden rounded-full bg-[var(--surface-3)]">
+                    <div
+                      className="h-full rounded-full bg-[var(--player-a)]"
+                      style={{
+                        width: `${(m.a / max) * 100}%`,
+                        opacity: aHi ? 1 : 0.5,
+                      }}
+                    />
+                  </div>
+                  <span className="text-center font-mono text-[10px] uppercase tracking-wide text-[var(--text-faint)]">
+                    {m.k}
+                  </span>
+                  <div className="flex h-2 justify-start overflow-hidden rounded-full bg-[var(--surface-3)]">
+                    <div
+                      className="h-full rounded-full bg-[var(--player-b)]"
+                      style={{
+                        width: `${(m.b / max) * 100}%`,
+                        opacity: !aHi ? 1 : 0.5,
+                      }}
+                    />
+                  </div>
+                  <span
+                    className={cn(
+                      "font-mono text-sm tabular-nums",
+                      !aHi
+                        ? "font-semibold text-[#d99a1a]"
+                        : "text-[var(--text-secondary)]",
+                    )}
+                  >
+                    {m.b}
+                    {m.unit}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="text-[13px] text-[var(--text-muted)]">
+            Select a second player to compare catalog stats.
+          </div>
+        )}
+      </div>
+
+      {n > 0 && pb ? (
+        <div className="mt-3.5 rounded-[14px] border border-[var(--border)] bg-[var(--surface-1)] px-5 py-4">
+          <div className="mb-3 text-[13px] font-medium text-[var(--text-strong)]">
+            Scorelines
+          </div>
+          <div className="space-y-2">
+            {meetings.map((m) => (
               <div
-                key={m.k}
-                className="grid grid-cols-[72px_1fr_100px_1fr_72px] items-center gap-2"
+                key={`score-${m.id}`}
+                className="flex flex-wrap items-center gap-2 font-mono text-[12px] text-[var(--text-secondary)]"
               >
-                <span
-                  className={cn(
-                    "text-right font-mono text-sm tabular-nums",
-                    aHi
-                      ? "font-semibold text-[var(--player-a)]"
-                      : "text-[var(--text-secondary)]",
-                  )}
-                >
-                  {m.a}
-                  {m.unit}
+                <span className="text-[var(--text-strong)]">
+                  {formatTeam(m.team1)} {formatScoreLine(m.games)}{" "}
+                  {formatTeam(m.team2)}
                 </span>
-                <div className="flex h-2 justify-end overflow-hidden rounded-full bg-[var(--surface-3)]">
-                  <div
-                    className="h-full rounded-full bg-[var(--player-a)]"
-                    style={{
-                      width: `${(m.a / max) * 100}%`,
-                      opacity: aHi ? 1 : 0.5,
-                    }}
-                  />
-                </div>
-                <span className="text-center font-mono text-[10px] uppercase tracking-wide text-[var(--text-faint)]">
-                  {m.k}
-                </span>
-                <div className="flex h-2 justify-start overflow-hidden rounded-full bg-[var(--surface-3)]">
-                  <div
-                    className="h-full rounded-full bg-[var(--player-b)]"
-                    style={{
-                      width: `${(m.b / max) * 100}%`,
-                      opacity: !aHi ? 1 : 0.5,
-                    }}
-                  />
-                </div>
-                <span
-                  className={cn(
-                    "font-mono text-sm tabular-nums",
-                    !aHi
-                      ? "font-semibold text-[#d99a1a]"
-                      : "text-[var(--text-secondary)]",
-                  )}
-                >
-                  {m.b}
-                  {m.unit}
+                <span className="text-[var(--text-faint)]">
+                  · {m.event}
+                  {m.round ? ` · ${m.round}` : ""}
                 </span>
               </div>
-            );
-          })}
+            ))}
+          </div>
         </div>
-      </div>
+      ) : null}
     </section>
   );
 }

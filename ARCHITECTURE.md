@@ -9,7 +9,7 @@ Status legend: ✅ built · 🚧 partially built · 📐 designed, not built.
 ```
                  ┌─────────────── INGESTION ───────────────┐
   BWF backlog ──▶│                                          │
-  BWF scraper ──▶│  match-data pipeline (GitHub Actions) ✅ │──▶ matches / players tables
+  BWF scraper ──▶│  match-data pipeline (GitHub Actions) ✅ │──▶ matches (players derived in web)
   User upload ──▶│  cdn-access presigned PUT ✅             │──▶ B2  users/<uid>/…
                  └──────────────────┬──────────────────────┘
                                     ▼  enqueue
@@ -394,10 +394,12 @@ in `wrangler.toml`).
 3. **Queue tech** — pgmq is the recommendation; if Supabase Queues proves
    limiting for priority/rate-caps, the fallback is a plain `jobs`-table
    dispatcher with `FOR UPDATE SKIP LOCKED`.
-4. **BWF artifact visibility** — the RLS in the pipeline migration lets any
-   signed-in user read system-owned (BWF) videos/assets, while the raw
-   match-data tables stay private. Tighten to owner-only if BWF content should
-   stay service-only until launch.
+4. ~~**BWF catalog visibility**~~ — **decided:** public BWF rows
+   (`matches.owner_id IS NULL`) are readable by `anon` and `authenticated`
+   (see SUPABASE.md RLS + migration `20260729000000_public_bwf_catalog_read`).
+   User-owned matches stay private. There is no separate players/nations graph;
+   the web BWF UI derives player profiles from the four name columns. Apply the
+   anon policy on PROD at cutover if not already present.
 
 Decided (2026-07): all footage is **single-camera** (shuttle 3D comes from
 physics-fit trajectories; no multi-view tables anywhere). Also decided

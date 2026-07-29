@@ -67,7 +67,7 @@ One row = one match (BWF or user) and its primary video identity.
 | `id` | `text` **PK** | Deterministic hash for BWF; owner-scoped id for user (see [Ids](#ids)) |
 | `owner_id` | `uuid` → `auth.users`, **nullable** | `NULL` = system/BWF; set = user-owned |
 | `source_url` | `text`, nullable | YouTube (or similar) for **first** fetch; unused after original is in B2 |
-| `tournament` | `text`, nullable | Composite display/context: `{name}-{discipline}-{round}` e.g. `2026 All England Open-WS-Final` |
+| `tournament` | `text`, nullable | Composite display/context: `"{title} · {discipline} · {round}"` e.g. `2026 All England Open · WS · Final` (middle-dot separators; web parses at read time) |
 | `match_date` | `date`, nullable | Part of BWF identity hash when known; useful in UI |
 | `team1_player1` | `text`, nullable | |
 | `team1_player2` | `text`, nullable | `NULL` for singles |
@@ -489,7 +489,7 @@ Returns jsonb: `ok`, `match_id`, `job_id`, `stage`, `enqueue`, `queue`, `msg_id`
 |------|-----------|--------|
 | `service_role` | Full DML (edge functions, BWF loader) | Full DML |
 | `authenticated` | `SELECT` where `owner_id = (select auth.uid()) OR owner_id IS NULL` | `SELECT` via parent match |
-| `anon` / `public` | none (explicit `REVOKE ALL`) | none |
+| `anon` | `SELECT` where `owner_id IS NULL` only (BWF catalog; migration `20260729000000_public_bwf_catalog_read.sql`) | none |
 | Clients | **No direct table writes** | **No direct table writes** |
 
 User-authored files (original upload, `annotation.json`) go through
@@ -499,8 +499,12 @@ through edge functions as `service_role`.
 **RLS performance:** policies wrap `auth.uid()` in `(select …)` so Postgres
 caches one initPlan evaluation per statement instead of calling per row.
 
-**Product choice:** `owner_id IS NULL` readable by any signed-in user makes BWF
-catalog public to accounts. Tighten to service-only until launch if needed.
+**Product choice:** BWF catalog (`owner_id IS NULL`) is readable by `anon` and
+any signed-in user. User-owned rows stay private. The web BWF UI prefers the
+**publishable/anon key** for catalog reads (RLS enforced) and falls back to the
+**service role** only when anon is missing, errors, or returns empty under
+missing RLS (e.g. PROD before the public-catalog migration). Aggregation still
+filters `owner_id IS NULL` on every path.
 
 pgmq and RPCs: `EXECUTE` only for `service_role` (security definer + fixed
 `search_path = public` as required for pgmq schema access).
@@ -663,8 +667,12 @@ unless product requires service-only BWF before launch (RLS).
 5. **Annotation presets** for BWF tournaments — config file vs small table when
    many events share geometry. Materialize `annotation.json` under `bwf/` when
    the service upload path lands (annotate still prints BWF geometry today).
-6. **Players table** — only if player pages / shared identity become product.
-7. **BWF read visibility** — authenticated public vs service-only until launch.
+6. **Players table** — only if player pages / shared identity become product
+   (web currently derives profiles from name columns; name collisions possible).
+7. ~~**BWF read visibility**~~ — **done (DEV):** anon + authenticated may
+   `SELECT` where `owner_id IS NULL` (`20260729000000_public_bwf_catalog_read.sql`).
+   PROD not applied until cutover. Web catalog prefers publishable/anon client;
+   service role remains for admin/ops only.
 8. **Optional B2 existence check / per-owner live-job cap** on user ingest if abuse appears.
 9. **Prod cutover** — see runbook below (not automated in CI).
 

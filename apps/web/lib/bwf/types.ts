@@ -1,93 +1,123 @@
-export type Disc = "MS" | "WS";
+export type Disc = "MS" | "WS" | "MD" | "WD" | "XD";
 export type DirMode = "profiles" | "boards";
+
+export const DISCS: Disc[] = ["MS", "WS", "MD", "WD", "XD"];
+
+export const DISC_LABEL: Record<Disc, string> = {
+  MS: "Men's singles",
+  WS: "Women's singles",
+  MD: "Men's doubles",
+  WD: "Women's doubles",
+  XD: "Mixed doubles",
+};
 
 export const PA = "var(--player-a)";
 export const PB = "var(--player-b)";
 
-export type ShotType = "Clear" | "Drop" | "Net" | "Lift" | "Drive" | "Smash";
+export type MatchStatus = "pending" | "processing" | "ready" | "failed";
 
-export const TYPE_COLORS: Record<ShotType, string> = {
-  Clear: "#3693ff",
-  Drop: "#50deff",
-  Net: "#2dd4a7",
-  Lift: "#b07bff",
-  Drive: "#fbbf24",
-  Smash: "#f4515c",
+export type GameScore = { t1: number; t2: number };
+
+/** One finished BWF match from the `matches` table. */
+export type CatalogMatch = {
+  id: string;
+  /** Composite raw column, e.g. `2026 Japan Open · MS · Final`. */
+  tournamentRaw: string;
+  /** Display event name with Wikipedia noise stripped. */
+  event: string;
+  year: number | null;
+  disc: Disc | null;
+  round: string;
+  matchDate: string | null;
+  team1: string[];
+  team2: string[];
+  team1Ids: string[];
+  team2Ids: string[];
+  games: GameScore[];
+  /** Winning side 1 or 2, or null if undetermined. */
+  winner: 1 | 2 | null;
+  threeGames: boolean;
+  comeback: boolean;
+  status: MatchStatus;
+  sourceUrl: string | null;
+  durationSec: number | null;
+  createdAt: string;
 };
 
-export function typeColor(type: string, fallback = "var(--accent)"): string {
-  const base = type.split(" ")[0] as ShotType;
-  return TYPE_COLORS[base] ?? fallback;
-}
-
-export const COUNTRY: Record<string, string> = {
-  DEN: "Denmark",
-  THA: "Thailand",
-  CHN: "China",
-  JPN: "Japan",
-  MAS: "Malaysia",
-  INA: "Indonesia",
-  SGP: "Singapore",
-  KOR: "South Korea",
-  TPE: "Chinese Taipei",
-  ESP: "Spain",
-  IND: "India",
-};
-
-export type Player = {
+/** Aggregated player profile derived from catalog matches. */
+export type CatalogPlayer = {
   id: string;
   name: string;
-  country: string;
-  countryName: string;
-  disc: Disc;
-  hand: string;
-  rank: number;
-  winRate: number;
+  /** Primary discipline by match count. */
+  disc: Disc | null;
+  discs: Disc[];
   matches: number;
   wins: number;
   losses: number;
-  titles: number;
-  avgRally: number;
-  fastestSmash: number;
-  movementSpeed: number;
-  netWinPct: number;
-  enduranceWinPct: number;
-  variety: number;
-  attackPct: number;
-  crossPct: number;
-  fhPct: number;
-  mix: { type: string; pct: number }[];
-  dist: number[];
-  zones: number[];
+  winRate: number;
+  threeGames: number;
+  withVideo: number;
   form: ("W" | "L")[];
-  style: string;
+  /** Opponent id → meetings / wins for this player. */
+  rivals: { id: string; name: string; meetings: number; wins: number }[];
+  recentMatchIds: string[];
+  /** Optional remote image URL (currently rare). */
+  imageUrl: string | null;
 };
 
-export type GameScore = { a: number; b: number };
+export type CatalogStats = {
+  matches: number;
+  players: number;
+  tournaments: number;
+  withVideo: number;
+  byDisc: Record<Disc, number>;
+  events: { event: string; year: number | null; count: number }[];
+  rounds: string[];
+  years: number[];
+};
 
-export type Match = {
+export type MatchFilters = {
+  q?: string;
+  disc?: Disc | "all";
+  event?: string;
+  round?: string;
+  year?: number | "all";
+  player?: string;
+  hasVideo?: boolean;
+  threeGames?: boolean;
+  comeback?: boolean;
+  sort?: "event" | "round" | "created" | "status";
+  page?: number;
+  pageSize?: number;
+};
+
+export type SearchHit =
+  | {
+      kind: "Player";
+      id: string;
+      label: string;
+      sub: string;
+      href: string;
+    }
+  | {
+      kind: "Match";
+      id: string;
+      label: string;
+      sub: string;
+      href: string;
+    }
+  | {
+      kind: "Tournament";
+      id: string;
+      label: string;
+      sub: string;
+      href: string;
+    };
+
+/** Slim roster option for H2H picker (avoids shipping full profiles). */
+export type H2hPickerPlayer = {
   id: string;
-  a: string;
-  b: string;
-  w: "a" | "b";
-  event: string;
-  round: string;
-  date: string;
-  games: GameScore[];
-  disc: Disc;
-  pa: Player;
-  pb: Player;
-  rallies: number;
-  avgRally: number;
-  fastestSmash: number;
-  longest: number;
-  dur: number;
-  rallyLens: number[];
-  momentum: ("a" | "b")[];
-  shotMix: { type: string; pct: number }[];
-  attackPct: number;
-  smashes300: number;
-  netWinners: number;
-  threeGames: boolean;
-  comeback: boolean;
+  name: string;
+  matches: number;
+  disc: Disc | null;
 };
