@@ -1,13 +1,13 @@
 import type { Moment, ReasonKey } from "./moments";
 
 export type Filter = {
-  types?: string[];
+  types: string[];
   speedMin?: number;
   rallyMin?: number;
   outcome?: string;
   kind?: string;
-  ctx?: string[];
-  free?: string[];
+  ctx: string[];
+  free: string[];
 };
 
 export type EmphWeights = {
@@ -46,12 +46,24 @@ export const EMPH = [
   w: EmphWeights;
 }>;
 
+function filter(partial: Partial<Filter> = {}): Filter {
+  return {
+    types: partial.types ?? [],
+    speedMin: partial.speedMin,
+    rallyMin: partial.rallyMin,
+    outcome: partial.outcome,
+    kind: partial.kind,
+    ctx: partial.ctx ?? [],
+    free: partial.free ?? [],
+  };
+}
+
 export const QUICK: { id: string; label: string; f: Filter }[] = [
-  { id: "c1", label: "Smash 300+", f: { types: ["Smash"], speedMin: 300 } },
-  { id: "c2", label: "Match points", f: { ctx: ["match point"] } },
-  { id: "c3", label: "Rally 12+", f: { rallyMin: 12 } },
-  { id: "c4", label: "Net kills", f: { types: ["Net"] } },
-  { id: "c5", label: "Comebacks", f: { ctx: ["comeback"] } },
+  { id: "c1", label: "Smash 300+", f: filter({ types: ["Smash"], speedMin: 300 }) },
+  { id: "c2", label: "Match points", f: filter({ ctx: ["match point"] }) },
+  { id: "c3", label: "Rally 12+", f: filter({ rallyMin: 12 }) },
+  { id: "c4", label: "Net kills", f: filter({ types: ["Net"] }) },
+  { id: "c5", label: "Comebacks", f: filter({ ctx: ["comeback"] }) },
 ];
 
 const EMPH_PREFER: Partial<Record<EmphKey, ReasonKey>> = {
@@ -61,7 +73,7 @@ const EMPH_PREFER: Partial<Record<EmphKey, ReasonKey>> = {
 };
 
 export function parseQuery(qraw: string): Filter {
-  const f: Filter = { types: [], ctx: [], free: [] };
+  const f = filter({});
   let q = ` ${qraw.toLowerCase()} `;
   (
     [
@@ -72,7 +84,7 @@ export function parseQuery(qraw: string): Filter {
     ] as const
   ).forEach(([k, tag]) => {
     if (q.includes(k)) {
-      if (!f.ctx!.includes(tag)) f.ctx!.push(tag);
+      if (!f.ctx.includes(tag)) f.ctx.push(tag);
       q = q.split(k).join(" ");
     }
   });
@@ -92,7 +104,7 @@ export function parseQuery(qraw: string): Filter {
   }
   ["smash", "drop", "clear", "net", "drive", "lift"].forEach((t) => {
     if (new RegExp(`\\b${t}`).test(q)) {
-      f.types!.push(t.charAt(0).toUpperCase() + t.slice(1));
+      f.types.push(t.charAt(0).toUpperCase() + t.slice(1));
       q = q.replace(new RegExp(`${t}\\w*`, "g"), " ");
     }
   });
@@ -126,19 +138,19 @@ export function parseQuery(qraw: string): Filter {
     "when",
   ]);
   q.split(/[^a-zà-ÿ-]+/).forEach((w) => {
-    if (w.length > 2 && !stop.has(w)) f.free!.push(w);
+    if (w.length > 2 && !stop.has(w)) f.free.push(w);
   });
   return f;
 }
 
 export function passes(m: Moment, f: Filter): boolean {
-  if (f.types?.length && !f.types.includes(m.type)) return false;
+  if (f.types.length && !f.types.includes(m.type)) return false;
   if (f.speedMin && !(m.speed && m.speed >= f.speedMin)) return false;
   if (f.rallyMin && m.rallyLen < f.rallyMin) return false;
   if (f.outcome && m.outcome !== f.outcome) return false;
   if (f.kind === "rally" && m.kind !== "rally") return false;
-  if (f.ctx?.length && !f.ctx.every((t) => m.ctx.includes(t))) return false;
-  if (f.free?.length) {
+  if (f.ctx.length && !f.ctx.every((t) => m.ctx.includes(t))) return false;
+  if (f.free.length) {
     const hay = `${m.title} ${m.match} ${m.round} ${m.type}`.toLowerCase();
     if (!f.free.every((w) => hay.includes(w))) return false;
   }

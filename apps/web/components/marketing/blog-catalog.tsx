@@ -23,10 +23,15 @@ const ICONS: LucideIcon[] = [Activity, BarChart3, Gauge, LineChart, Target, Zap]
 
 const POSTS = blogPosts.map((p, i) => ({
   ...p,
-  author: i % 2 === 0 ? "Viktor Koster" : "Aya Chen",
+  author: p.author ?? (i % 2 === 0 ? "Viktor Koster" : "Aya Chen"),
   figure: `0${i + 1}`,
   icon: ICONS[i % ICONS.length],
-  tone: (["brand", "success", "cyan", "warning"] as const)[i % 4],
+  tone: (p.tone ??
+    (["brand", "success", "cyan", "warning"] as const)[i % 4]) as
+    | "brand"
+    | "success"
+    | "cyan"
+    | "warning",
 }));
 
 export function BlogCatalog() {
@@ -54,9 +59,9 @@ export function BlogCatalog() {
             onChange={setCategory}
             items={[
               { value: "all", label: "All" },
-              { value: "insights", label: "Insights" },
+              { value: "analysis", label: "Analysis" },
               { value: "coaching", label: "Coaching" },
-              { value: "product", label: "Product" },
+              { value: "engineering", label: "Engineering" },
             ]}
           />
           <div className="flex-1" />

@@ -4,101 +4,58 @@ import * as React from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
+import {
+  BarChart3,
+  Check,
+  ChevronDown,
+  Clapperboard,
+  CreditCard,
+  HelpCircle,
+  LayoutDashboard,
+  Library,
+  LogOut,
+  Moon,
+  Settings,
+  SlidersHorizontal,
+  Sun,
+  User,
+  type LucideIcon,
+} from "lucide-react";
 import { activeSidebarKeyFromPath } from "@/lib/nav";
 import { cn, initials } from "@/lib/utils";
 
 const ICONS = {
-  dashboard: (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <rect x="3" y="3" width="7" height="9" rx="1" />
-      <rect x="14" y="3" width="7" height="5" rx="1" />
-      <rect x="14" y="12" width="7" height="9" rx="1" />
-      <rect x="3" y="16" width="7" height="5" rx="1" />
-    </svg>
-  ),
-  library: (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
-    </svg>
-  ),
-  analysis: (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M3 3v18h18" />
-      <rect x="7" y="11" width="3" height="6" rx="0.6" />
-      <rect x="12" y="7" width="3" height="10" rx="0.6" />
-      <rect x="17" y="13" width="3" height="4" rx="0.6" />
-    </svg>
-  ),
-  highlights: (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <rect x="2" y="4" width="20" height="16" rx="2" />
-      <path d="M2 8h20M7 4v4M17 4v4M7 20v-4M17 20v-4M2 16h20" />
-    </svg>
-  ),
-  settings: (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="12" cy="12" r="3" />
-      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-2.82 1.17V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 7.6 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 3.6 14H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 8.6a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 10 3.6V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 2.4 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 20.4 10H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z" />
-    </svg>
-  ),
-  help: (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="12" cy="12" r="10" />
-      <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
-      <path d="M12 17h.01" />
-    </svg>
-  ),
-  user: (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
-      <circle cx="12" cy="7" r="4" />
-    </svg>
-  ),
-  sliders: (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
-      <line x1="4" y1="8" x2="20" y2="8" />
-      <line x1="4" y1="16" x2="20" y2="16" />
-      <circle cx="9" cy="8" r="2.4" fill="var(--surface-1,#0e162d)" />
-      <circle cx="15" cy="16" r="2.4" fill="var(--surface-1,#0e162d)" />
-    </svg>
-  ),
-  card: (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
-      <rect x="2" y="5" width="20" height="14" rx="2" />
-      <line x1="2" y1="10" x2="22" y2="10" />
-    </svg>
-  ),
-  check: (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
-      <polyline points="20 6 9 17 4 12" />
-    </svg>
-  ),
-  moon: (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
-    </svg>
-  ),
-  sun: (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="12" cy="12" r="4" />
-      <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41" />
-    </svg>
-  ),
-  logout: (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
-      <polyline points="16 17 21 12 16 7" />
-      <line x1="21" y1="12" x2="9" y2="12" />
-    </svg>
-  ),
-  chevron: (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="m6 9 6 6 6-6" />
-    </svg>
-  ),
-} as const;
+  dashboard: LayoutDashboard,
+  library: Library,
+  analysis: BarChart3,
+  highlights: Clapperboard,
+  settings: Settings,
+  help: HelpCircle,
+  user: User,
+  sliders: SlidersHorizontal,
+  card: CreditCard,
+  check: Check,
+  moon: Moon,
+  sun: Sun,
+  logout: LogOut,
+  chevron: ChevronDown,
+} as const satisfies Record<string, LucideIcon>;
 
 export type SidebarIcon = keyof typeof ICONS;
+
+function SidebarGlyph({
+  name,
+  className,
+  strokeWidth = 1.8,
+}: {
+  name: SidebarIcon | string;
+  className?: string;
+  strokeWidth?: number;
+}) {
+  const Icon = ICONS[name as SidebarIcon];
+  if (!Icon) return null;
+  return <Icon className={className} strokeWidth={strokeWidth} aria-hidden />;
+}
 
 function pct(used: number, limit: number) {
   return Math.max(0, Math.min(100, Math.round((used / (limit || 1)) * 100)));
@@ -212,7 +169,7 @@ export function Sidebar({
                   href={it.href || "#"}
                   aria-current={on ? "page" : undefined}
                 >
-                  {ICONS[it.icon as SidebarIcon]}
+                  <SidebarGlyph name={it.icon} />
                   {it.label}
                 </Link>
               );
@@ -301,7 +258,7 @@ export function Sidebar({
                     href={m.href || "#"}
                     role="menuitem"
                   >
-                    {ICONS[m.icon as SidebarIcon]}
+                    <SidebarGlyph name={m.icon} strokeWidth={1.9} />
                     <span style={{ flex: 1, minWidth: 0 }}>{m.label}</span>
                     {m.trailing ? (
                       <span
@@ -340,7 +297,9 @@ export function Sidebar({
                         <span className="mx-side__wsbadge">{w.initials}</span>
                         <span className="mx-side__wsname">{w.name}</span>
                         {on ? (
-                          <span className="mx-side__wscheck">{ICONS.check}</span>
+                          <span className="mx-side__wscheck">
+                            <SidebarGlyph name="check" strokeWidth={1.9} />
+                          </span>
                         ) : null}
                       </button>
                     );
@@ -353,7 +312,8 @@ export function Sidebar({
                   className="mx-side__menuitem mx-side__menuitem--danger"
                   href={signOutHref}
                 >
-                  {ICONS.logout}Sign out
+                  <SidebarGlyph name="logout" strokeWidth={1.9} />
+                  Sign out
                 </Link>
               </div>
             </div>
@@ -381,7 +341,9 @@ export function Sidebar({
               <div className="mx-side__acctrole">{user.role}</div>
             ) : null}
           </div>
-          <span className="mx-side__chev">{ICONS.chevron}</span>
+          <span className="mx-side__chev">
+            <SidebarGlyph name="chevron" strokeWidth={2} />
+          </span>
         </button>
       </div>
     </aside>

@@ -4,6 +4,7 @@ import {
   UploadCloud,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { CourtThumb } from "@/components/media/court-thumb";
 import { ProgressBar } from "@/components/ui/progress-bar";
 import { cn } from "@/lib/utils";
 
@@ -54,15 +55,7 @@ function Thumb({
   dur: string;
 }) {
   return (
-    <div className="relative aspect-video overflow-hidden bg-[linear-gradient(160deg,#0f1b34,#070b16)]">
-      <div
-        className="absolute inset-0 opacity-50"
-        style={{
-          backgroundImage:
-            "linear-gradient(90deg, transparent 28%, rgba(54,147,255,0.16) 28%, rgba(54,147,255,0.16) calc(28% + 1px), transparent calc(28% + 1px)), linear-gradient(90deg, transparent 72%, rgba(54,147,255,0.16) 72%, rgba(54,147,255,0.16) calc(72% + 1px), transparent calc(72% + 1px)), linear-gradient(180deg, transparent calc(50% - 1px), rgba(154,168,194,0.28) 50%, transparent calc(50% + 1px))",
-        }}
-      />
-      <div className="absolute inset-0 bg-[radial-gradient(80%_60%_at_50%_42%,rgba(54,147,255,0.14),transparent_70%)]" />
+    <CourtThumb className="aspect-video">
       {status === "analyzing" ? (
         <div className="absolute left-2 top-2">
           <Badge tone="cyan" live pill>
@@ -90,7 +83,7 @@ function Thumb({
           <ProgressBar value={progress} size="sm" />
         </div>
       ) : null}
-    </div>
+    </CourtThumb>
   );
 }
 

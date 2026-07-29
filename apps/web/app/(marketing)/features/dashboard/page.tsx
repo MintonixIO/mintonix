@@ -1,4 +1,3 @@
-import Link from "next/link";
 import {
   FileVideo,
   Folder,
@@ -13,7 +12,11 @@ import {
   Users,
   Zap,
 } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import {
+  FeatureCTA,
+  FeatureHero,
+  FeatureSection,
+} from "@/components/marketing/feature-page";
 import { Reveal } from "@/components/marketing/reveal";
 import { DashboardDemo } from "@/components/marketing/dashboard-demo";
 
@@ -48,64 +51,43 @@ const TEAM = [
 export default function FeatureDashboardPage() {
   return (
     <div className="overflow-x-clip">
-      <section className="relative">
-        <div
-          className="pointer-events-none absolute inset-0"
-          style={{
-            background:
-              "radial-gradient(100% 60% at 85% -10%, rgba(54,147,255,0.16), transparent 55%)",
-          }}
-        />
-        <div className="relative mx-auto max-w-[1320px] px-8 pt-[92px]">
-          <div className="grid items-center gap-10 lg:grid-cols-[1fr_0.78fr] lg:gap-14">
-            <div>
-              <div className="inline-flex items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--accent-soft)] px-2.5 py-1.5 font-mono text-[11px] uppercase tracking-[0.14em] text-[var(--accent)]">
-                <LayoutDashboard className="h-3.5 w-3.5" />
-                Dashboard
+      <FeatureHero
+        EyebrowIcon={LayoutDashboard}
+        eyebrow="Dashboard"
+        titleClassName="max-w-[14ch]"
+        title="Every match, in one place."
+        body="Upload footage and it lands as a fully analyzed match. Watch what's processing, jump back into recent breakdowns, search the whole archive, and share any match with a link — without leaving the page."
+        ctas={[
+          { href: "/auth", label: "Open your workspace" },
+          { href: "/dashboard", label: "See a live demo", variant: "outline" },
+        ]}
+        glow="radial-gradient(100% 60% at 85% -10%, rgba(54,147,255,0.16), transparent 55%)"
+        gridClassName="grid items-center gap-10 lg:grid-cols-[1fr_0.78fr] lg:gap-14"
+      >
+        <div className="grid grid-cols-2 gap-3.5">
+          {HERO_STATS.map((s) => (
+            <div
+              key={s.label}
+              className="rounded-[14px] border border-[var(--border)] bg-[var(--surface-1)] p-[18px] transition-transform hover:-translate-y-0.5"
+            >
+              <span className="inline-flex h-[34px] w-[34px] items-center justify-center rounded-[9px] border border-[var(--border)] bg-[var(--accent-soft)] text-[var(--accent)]">
+                <s.icon className="h-4 w-4" />
+              </span>
+              <div className="mt-3.5 font-display text-[26px] font-semibold leading-none tracking-[-0.02em] tabular-nums text-[var(--text-strong)]">
+                {s.big}
               </div>
-              <h1 className="mt-[22px] max-w-[14ch] font-display text-[clamp(36px,5vw,60px)] font-semibold leading-[1.04] tracking-[-0.03em] text-[var(--text-strong)] text-balance">
-                Every match, in one place.
-              </h1>
-              <p className="mt-5 max-w-[50ch] text-[clamp(15px,1.5vw,18px)] leading-[1.62] text-[var(--text-secondary)]">
-                Upload footage and it lands as a fully analyzed match. Watch
-                what&apos;s processing, jump back into recent breakdowns, search
-                the whole archive, and share any match with a link — without
-                leaving the page.
-              </p>
-              <div className="mt-8 flex flex-wrap gap-3">
-                <Link href="/auth">
-                  <Button size="lg">Open your workspace</Button>
-                </Link>
-                <Link href="/dashboard">
-                  <Button variant="outline" size="lg">
-                    See a live demo
-                  </Button>
-                </Link>
+              <div className="mt-1.5 text-[12.5px] text-[var(--text-muted)]">
+                {s.label}
               </div>
             </div>
-            <div className="grid grid-cols-2 gap-3.5">
-              {HERO_STATS.map((s) => (
-                <div
-                  key={s.label}
-                  className="rounded-[14px] border border-[var(--border)] bg-[var(--surface-1)] p-[18px] transition-transform hover:-translate-y-0.5"
-                >
-                  <span className="inline-flex h-[34px] w-[34px] items-center justify-center rounded-[9px] border border-[var(--border)] bg-[var(--accent-soft)] text-[var(--accent)]">
-                    <s.icon className="h-4 w-4" />
-                  </span>
-                  <div className="mt-3.5 font-display text-[26px] font-semibold leading-none tracking-[-0.02em] tabular-nums text-[var(--text-strong)]">
-                    {s.big}
-                  </div>
-                  <div className="mt-1.5 text-[12.5px] text-[var(--text-muted)]">
-                    {s.label}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
+          ))}
         </div>
-      </section>
+      </FeatureHero>
 
-      <section className="relative mx-auto max-w-[1256px] px-8 pt-[72px]">
+      <FeatureSection
+        className="relative pt-[72px]"
+        maxWidthClassName="max-w-[1256px]"
+      >
         <Reveal className="relative">
           <div
             className="pointer-events-none absolute -inset-px rounded-2xl"
@@ -118,20 +100,16 @@ export default function FeatureDashboardPage() {
             <DashboardDemo className="min-h-[560px] rounded-none border-0 shadow-none" />
           </div>
         </Reveal>
-      </section>
+      </FeatureSection>
 
-      <section className="mx-auto max-w-[1256px] px-8 pt-[120px]">
-        <Reveal className="mb-11 max-w-[640px]">
-          <div className="mb-3.5 font-mono text-[11px] uppercase tracking-[0.12em] text-[var(--accent)]">
-            Your control room
-          </div>
-          <h2 className="font-display text-[clamp(28px,3.4vw,42px)] font-semibold leading-[1.1] tracking-[-0.025em] text-[var(--text-strong)] text-balance">
-            Everything a match needs, on one screen.
-          </h2>
-        </Reveal>
-
+      <FeatureSection
+        className="pt-[120px]"
+        maxWidthClassName="max-w-[1256px]"
+        eyebrow="Your control room"
+        title="Everything a match needs, on one screen."
+        headerClassName="mb-11 max-w-[640px]"
+      >
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-          {/* Upload wide */}
           <Reveal className="flex flex-col rounded-2xl border border-[var(--border)] bg-[var(--surface-1)] p-6 transition-transform hover:-translate-y-0.5 md:col-span-2">
             <div className="flex items-center gap-2.5">
               <span className="inline-flex h-9 w-9 items-center justify-center rounded-[10px] border border-[var(--border)] bg-[var(--accent-soft)] text-[var(--accent)]">
@@ -163,7 +141,6 @@ export default function FeatureDashboardPage() {
             </div>
           </Reveal>
 
-          {/* Live status */}
           <Reveal className="rounded-2xl border border-[var(--border)] bg-[var(--surface-1)] p-6 transition-transform hover:-translate-y-0.5">
             <div className="flex items-center gap-2.5">
               <span className="inline-flex h-9 w-9 items-center justify-center rounded-[10px] border border-[var(--border)] bg-[var(--accent-soft)] text-[var(--accent)]">
@@ -200,7 +177,6 @@ export default function FeatureDashboardPage() {
             </div>
           </Reveal>
 
-          {/* Recents */}
           <Reveal className="rounded-2xl border border-[var(--border)] bg-[var(--surface-1)] p-6 transition-transform hover:-translate-y-0.5">
             <div className="flex items-center gap-2.5">
               <span className="inline-flex h-9 w-9 items-center justify-center rounded-[10px] border border-[var(--border)] bg-[var(--accent-soft)] text-[var(--accent)]">
@@ -232,7 +208,6 @@ export default function FeatureDashboardPage() {
             </div>
           </Reveal>
 
-          {/* Search wide */}
           <Reveal className="rounded-2xl border border-[var(--border)] bg-[var(--surface-1)] p-6 transition-transform hover:-translate-y-0.5 md:col-span-2">
             <div className="flex items-center gap-2.5">
               <span className="inline-flex h-9 w-9 items-center justify-center rounded-[10px] border border-[var(--border)] bg-[var(--accent-soft)] text-[var(--accent)]">
@@ -265,7 +240,6 @@ export default function FeatureDashboardPage() {
             </div>
           </Reveal>
 
-          {/* Share */}
           <Reveal className="rounded-2xl border border-[var(--border)] bg-[var(--surface-1)] p-6 transition-transform hover:-translate-y-0.5">
             <div className="flex items-center gap-2.5">
               <span className="inline-flex h-9 w-9 items-center justify-center rounded-[10px] border border-[var(--border)] bg-[var(--accent-soft)] text-[var(--accent)]">
@@ -281,7 +255,6 @@ export default function FeatureDashboardPage() {
             </p>
           </Reveal>
 
-          {/* Team wide */}
           <Reveal className="flex flex-wrap items-center gap-[22px] rounded-2xl border border-[var(--border)] bg-[var(--surface-1)] p-6 transition-transform hover:-translate-y-0.5 md:col-span-2 lg:col-span-3">
             <div className="min-w-[240px] flex-1">
               <div className="flex items-center gap-2.5">
@@ -318,28 +291,13 @@ export default function FeatureDashboardPage() {
             </div>
           </Reveal>
         </div>
-      </section>
+      </FeatureSection>
 
-      <section className="mx-auto max-w-[1180px] px-8 pb-[140px] pt-[110px]">
-        <Reveal className="relative rounded-[20px] border border-[var(--border)] px-8 py-[72px] text-center"
-          style={{
-            background:
-              "radial-gradient(120% 140% at 50% -20%, rgba(54,147,255,0.16), transparent 60%), var(--surface-1)",
-          }}
-        >
-          <h2 className="mx-auto max-w-[18ch] font-display text-[clamp(28px,3.6vw,44px)] font-semibold leading-[1.08] tracking-[-0.03em] text-[var(--text-strong)] text-balance">
-            Your whole season, organized from day one.
-          </h2>
-          <p className="mx-auto mt-4 max-w-[46ch] text-[16px] leading-[1.6] text-[var(--text-secondary)]">
-            Spin up a workspace in seconds and upload your first match free.
-          </p>
-          <div className="mt-[30px] flex flex-wrap items-center justify-center gap-3">
-            <Link href="/auth">
-              <Button size="lg">Create your workspace</Button>
-            </Link>
-          </div>
-        </Reveal>
-      </section>
+      <FeatureCTA
+        title="Your whole season, organized from day one."
+        body="Spin up a workspace in seconds and upload your first match free."
+        ctas={[{ href: "/auth", label: "Create your workspace" }]}
+      />
     </div>
   );
 }

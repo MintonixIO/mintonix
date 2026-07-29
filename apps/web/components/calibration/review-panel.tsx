@@ -1,3 +1,5 @@
+"use client";
+
 import {
   CheckCircle2,
   Crosshair,
@@ -7,35 +9,20 @@ import {
   Sparkles,
   User,
 } from "lucide-react";
-import type { RefObject } from "react";
-import {
-  PBOX,
-  POLE,
-  computeQuality,
-  timecodeOf,
-  type Marks,
-} from "@/lib/calibration/geometry";
+import { useReview } from "@/components/calibration/calibration-context";
+import { PBOX, POLE, timecodeOf } from "@/lib/calibration/geometry";
 import { DIR, PA, PB } from "@/lib/calibration/constants";
 
-type Quality = ReturnType<typeof computeQuality>;
+export function ReviewPanel() {
+  const {
+    reviewVidRef,
+    marks,
+    Q,
+    activeCorners,
+    identify,
+    calibFrame,
+  } = useReview();
 
-export type ReviewPanelProps = {
-  reviewVidRef: RefObject<HTMLVideoElement | null>;
-  marks: Marks;
-  Q: Quality;
-  activeCorners: [number, number][];
-  identify: Record<"a" | "b", { q: string; id: string | null }>;
-  calibFrame: number;
-};
-
-export function ReviewPanel({
-  reviewVidRef,
-  marks,
-  Q,
-  activeCorners,
-  identify,
-  calibFrame,
-}: ReviewPanelProps) {
   return (
     <div className="flex flex-col gap-[15px]">
       {/* Review thumb */}

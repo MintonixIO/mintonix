@@ -1,56 +1,31 @@
 import Link from "next/link";
-import { Badge } from "@/components/ui/badge";
+import { Badge, type BadgeTone } from "@/components/ui/badge";
 import { ProgressBar } from "@/components/ui/progress-bar";
+import { CourtThumb } from "@/components/media/court-thumb";
+import {
+  MATCH_STATUS_UI,
+  type MatchStatus,
+  type MatchSummary,
+} from "@/lib/matches";
 import { cn } from "@/lib/utils";
 
-export type VideoStatus = "analyzing" | "ready" | "queued" | "failed";
+/** @deprecated Prefer MatchSummary from @/lib/matches */
+export type VideoStatus = MatchStatus;
+/** @deprecated Prefer MatchSummary from @/lib/matches */
+export type VideoCardData = MatchSummary;
 
-export interface VideoCardData {
-  id: string;
-  title: string;
-  players: string;
-  event?: string;
-  duration: string;
-  status: VideoStatus;
-  progress?: number;
-  href?: string;
-  date?: string;
-  tags?: string[];
-}
-
-const statusTone: Record<VideoStatus, "brand" | "success" | "warning" | "danger" | "cyan"> = {
-  analyzing: "cyan",
-  ready: "success",
-  queued: "warning",
-  failed: "danger",
-};
-
-const statusLabel: Record<VideoStatus, string> = {
-  analyzing: "Analyzing",
-  ready: "Ready",
-  queued: "Queued",
-  failed: "Failed",
-};
-
-export function VideoCard({ v }: { v: VideoCardData }) {
+export function VideoCard({ v }: { v: MatchSummary }) {
+  const ui = MATCH_STATUS_UI[v.status];
   const href = v.href || (v.status === "ready" ? "/video-analysis" : "#");
   return (
     <Link
       href={href}
       className="group flex flex-col overflow-hidden rounded-[14px] border border-[var(--border)] bg-[var(--surface-1)] shadow-[var(--shadow-edge)] transition-colors hover:border-[var(--border-strong)]"
     >
-      <div className="relative aspect-video overflow-hidden bg-[linear-gradient(160deg,#0f1b34_0%,#070b16_100%)]">
-        <div
-          className="absolute inset-0 opacity-50"
-          style={{
-            backgroundImage:
-              "linear-gradient(90deg, transparent 28%, rgba(54,147,255,0.16) 28%, rgba(54,147,255,0.16) calc(28% + 1px), transparent calc(28% + 1px)), linear-gradient(90deg, transparent 72%, rgba(54,147,255,0.16) 72%, rgba(54,147,255,0.16) calc(72% + 1px), transparent calc(72% + 1px)), linear-gradient(180deg, transparent calc(50% - 1px), rgba(154,168,194,0.28) 50%, transparent calc(50% + 1px))",
-          }}
-        />
-        <div className="absolute inset-0 bg-[radial-gradient(80%_60%_at_50%_42%,rgba(54,147,255,0.14),transparent_70%)]" />
+      <CourtThumb className="aspect-video">
         <div className="absolute left-2.5 top-2.5 flex gap-1.5">
-          <Badge tone={statusTone[v.status]} live={v.status === "analyzing"} pill>
-            {statusLabel[v.status]}
+          <Badge tone={ui.tone as BadgeTone} live={ui.live} pill>
+            {ui.label}
           </Badge>
         </div>
         <div className="absolute bottom-2.5 right-2.5 rounded-md border border-[var(--border)] bg-[rgba(10,16,32,0.72)] px-1.5 py-0.5 font-mono text-[11px] tabular-nums text-[var(--text-secondary)] backdrop-blur-sm">
@@ -61,7 +36,7 @@ export function VideoCard({ v }: { v: VideoCardData }) {
             <ProgressBar value={v.progress} size="sm" tone="brand" />
           </div>
         ) : null}
-      </div>
+      </CourtThumb>
       <div className="flex flex-1 flex-col gap-1.5 p-3.5">
         <div className="font-display text-[14.5px] font-semibold tracking-[-0.01em] text-[var(--text-strong)] group-hover:text-white">
           {v.title}
