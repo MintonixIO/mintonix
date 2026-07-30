@@ -65,11 +65,13 @@ async function fetchPages(
   const rows: DbMatchRow[] = [];
 
   for (;;) {
+    // Order by unique `id` so range pagination cannot skip/duplicate rows when
+    // many matches share the same created_at (bulk season upserts).
     const { data, error } = await supabase
       .from("matches")
       .select(MATCH_SELECT)
       .is("owner_id", null)
-      .order("created_at", { ascending: false })
+      .order("id", { ascending: true })
       .range(from, from + pageSize - 1);
 
     if (error) {
@@ -128,10 +130,10 @@ async function fetchAllBwfRows(): Promise<CatalogMatch[]> {
   );
 }
 
-/** Full BWF catalog (~3k rows), cached 5 minutes. */
+/** Full BWF catalog (multi-year), cached 5 minutes. Bump cache key when schema/load changes. */
 export const getBwfMatches = unstable_cache(
   async () => fetchAllBwfRows(),
-  ["bwf-catalog-matches-v3"],
+  ["bwf-catalog-matches-v4"],
   { revalidate: 300 },
 );
 
@@ -187,7 +189,7 @@ export async function getCatalogStats(): Promise<CatalogStats> {
 /** Players derived from the same cached match catalog (no second table scan). */
 export const getCatalogPlayers = unstable_cache(
   async () => aggregatePlayers(await getBwfMatches()),
-  ["bwf-catalog-players-v3"],
+  ["bwf-catalog-players-v4"],
   { revalidate: 300 },
 );
 

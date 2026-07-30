@@ -9,7 +9,10 @@ templates (NTeamBracket-Tennis3) into structured Match records, and writes a
 per-year JSON file (bwf_<year>_results.json) next to this script.
 
 Usage:
-  python3 scraper.py        # scrapes the current year (from a time server)
+  python3 scraper.py                          # current year (from a time server)
+  python3 scraper.py --year 2024              # one historical season
+  python3 scraper.py --from-year 2018 --to-year 2025
+  ./load_historical_years.sh                  # scrape + load a year range to Supabase
 """
 
 import hashlib
@@ -773,15 +776,67 @@ def scrape_season(season):
     return output["stats"]
 
 
-def main():
-    year = get_current_year()
-    stats = scrape_season(year)
+def main(argv=None):
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Scrape BWF World Tour seasons from Wikipedia into bwf_<year>_results.json"
+    )
+    parser.add_argument(
+        "--year",
+        type=int,
+        action="append",
+        dest="years",
+        metavar="YYYY",
+        help="Season year to scrape (repeatable). Default: current year only.",
+    )
+    parser.add_argument(
+        "--from-year",
+        type=int,
+        metavar="YYYY",
+        help="Inclusive start of a year range (use with --to-year).",
+    )
+    parser.add_argument(
+        "--to-year",
+        type=int,
+        metavar="YYYY",
+        help="Inclusive end of a year range (use with --from-year).",
+    )
+    args = parser.parse_args(argv)
+
+    years: list[int] = []
+    if args.years:
+        years.extend(args.years)
+    if args.from_year is not None or args.to_year is not None:
+        if args.from_year is None or args.to_year is None:
+            parser.error("--from-year and --to-year must be used together")
+        if args.from_year > args.to_year:
+            parser.error("--from-year must be <= --to-year")
+        years.extend(range(args.from_year, args.to_year + 1))
+    if not years:
+        years = [get_current_year()]
+
+    # De-dupe while preserving order
+    seen = set()
+    ordered: list[int] = []
+    for y in years:
+        if y not in seen:
+            seen.add(y)
+            ordered.append(y)
+
+    summary = []
+    for year in ordered:
+        stats = scrape_season(year)
+        summary.append((year, stats))
 
     print(f"\n{'=' * 60}")
     print("Summary")
     print(f"{'=' * 60}")
-    print(f"  {year}: {stats['total_tournaments']} tournaments, "
-          f"{stats['total_matches']} matches, {stats['total_skipped']} skipped")
+    for year, stats in summary:
+        print(
+            f"  {year}: {stats['total_tournaments']} tournaments, "
+            f"{stats['total_matches']} matches, {stats['total_skipped']} skipped"
+        )
 
 
 if __name__ == "__main__":
