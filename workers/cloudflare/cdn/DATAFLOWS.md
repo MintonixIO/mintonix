@@ -90,7 +90,7 @@ sequenceDiagram
 ```
 
 Objects live at `users/<uid>/<match_id>/{original.mp4, normalized.mp4,
-thumbnail.jpg, annotation.json, …}` (see SUPABASE.md). Access control is a
+thumbnail.jpg, annotation.json, …}` (see supabase/README.md). Access control is a
 **prefix check**, no DB lookup.
 
 ---

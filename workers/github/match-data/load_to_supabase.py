@@ -2,7 +2,7 @@
 """
 Load BWF scraped JSON into Supabase `matches` (match-centric pipeline schema).
 
-Canonical schema: repo root SUPABASE.md + migration
+Canonical schema: supabase/README.md + migration
 `20260712000000_init_match_pipeline.sql`.
 
 - One row per finished match on `matches` (no nations / players / match_players).

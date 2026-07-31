@@ -1,6 +1,7 @@
 """Stage control helpers + ops edge HTTP client.
 
-Keep STAGE_OUTPUTS in sync with supabase/functions/ops/stage_outputs.ts and SUPABASE.md.
+Keep STAGE_OUTPUTS in sync with supabase/functions/ops/stage_outputs.ts and
+ARCHITECTURE.md § One job contract / Stage artifacts.
 """
 
 from __future__ import annotations

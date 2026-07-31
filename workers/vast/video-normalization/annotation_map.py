@@ -1,6 +1,6 @@
 """Map annotation.json → valid_frames_config and validate simplified shapes.
 
-annotation.json (SUPABASE.md / annotate_and_ingest.py):
+annotation.json (supabase/README.md / annotate_and_ingest.py):
   {
     "court": {
       "corners": [[x,y]×4],                 // required for valid-frames

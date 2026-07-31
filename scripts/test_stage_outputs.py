@@ -18,7 +18,7 @@ if _SCRIPTS not in sys.path:
 import ops_stage as s  # noqa: E402
 
 
-# Golden fixture — keep in sync with SUPABASE.md + ops/stage_outputs.ts.
+# Golden fixture — keep in sync with supabase/README.md + ops/stage_outputs.ts.
 GOLDEN_STAGE_OUTPUTS = {
     "normalize": (
         "normalized.mp4",

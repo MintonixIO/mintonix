@@ -1,6 +1,7 @@
 /**
  * Pure stage ↔ artifact helpers for ops purge.
- * SSOT: contracts/stage_artifacts.json (mirrored in scripts/ops_stage.py).
+ * SSOT: ARCHITECTURE.md § One job contract / Stage artifacts
+ * (mirrored in scripts/ops_stage.py).
  *
  * No npm imports — unit-tested via `deno test supabase/functions/ops/stage_outputs_test.ts`.
  */

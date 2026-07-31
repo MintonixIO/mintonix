@@ -3,7 +3,7 @@
 The weekly scraper loads **finished BWF matches** into the shared product table
 `matches` defined by the pipeline migration
 (`supabase/migrations/20260712000000_init_match_pipeline.sql`). Full column
-semantics live in repo-root **SUPABASE.md**.
+semantics live in **[supabase/README.md](../../../supabase/README.md)**.
 
 There is **no** separate `nations` / `players` / `match_players` graph and no
 `match_key` column. Catalog identity is a content hash of the scraper's

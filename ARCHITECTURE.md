@@ -50,7 +50,7 @@ URLs out, and an HMAC-scoped callback.
 
 Every match, regardless of origin, converges to the same canonical form: **a
 row in `matches` + objects in B2 under that match's constructable prefix**
-(`bwf/<match_id>/` or `users/<uid>/<match_id>/`). Schema detail: **SUPABASE.md**.
+(`bwf/<match_id>/` or `users/<uid>/<match_id>/`). Schema detail: **supabase/README.md**.
 
 ### 2a. BWF broadcast footage ✅ (metadata) / 📐 (video ingest)
 
@@ -82,7 +82,7 @@ touches YouTube again.
 ### 2c. Court annotation & player labeling ✅ (inference) / 📐 (persistence)
 
 Before (or after) processing, the user annotates into a single B2 file
-`annotation.json` under the match prefix (shape: SUPABASE.md):
+`annotation.json` under the match prefix (shape: supabase/README.md):
 
 - **Court corners** — 4 points. Required for BWF valid-frame extraction and
   for the 3D analysis stage (homography). Optional scoreboard crops for BWF.
@@ -99,7 +99,7 @@ that materializes `annotation.json` under `bwf/<match_id>/`.
 
 ## 3. Storage layout (B2)
 
-Two namespaces, one shape (see SUPABASE.md for full layout):
+Two namespaces, one shape (see supabase/README.md for full layout):
 
 ```
 users/<uid>/<match_id>/            # user-owned; RLS = owner
@@ -117,7 +117,7 @@ bwf/<match_id>/                    # system-owned (BWF); readable to signed-in
 
 User-authored data is files under the match prefix via `cdn-access`
 (`users/<uid>/…` prefix rule + upload basename allowlist). `bwf/…` is
-unwritable by clients. Canonical shape is `annotation.json` (SUPABASE.md):
+unwritable by clients. Canonical shape is `annotation.json` (supabase/README.md):
 
 ```jsonc
 // annotation.json — court + labels (normalize valid-frames + analyze)
@@ -161,10 +161,22 @@ column): `interactive` (user-initiated) and `bulk` (backlog/scraper).
 ### One job contract for every stage ✅ (live wire format)
 
 Stages share one **flat** envelope style (not a nested generic `source`/`outputs`
-map). Fixtures live under `contracts/` (callback status + stage basenames).
+map). This section is the **SSOT for wire shapes and stage basenames** (callback
+bodies, B2 object names for purge/dispatch/ops). Live code mirrors it by hand:
+
+| Concern | TypeScript | Python |
+|---|---|---|
+| Stage → basenames, purge set | `supabase/functions/ops/stage_outputs.ts` | `scripts/ops_stage.py` (`STAGE_*`) |
+| Callback settle | `supabase/functions/jobs` (`success` → DB `complete`) | workers POST callback |
+
+There is no runtime `contracts/` package; a contract change must update this
+section **and** the mirrors (and any worker parser tests) together.
+
+#### Dispatcher → worker (normalize example)
+
+PyWorker may wrap as `{ input: env }`.
 
 ```jsonc
-// dispatcher → worker (normalize example; PyWorker may wrap as { input: env })
 {
   "request_id": "<job_id>",
   "input_url": "<presigned GET | YouTube URL>",
@@ -178,11 +190,59 @@ map). Fixtures live under `contracts/` (callback status + stage basenames).
   "callback_url": "https://<ref>.supabase.co/functions/v1/jobs/callback",
   "callback_token": "<HS256 JWT: job_id, match_id, stage, attempt; aud=jobs-callback; 12h>"
 }
-// worker → callback (Bearer callback_token)
-{ "request_id": "<job_id>", "status": "success" | "failed",
-  "error?": "…", /* + stage probe fields on success */ }
-// jobs maps status success → DB jobs.status complete
 ```
+
+#### Worker → `jobs/callback` (Bearer `callback_token`)
+
+Wire status is **`success` | `failed`**. The jobs function maps `success` → DB
+`jobs.status = complete` (and advances/requeues); `failed` → DB `failed`.
+
+**Success** (optional stage probe fields allowed on success):
+
+```json
+{
+  "request_id": "00000000-0000-4000-8000-000000000001",
+  "status": "success",
+  "frame_count": 1,
+  "elapsed_sec": 0.1
+}
+```
+
+**Failed:**
+
+```json
+{
+  "request_id": "00000000-0000-4000-8000-000000000001",
+  "status": "failed",
+  "error": "example failure"
+}
+```
+
+| Wire (`callback` body) | Meaning | DB after settle |
+|---|---|---|
+| `success` | Worker → jobs/callback success | `complete` |
+| `failed` | Worker → jobs/callback failure | `failed` |
+
+#### Stage artifacts (B2 basenames)
+
+Canonical stage → object basenames for purge, dispatch completeness probes, and
+ops. Live names first; legacy names retained for older buckets.
+
+**Stage order:** `normalize` → `detect` → `analyze`
+
+| Stage | Outputs (delete when regressing *to* this stage or earlier) | Primary (completeness probe) |
+|---|---|---|
+| `normalize` | `normalized.mp4`, `thumbnail.jpg`, `frame_ranges.csv` (live BWF), plus legacy/deferred: `valid.mp4`, `frame_manifest.csv`, `scores.csv` | `normalized.mp4` |
+| `detect` | `detections.json` | `detections.json` |
+| `analyze` | `analysis.json` | `analysis.json` |
+
+**Never purge on stage regress** (`keep_on_regress`):
+
+- `original.mp4`, `original.mov`, `original.mkv`
+- `annotation.json`
+
+Regression *to* stage S deletes S outputs **and** every later stage's outputs.
+`outputsToPurge` / `outputs_to_purge` implement that set from the map above.
 
 - Workers hold no credentials; the callback token is the only authorization.
   Single-use is state-machine based (`processing` + attempt/stage CAS), not a
@@ -225,7 +285,7 @@ BWF vs user is **not** a different pipeline — it's the same chain. BWF may
 carry a thin `valid_frames_config` from `annotation.json` (court corners +
 player names; scoreboard crops only if stored) and roster names on
 `matches.team*_player*`; the worker fills missing scoreboard geometry after
-probe. User jobs typically normalize without valid-frames. See SUPABASE.md.
+probe. User jobs typically normalize without valid-frames. See supabase/README.md.
 
 ## 5. Supabase: auth, tables, RLS
 
@@ -239,7 +299,7 @@ inside edge functions and the match-data loader.
 
 ### Tables
 
-**Canonical schema: SUPABASE.md** (migration
+**Canonical schema: supabase/README.md** (migration
 `supabase/migrations/20260712000000_init_match_pipeline.sql`).
 
 ```
@@ -252,7 +312,7 @@ jobs      one pipeline run per match; stage advances in place
 
 No `videos`, `video_assets`, or players graph. B2 paths are constructable;
 court geometry + labels live in `annotation.json` under the match prefix (§3 /
-SUPABASE.md). Clients never write the DB — user files go through `cdn-access`;
+supabase/README.md). Clients never write the DB — user files go through `cdn-access`;
 DB writes are service_role via `ingest_match` / `complete_job`.
 
 ### RLS sketch
@@ -295,7 +355,8 @@ mintonix/
 ├── packages/
 │   └── shared/                types + schemas 📐
 ├── supabase/
-│   ├── migrations/            match + jobs pipeline (SUPABASE.md) ✅
+│   ├── README.md              schema + RPCs + edge functions SSOT ✅
+│   ├── migrations/            match + jobs pipeline ✅
 │   ├── config.toml
 │   └── functions/
 │       ├── cdn-access/        ✅ delivery tokens + upload presign
@@ -304,11 +365,12 @@ mintonix/
 │       │                         / advance stage in place)
 │       └── ops/               ✅ /set-stage (manual stage + optional B2 purge)
 ├── workers/
-│   ├── cloudflare/cdn/        ✅ B2 delivery + /presign control plane
-│   ├── github/match-data/     ✅ weekly scrape → Supabase
+│   ├── README.md              worker index
+│   ├── cloudflare/cdn/        ✅ B2 delivery + /presign (README + DATAFLOWS)
+│   ├── github/match-data/     ✅ weekly scrape → Supabase (README + schema.md)
 │   └── vast/
-│       ├── video-normalization/  ✅ + valid-frames extraction
-│       ├── video-det/            🚧 detect stage (server/detect/pose); STAGES.detect wired
+│       ├── video-normalization/  ✅ README (normalize + valid-frames)
+│       ├── video-det/            🚧 README + ARCHITECTURE (detect)
 │       └── analysis/             📐 3D + metrics
 └── .github/workflows/
 ```
@@ -318,7 +380,7 @@ Pipeline RPCs (`ingest_match`, `dispatch_next_job`, `complete_job`,
 policy, RPCs make the writes atomic (a match that needs processing never
 exists without its queue message; stage advance re-queues the same job row).
 Ops is service-token only (same `PIPELINE_SERVICE_TOKEN` as ingest/dispatch)
-for operator stage control — see SUPABASE.md.
+for operator stage control — see supabase/README.md.
 
 ## 8. CI/CD
 
@@ -346,10 +408,11 @@ callback body, `court_annotation.json` shape) cross pipelines. Two mitigations:
 
 - Every workflow that depends on `packages/shared` includes
   `packages/shared/**` in its `paths:` filter (the silent-skip monorepo trap).
-- Python workers can't import zod schemas, so contracts are pinned by
-  **fixture files** (`packages/shared/fixtures/*.json`): canonical envelopes /
-  callbacks, validated against zod on the TS side and against each worker's
-  parser in its own tests. A contract change turns every affected pipeline red.
+- Python workers can't import zod schemas, so wire contracts are pinned in
+  **ARCHITECTURE.md § One job contract** (envelope, callback bodies, stage
+  basenames) and mirrored in `stage_outputs.ts` / `ops_stage.py` / worker
+  parser tests. A contract change must update the doc and every affected
+  pipeline test.
 
 ### The workflows
 

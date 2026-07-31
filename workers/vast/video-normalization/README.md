@@ -1,10 +1,24 @@
-# video-normalization (vast.ai PyWorker)
+# video-normalization (vast.ai — normalize stage)
 
-Normalizes arbitrary source video to a consistent delivery spec:
-**≤1920×1080, ≤30 fps, H.264 / yuv420p, AAC audio** — GPU-only
-(NVDEC decode → `scale_cuda` → `h264_nvenc`). There is no CPU encode path: a
-job that lands on a host without a usable GPU fails fast and the queue retries
-it on a healthy one (remux-copy of already-conformant sources needs no GPU).
+GPU worker for pipeline stage **`normalize`**: download source (presigned or
+YouTube), produce **≤1920×1080, ≤30 fps, H.264 / yuv420p, AAC**, thumbnail, and
+optional BWF valid-frames cut + `frame_ranges.csv`. Callback Supabase
+`jobs/callback`.
+
+Workers hold **no** B2 or Supabase service credentials — only presigned URLs
+and a single-use `callback_token`.
+
+| | |
+|---|---|
+| **Stage** | `normalize` (first GPU stage; advances to `detect`) |
+| **In** | original / YouTube URL; BWF: raw `annotation` → worker maps VF config |
+| **Out** | `normalized.mp4`, `thumbnail.jpg`; BWF: `frame_ranges.csv`; YT: `original.*` |
+| **HTTP** | `POST /normalize/sync` |
+| **Dispatcher** | `supabase/functions/jobs` → `STAGES.normalize` |
+
+Encode path is **GPU-only** (NVDEC → `scale_cuda` → `h264_nvenc`). A job on a
+host without a usable GPU fails fast and the queue retries (remux-copy of
+already-conformant sources needs no GPU).
 
 Deployed on **vast.ai serverless** using the
 [PyWorker](https://github.com/vast-ai/pyworker) model.
@@ -254,3 +268,11 @@ no audio.
 
 Full benchmarks (4090 vs 5080, segment-parallel ~1.9×, the “85 s floor”) are in
 [`FINDINGS.md`](./FINDINGS.md).
+
+## See also
+
+- [FINDINGS.md](FINDINGS.md) — encode / VF notes
+- [../video-det/README.md](../video-det/README.md) — next stage (`detect`)
+- [../../cloudflare/cdn/README.md](../../cloudflare/cdn/README.md) — B2 `/presign`
+- [../../../ARCHITECTURE.md](../../../ARCHITECTURE.md) — job contract / stages
+- [../../../supabase/README.md](../../../supabase/README.md) — jobs / annotation layout

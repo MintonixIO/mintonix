@@ -185,3 +185,11 @@ If it stays `MISS`, fall back to the Cache-API + full-object recipe (store a ful
   dashboard / cache API) or version the key (`.../v2/normalized.mp4`).
 - Delivery is token-gated; **writes** go through `/presign` (orchestrator
   service token → presigned PUT/DELETE/MULTIPART for workers and clients).
+
+## See also
+
+- [DATAFLOWS.md](DATAFLOWS.md) — request paths in detail
+- [DEPLOYMENT.md](DEPLOYMENT.md) — env / deploy checklist
+- [../../../ARCHITECTURE.md](../../../ARCHITECTURE.md) — trust model
+- [../../../supabase/README.md](../../../supabase/README.md) — `cdn-access` + key layout
+- [../../vast/video-normalization/README.md](../../vast/video-normalization/README.md) — first consumer of multipart presigns

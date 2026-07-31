@@ -1,8 +1,10 @@
-# Supabase schema
+# Supabase (schema, RPCs, edge functions)
 
 Canonical data model for Mintonix match catalog + video processing.
-Complements `ARCHITECTURE.md` (system topology, trust model, workers).
-Where the two disagree on table shape, **this file wins** for Postgres.
+Lives next to `migrations/` and `functions/`. Complements root
+[`ARCHITECTURE.md`](../ARCHITECTURE.md) (system topology, trust model,
+workers). Where the two disagree on table shape, **this file wins** for
+Postgres.
 
 Status: **implemented** — squashed init
 `supabase/migrations/20260712000000_init_match_pipeline.sql` (tables + core
@@ -615,8 +617,8 @@ match `ready`; ops enqueue of `analyze` terminal-fails). Optional
 `VAST_DETECT_ENDPOINT_NAME` for the video-det vast endpoint (falls back to
 `VAST_ENDPOINT_NAME`). User confirm does not HEAD-check B2 before enqueue
 (empty keys fail at normalize). Worker callback wire status is
-`success`|`failed` (see `contracts/callback.*.json`); DB stores
-`complete`|`failed`.
+`success`|`failed` (see [`ARCHITECTURE.md`](../ARCHITECTURE.md) § One job
+contract); DB stores `complete`|`failed`.
 
 ---
 
