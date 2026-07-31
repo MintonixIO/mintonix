@@ -1,0 +1,32 @@
+{
+  "description": "Canonical stage → B2 basenames for purge, dispatch, and ops. Live names first; legacy names retained for older buckets.",
+  "stage_order": ["normalize", "detect", "analyze"],
+  "outputs": {
+    "normalize": [
+      "normalized.mp4",
+      "thumbnail.jpg",
+      "frame_ranges.csv",
+      "valid.mp4",
+      "frame_manifest.csv",
+      "scores.csv"
+    ],
+    "detect": ["detections.json"],
+    "analyze": ["analysis.json"]
+  },
+  "primary": {
+    "normalize": "normalized.mp4",
+    "detect": "detections.json",
+    "analyze": "analysis.json"
+  },
+  "keep_on_regress": [
+    "original.mp4",
+    "original.mov",
+    "original.mkv",
+    "annotation.json"
+  ],
+  "callback_wire_status": {
+    "success": "Worker → jobs/callback success",
+    "failed": "Worker → jobs/callback failure",
+    "db_complete": "jobs.row status after successful settle"
+  }
+}
