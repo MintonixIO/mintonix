@@ -1,16 +1,16 @@
 import { BwfErrorState } from "@/components/bwf/error-state";
 import { H2hView } from "@/components/bwf/h2h-view";
-import { getCatalogPlayers, getH2h } from "@/lib/bwf/catalog";
+import { getDirectoryPlayers, getH2h } from "@/lib/bwf/catalog";
 import { catalogUserError } from "@/lib/bwf/errors";
 import type {
   CatalogMatch,
-  CatalogPlayer,
+  DirectoryPlayer,
   H2hPickerPlayer,
 } from "@/lib/bwf/types";
 
 export const revalidate = 300;
 
-function toPicker(p: CatalogPlayer): H2hPickerPlayer {
+function toPicker(p: DirectoryPlayer): H2hPickerPlayer {
   return {
     id: p.id,
     name: p.name,
@@ -29,8 +29,8 @@ export default async function BwfH2hPage({
   let aId = "";
   let bId = "";
   let h2h: {
-    a: CatalogPlayer | null;
-    b: CatalogPlayer | null;
+    a: DirectoryPlayer | null;
+    b: DirectoryPlayer | null;
     meetings: CatalogMatch[];
     aWins: number;
     bWins: number;
@@ -39,19 +39,19 @@ export default async function BwfH2hPage({
   let empty = false;
 
   try {
-    const players = await getCatalogPlayers();
-    if (players.length === 0) {
+    const directory = await getDirectoryPlayers();
+    if (directory.length === 0) {
       empty = true;
     } else {
-      picker = players.map(toPicker);
-      const defaultA = players[0].id;
+      picker = directory.map(toPicker);
+      const defaultA = directory[0].id;
       const defaultB =
-        players.find((p) => p.id !== defaultA)?.id ?? defaultA;
-      aId = sp.a && players.some((p) => p.id === sp.a) ? sp.a : defaultA;
+        directory.find((p) => p.id !== defaultA)?.id ?? defaultA;
+      aId = sp.a && directory.some((p) => p.id === sp.a) ? sp.a : defaultA;
       bId =
-        sp.b && players.some((p) => p.id === sp.b) && sp.b !== aId
+        sp.b && directory.some((p) => p.id === sp.b) && sp.b !== aId
           ? sp.b
-          : players.find((p) => p.id !== aId)?.id ?? defaultB;
+          : directory.find((p) => p.id !== aId)?.id ?? defaultB;
       h2h = await getH2h(aId, bId);
     }
   } catch (err) {

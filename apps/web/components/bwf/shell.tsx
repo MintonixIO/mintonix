@@ -13,7 +13,11 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import type { SearchHit } from "@/lib/bwf/types";
+import {
+  BWF_SEARCH_LIMIT,
+  BWF_SEARCH_MAX_Q,
+  type SearchHit,
+} from "@/lib/bwf/types";
 import { cn } from "@/lib/utils";
 
 function viewFromPath(pathname: string) {
@@ -50,13 +54,10 @@ export function BwfShell({
   const localResults = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return [];
+    // Match live search fields: player/event name is `label` (not sub).
     return searchIndex
-      .filter(
-        (h) =>
-          h.label.toLowerCase().includes(q) ||
-          h.sub.toLowerCase().includes(q),
-      )
-      .slice(0, 8);
+      .filter((h) => h.label.toLowerCase().includes(q))
+      .slice(0, BWF_SEARCH_LIMIT);
   }, [query, searchIndex]);
 
   useEffect(() => {
@@ -67,7 +68,7 @@ export function BwfShell({
     const t = setTimeout(async () => {
       try {
         const res = await fetch(
-          `/api/bwf/search?q=${encodeURIComponent(q.slice(0, 100))}`,
+          `/api/bwf/search?q=${encodeURIComponent(q.slice(0, BWF_SEARCH_MAX_Q))}`,
           { signal: controller.signal },
         );
         if (!res.ok) return;

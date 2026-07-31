@@ -277,16 +277,18 @@ export function opponentNames(m: CatalogMatch, playerId: string): string[] {
 
 export function displayDate(m: CatalogMatch): string {
   if (m.matchDate) {
-    try {
-      return new Date(m.matchDate + "T00:00:00Z").toLocaleDateString("en-GB", {
-        day: "2-digit",
-        month: "short",
-        year: "numeric",
-        timeZone: "UTC",
-      });
-    } catch {
-      return m.matchDate;
+    const d = new Date(m.matchDate + "T00:00:00Z");
+    if (Number.isNaN(d.getTime())) {
+      // Invalid calendar date — fall through rather than printing "Invalid Date".
+      if (m.year) return String(m.year);
+      return "";
     }
+    return d.toLocaleDateString("en-GB", {
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+      timeZone: "UTC",
+    });
   }
   if (m.year) return String(m.year);
   return "";

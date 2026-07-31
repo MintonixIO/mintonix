@@ -13,7 +13,8 @@ function requireUrl(): string {
 
 /**
  * Server-only Supabase client using the publishable/anon key.
- * Preferred for public BWF catalog reads (RLS: owner_id IS NULL).
+ * Not used by the BWF catalog (service-role only; anon SELECT on system
+ * matches is revoked). Kept for other app surfaces that may need anon.
  */
 export function createAnonClient(): SupabaseClient {
   const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
@@ -30,8 +31,9 @@ export function createAnonClient(): SupabaseClient {
 }
 
 /**
- * Server-only service role client. Bypasses RLS — reserve for admin/ops
- * and catalog fallback when anon RLS is not deployed (e.g. PROD pre-cutover).
+ * Server-only service role client. Bypasses RLS.
+ * Used for BWF catalog loads (private server path) and admin/ops.
+ * Callers must still filter `owner_id IS NULL` for catalog reads.
  */
 export function createServiceClient(): SupabaseClient {
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY || "";

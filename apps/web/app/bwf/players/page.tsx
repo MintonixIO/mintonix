@@ -1,17 +1,17 @@
 import { BwfErrorState } from "@/components/bwf/error-state";
 import { PlayersView } from "@/components/bwf/players-view";
-import { getCatalogPlayers } from "@/lib/bwf/catalog";
+import { getDirectoryPlayers } from "@/lib/bwf/catalog";
 import { catalogUserError } from "@/lib/bwf/errors";
-import type { CatalogPlayer } from "@/lib/bwf/types";
+import type { DirectoryPlayer } from "@/lib/bwf/types";
 
 export const revalidate = 300;
 
 export default async function BwfPlayersPage() {
-  let players: CatalogPlayer[] | null = null;
+  let players: DirectoryPlayer[] | null = null;
   let error: string | null = null;
 
   try {
-    players = await getCatalogPlayers();
+    players = await getDirectoryPlayers();
   } catch (err) {
     error = catalogUserError(err, "bwf/players");
   }

@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { BwfShell } from "@/components/bwf/shell";
-import { getCatalogPlayers, getCatalogStats } from "@/lib/bwf/catalog";
+import { getStaticSearchIndex } from "@/lib/bwf/catalog";
+import { catalogUserError } from "@/lib/bwf/errors";
 import type { SearchHit } from "@/lib/bwf/types";
 
 export const metadata: Metadata = {
@@ -18,26 +19,9 @@ export default async function Layout({
 }) {
   let searchIndex: SearchHit[] = [];
   try {
-    const [players, stats] = await Promise.all([
-      getCatalogPlayers(),
-      getCatalogStats(),
-    ]);
-    const playerHits: SearchHit[] = players.slice(0, 80).map((p) => ({
-      kind: "Player",
-      id: p.id,
-      label: p.name,
-      sub: `${p.matches} matches · ${p.winRate}%${p.disc ? ` · ${p.disc}` : ""}`,
-      href: `/bwf/players/${p.id}`,
-    }));
-    const eventHits: SearchHit[] = stats.events.slice(0, 40).map((e) => ({
-      kind: "Tournament",
-      id: e.event,
-      label: e.event,
-      sub: `${e.count} matches`,
-      href: `/bwf/matches?event=${encodeURIComponent(e.event)}`,
-    }));
-    searchIndex = [...playerHits, ...eventHits];
-  } catch {
+    searchIndex = await getStaticSearchIndex();
+  } catch (err) {
+    catalogUserError(err, "bwf/layout-search");
     searchIndex = [];
   }
 

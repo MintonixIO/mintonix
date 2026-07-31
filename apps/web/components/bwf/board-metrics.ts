@@ -5,8 +5,9 @@ import {
   Trophy,
   Video,
 } from "lucide-react";
-import type { CatalogPlayer } from "./types";
+import type { DirectoryPlayer } from "@/lib/bwf/types";
 
+/** Leaderboard metric UI config (presentation-only; not domain logic). */
 export const BOARD_METRICS = [
   {
     key: "winRate",
@@ -15,7 +16,7 @@ export const BOARD_METRICS = [
     unit: "%",
     icon: Percent,
     color: "var(--success-500)",
-    get: (p: CatalogPlayer) => p.winRate,
+    get: (p: DirectoryPlayer) => p.winRate,
   },
   {
     key: "wins",
@@ -24,7 +25,7 @@ export const BOARD_METRICS = [
     unit: "",
     icon: Trophy,
     color: "var(--warning-400, #fcd34d)",
-    get: (p: CatalogPlayer) => p.wins,
+    get: (p: DirectoryPlayer) => p.wins,
   },
   {
     key: "matches",
@@ -33,7 +34,7 @@ export const BOARD_METRICS = [
     unit: "",
     icon: Swords,
     color: "var(--accent)",
-    get: (p: CatalogPlayer) => p.matches,
+    get: (p: DirectoryPlayer) => p.matches,
   },
   {
     key: "threeGames",
@@ -42,7 +43,7 @@ export const BOARD_METRICS = [
     unit: "",
     icon: Clapperboard,
     color: "var(--viz-5, #b07bff)",
-    get: (p: CatalogPlayer) => p.threeGames,
+    get: (p: DirectoryPlayer) => p.threeGames,
   },
   {
     key: "withVideo",
@@ -51,7 +52,7 @@ export const BOARD_METRICS = [
     unit: "",
     icon: Video,
     color: "var(--danger-500)",
-    get: (p: CatalogPlayer) => p.withVideo,
+    get: (p: DirectoryPlayer) => p.withVideo,
   },
 ] as const;
 

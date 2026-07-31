@@ -8,10 +8,25 @@ fetches each tournament's wikitext via the MediaWiki Action API, parses bracket
 templates (NTeamBracket-Tennis3) into structured Match records, and writes a
 per-year JSON file (bwf_<year>_results.json) next to this script.
 
+Disk cache (MediaWiki JSON under /tmp/mintonix_cache):
+  - Default TTL: 24 hours (stale entries are re-fetched).
+  - --refresh: ignore existing cache entries (always re-fetch, still write).
+  - --no-cache: neither read nor write the disk cache.
+
+Empty / partial seasons:
+  - Exit code 1 when a season yields 0 tournaments (unless --allow-empty).
+  - Never overwrite an existing bwf_<year>_results.json with empty output when
+    failing closed (0 tournaments and not --allow-empty).
+  - Partial success (≥1 tournament, some skipped): write results, warn loudly
+    with skip counts, exit 0.
+
 Usage:
   python3 scraper.py                          # current year (from a time server)
   python3 scraper.py --year 2024              # one historical season
   python3 scraper.py --from-year 2018 --to-year 2025
+  python3 scraper.py --year 2024 --refresh    # force re-fetch (bypass cache)
+  python3 scraper.py --year 2024 --no-cache   # no disk cache read/write
+  python3 scraper.py --year 2010 --allow-empty  # do not fail on 0 tournaments
   ./load_historical_years.sh                  # scrape + load a year range to Supabase
 """
 
@@ -19,6 +34,7 @@ import hashlib
 import json
 import os
 import re
+import sys
 import time
 import urllib.parse
 import urllib.request
@@ -26,7 +42,12 @@ from datetime import datetime, timezone
 
 USER_AGENT = "MintonixScraper/0.1 (research)"
 CACHE_DIR = "/tmp/mintonix_cache"
+CACHE_TTL_SEC = 24 * 3600  # 24h default; use --refresh / --no-cache to override
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Set by main() from CLI flags.
+_cache_refresh = False
+_cache_disabled = False
 
 # Internet time sources, tried in order. Each returns an ISO-8601 UTC datetime.
 TIME_SERVERS = [
@@ -60,13 +81,22 @@ def get_current_year():
 # ============================ Fetching ============================
 
 def fetch_wikitext(page_title):
-    """Fetch wikitext for a Wikipedia page via Action API. Caches locally."""
+    """Fetch wikitext for a Wikipedia page via Action API.
+
+    Disk cache under CACHE_DIR:
+      - Hit when file exists, age < CACHE_TTL_SEC, and not --refresh/--no-cache.
+      - Written after a successful fetch unless --no-cache.
+    """
     safe = page_title.replace("/", "_").replace(" ", "_")
     cache_path = os.path.join(CACHE_DIR, safe + ".json")
-    if os.path.exists(cache_path):
-        with open(cache_path) as f:
-            return json.load(f)
-    os.makedirs(CACHE_DIR, exist_ok=True)
+    if not _cache_disabled and not _cache_refresh and os.path.exists(cache_path):
+        age = time.time() - os.path.getmtime(cache_path)
+        if age < CACHE_TTL_SEC:
+            with open(cache_path) as f:
+                return json.load(f)
+        # Stale entry — fall through to re-fetch.
+    if not _cache_disabled:
+        os.makedirs(CACHE_DIR, exist_ok=True)
     params = urllib.parse.urlencode({
         "action": "parse",
         "page": page_title,
@@ -82,8 +112,9 @@ def fetch_wikitext(page_title):
         try:
             with urllib.request.urlopen(req, timeout=60) as r:
                 data = json.load(r)
-            with open(cache_path, "w") as f:
-                json.dump(data, f)
+            if not _cache_disabled:
+                with open(cache_path, "w") as f:
+                    json.dump(data, f)
             time.sleep(3)  # politeness
             return data
         except urllib.error.HTTPError as e:
@@ -719,8 +750,20 @@ def enumerate_tournaments(season_year):
 
 # ============================ Main ============================
 
-def scrape_season(season):
-    """Scrape a single season year. Returns stats dict."""
+def _write_season_json(out_path: str, output: dict) -> None:
+    """Atomic write: temp file then os.replace so a crash cannot leave a half file."""
+    tmp_path = f"{out_path}.tmp"
+    with open(tmp_path, "w") as f:
+        json.dump(output, f, indent=2, ensure_ascii=False)
+    os.replace(tmp_path, out_path)
+
+
+def scrape_season(season, allow_empty=False):
+    """Scrape a single season year. Returns stats dict.
+
+    When total_tournaments == 0 and allow_empty is False, does **not** write
+    bwf_<year>_results.json (avoids clobbering a good prior scrape).
+    """
     print(f"\n{'=' * 60}")
     print(f"Scraping {season}")
     print(f"{'=' * 60}")
@@ -768,16 +811,41 @@ def scrape_season(season):
     }
 
     out_path = os.path.join(PROJECT_DIR, f"bwf_{season}_results.json")
-    with open(out_path, "w") as f:
-        json.dump(output, f, indent=2, ensure_ascii=False)
+    n_tournaments = output["stats"]["total_tournaments"]
+    n_skipped = output["stats"]["total_skipped"]
+
+    if n_tournaments == 0 and not allow_empty:
+        print(
+            f"\nWARNING: not writing {out_path} — 0 tournaments scraped "
+            f"(existing file left untouched; pass --allow-empty to write empty)",
+            file=sys.stderr,
+        )
+        print(
+            f"Tournaments: 0, Matches: 0, Skipped: {n_skipped}"
+        )
+        return output["stats"]
+
+    _write_season_json(out_path, output)
     print(f"\nSaved to {out_path}")
-    print(f"Tournaments: {output['stats']['total_tournaments']}, "
-          f"Matches: {total_matches}, Skipped: {output['stats']['total_skipped']}")
+    print(
+        f"Tournaments: {n_tournaments}, "
+        f"Matches: {total_matches}, Skipped: {n_skipped}"
+    )
+    if n_tournaments > 0 and n_skipped > 0:
+        print(
+            f"\nWARNING: partial season {season}: "
+            f"{n_tournaments} tournament(s) ok, {n_skipped} skipped "
+            f"({', '.join(s.get('page', '?') for s in output['skipped'][:8])}"
+            f"{'…' if n_skipped > 8 else ''})",
+            file=sys.stderr,
+        )
     return output["stats"]
 
 
 def main(argv=None):
     import argparse
+
+    global _cache_refresh, _cache_disabled
 
     parser = argparse.ArgumentParser(
         description="Scrape BWF World Tour seasons from Wikipedia into bwf_<year>_results.json"
@@ -802,7 +870,29 @@ def main(argv=None):
         metavar="YYYY",
         help="Inclusive end of a year range (use with --from-year).",
     )
+    parser.add_argument(
+        "--refresh",
+        action="store_true",
+        help="Ignore existing disk cache entries (re-fetch; still write cache).",
+    )
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Do not read or write the disk cache under /tmp/mintonix_cache.",
+    )
+    parser.add_argument(
+        "--allow-empty",
+        action="store_true",
+        help="Do not exit with error when a season yields 0 tournaments; "
+        "also allow writing empty bwf_<year>_results.json.",
+    )
     args = parser.parse_args(argv)
+
+    if args.refresh and args.no_cache:
+        parser.error("--refresh and --no-cache are mutually exclusive")
+
+    _cache_refresh = bool(args.refresh)
+    _cache_disabled = bool(args.no_cache)
 
     years: list[int] = []
     if args.years:
@@ -825,9 +915,17 @@ def main(argv=None):
             ordered.append(y)
 
     summary = []
+    empty_years = []
+    partial_years = []
     for year in ordered:
-        stats = scrape_season(year)
+        stats = scrape_season(year, allow_empty=args.allow_empty)
         summary.append((year, stats))
+        n_t = stats.get("total_tournaments", 0)
+        n_s = stats.get("total_skipped", 0)
+        if n_t == 0:
+            empty_years.append(year)
+        elif n_s > 0:
+            partial_years.append((year, n_t, n_s))
 
     print(f"\n{'=' * 60}")
     print("Summary")
@@ -837,6 +935,26 @@ def main(argv=None):
             f"  {year}: {stats['total_tournaments']} tournaments, "
             f"{stats['total_matches']} matches, {stats['total_skipped']} skipped"
         )
+
+    if partial_years:
+        print(
+            "\nWARNING: partial season(s) (exit 0 — at least one tournament ok):",
+            file=sys.stderr,
+        )
+        for year, n_t, n_s in partial_years:
+            print(
+                f"  {year}: {n_t} tournament(s) succeeded, {n_s} skipped",
+                file=sys.stderr,
+            )
+
+    if empty_years and not args.allow_empty:
+        print(
+            f"\nERROR: season(s) yielded 0 tournaments: "
+            f"{', '.join(str(y) for y in empty_years)} "
+            f"(pass --allow-empty to override; existing JSON not overwritten)",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
 
 if __name__ == "__main__":

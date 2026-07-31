@@ -6,18 +6,23 @@ import { useMemo, useState } from "react";
 import { Avatar } from "@/components/ui/avatar";
 import { Input } from "@/components/ui/input";
 import { Tabs } from "@/components/ui/tabs";
-import { BOARD_METRICS } from "@/lib/bwf/board-metrics";
-import type { CatalogPlayer, DirMode, Disc } from "@/lib/bwf/types";
+import {
+  BOARD_METRICS,
+  type BoardMetricKey,
+} from "@/components/bwf/board-metrics";
+import type { DirectoryPlayer, Disc } from "@/lib/bwf/types";
 import { DISCS } from "@/lib/bwf/types";
 import { cn } from "@/lib/utils";
 
-const PAGE_SIZE = 60;
-const RATE_METRICS = new Set(["winRate"]);
+type DirMode = "profiles" | "boards";
 
-export function PlayersView({ players }: { players: CatalogPlayer[] }) {
+const PAGE_SIZE = 60;
+const RATE_METRICS = new Set<BoardMetricKey>(["winRate"]);
+
+export function PlayersView({ players }: { players: DirectoryPlayer[] }) {
   const [disc, setDisc] = useState<"all" | Disc>("all");
   const [dirMode, setDirMode] = useState<DirMode>("profiles");
-  const [boardMetric, setBoardMetric] = useState<string>("winRate");
+  const [boardMetric, setBoardMetric] = useState<BoardMetricKey>("winRate");
   const [q, setQ] = useState("");
   const [page, setPage] = useState(1);
 
@@ -79,7 +84,7 @@ export function PlayersView({ players }: { players: CatalogPlayer[] }) {
         </h1>
         <p className="mt-[7px] max-w-[60ch] text-[14.5px] leading-[1.55] text-[var(--text-secondary)]">
           Every player name from the BWF catalog, rolled up into wins, losses,
-          form, and rivalries computed from real match rows.
+          and leaderboard metrics computed from real match rows.
         </p>
       </div>
 

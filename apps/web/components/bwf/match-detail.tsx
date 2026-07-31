@@ -9,22 +9,18 @@ import {
 } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
 import {
+  BWF_STATUS_LABEL_LONG,
+  DISC_LABEL,
   displayDate,
   formatDuration,
   formatScoreLine,
   formatTeam,
   parseYoutubeUrl,
+  playerImageUrl,
+  type CatalogMatch,
 } from "@/lib/bwf/data";
-import { playerImageUrl } from "@/lib/bwf/player-image";
-import { PA, PB, DISC_LABEL, type CatalogMatch } from "@/lib/bwf/types";
+import { PA, PB } from "@/components/bwf/tokens";
 import { cn } from "@/lib/utils";
-
-const STATUS_LABEL: Record<string, string> = {
-  pending: "Queued for analysis",
-  processing: "Analysis in progress",
-  ready: "Analysis ready",
-  failed: "Analysis failed",
-};
 
 export function MatchDetail({ m }: { m: CatalogMatch }) {
   const duration = formatDuration(m.durationSec);
@@ -167,7 +163,7 @@ export function MatchDetail({ m }: { m: CatalogMatch }) {
 
       <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         {[
-          { k: "Status", v: STATUS_LABEL[m.status] ?? m.status },
+          { k: "Status", v: BWF_STATUS_LABEL_LONG[m.status] ?? m.status },
           { k: "Duration", v: duration ?? "—" },
           {
             k: "Video",

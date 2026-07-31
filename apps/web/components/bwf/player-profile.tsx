@@ -1,13 +1,7 @@
 import Link from "next/link";
-import { ArrowLeft, Swords, Video } from "lucide-react";
+import { ArrowLeft, Swords } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
-import {
-  displayDate,
-  formatScoreLine,
-  formatTeam,
-  isAllowlistedYoutubeUrl,
-  playerWon,
-} from "@/lib/bwf/data";
+import { MatchRow } from "@/components/bwf/match-card";
 import type { CatalogMatch, CatalogPlayer } from "@/lib/bwf/types";
 import { DISC_LABEL } from "@/lib/bwf/types";
 import { cn } from "@/lib/utils";
@@ -226,48 +220,14 @@ export function PlayerProfile({
               No matches found for this player.
             </div>
           ) : (
-            matches.map((m) => {
-              const won = playerWon(m, profile.id);
-              const opp =
-                m.team1Ids.includes(profile.id)
-                  ? formatTeam(m.team2)
-                  : formatTeam(m.team1);
-              return (
-                <Link
-                  key={m.id}
-                  href={`/bwf/matches/${m.id}`}
-                  className="flex items-center gap-3 rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-2)] px-3 py-2.5 hover:border-[var(--border)]"
-                >
-                  <span
-                    className={cn(
-                      "inline-flex h-6 w-6 items-center justify-center rounded-md font-mono text-[10px] font-semibold",
-                      won === true
-                        ? "bg-[rgba(45,212,167,0.16)] text-[var(--success-500)]"
-                        : won === false
-                          ? "bg-[rgba(244,81,92,0.14)] text-[var(--danger-500)]"
-                          : "bg-[var(--surface-3)] text-[var(--text-muted)]",
-                    )}
-                  >
-                    {won === true ? "W" : won === false ? "L" : "—"}
-                  </span>
-                  <span className="min-w-0 flex-1 truncate text-[13px] text-[var(--text-strong)]">
-                    vs {opp}
-                  </span>
-                  <span className="hidden font-mono text-[11px] text-[var(--text-muted)] sm:inline">
-                    {formatScoreLine(m.games)}
-                  </span>
-                  <span className="hidden max-w-[160px] truncate font-mono text-[11px] text-[var(--text-muted)] md:inline">
-                    {m.event}
-                  </span>
-                  <span className="font-mono text-[11px] text-[var(--text-faint)]">
-                    {displayDate(m) || m.round}
-                  </span>
-                  {isAllowlistedYoutubeUrl(m.sourceUrl) ? (
-                    <Video className="h-3.5 w-3.5 shrink-0 text-[var(--danger-500)]" />
-                  ) : null}
-                </Link>
-              );
-            })
+            matches.map((m) => (
+              <MatchRow
+                key={m.id}
+                m={m}
+                highlightPlayerId={profile.id}
+                outcomeMode="wl"
+              />
+            ))
           )}
         </div>
       </div>

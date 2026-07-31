@@ -4,6 +4,7 @@ import {
   cleanPlayerName,
   computeGames,
   computeWinner,
+  displayDate,
   isComeback,
   mapDbMatch,
   parseTournament,
@@ -178,5 +179,27 @@ describe("computeGames", () => {
         g3_t2: null,
       }),
     ).toEqual([{ t1: 21, t2: 15 }]);
+  });
+});
+
+describe("displayDate", () => {
+  it("formats valid matchDate in en-GB UTC", () => {
+    const m = mapDbMatch(row({ id: "d1", match_date: "2026-03-15" }));
+    m.year = null;
+    expect(displayDate(m)).toMatch(/15.*Mar.*2026/i);
+  });
+
+  it("returns empty for invalid matchDate without year", () => {
+    const m = mapDbMatch(row({ id: "d2" }));
+    m.matchDate = "not-a-date";
+    m.year = null;
+    expect(displayDate(m)).toBe("");
+  });
+
+  it("falls back to year when matchDate is invalid", () => {
+    const m = mapDbMatch(row({ id: "d3" }));
+    m.matchDate = "not-a-date";
+    m.year = 2025;
+    expect(displayDate(m)).toBe("2025");
   });
 });

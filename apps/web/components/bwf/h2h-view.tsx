@@ -1,24 +1,17 @@
 "use client";
 
-import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ChevronsUpDown, Search } from "lucide-react";
-import { useMemo, useState } from "react";
-import {
-  displayDate,
-  formatScoreLine,
-  formatTeam,
-  playerWon,
-} from "@/lib/bwf/data";
-import {
-  PA,
-  PB,
-  type CatalogMatch,
-  type CatalogPlayer,
-  type H2hPickerPlayer,
+import { useEffect, useState, useTransition } from "react";
+import { Avatar } from "@/components/ui/avatar";
+import { MatchRow } from "@/components/bwf/match-card";
+import { PlayerPicker } from "@/components/bwf/player-picker";
+import { PA, PB } from "@/components/bwf/tokens";
+import type {
+  CatalogMatch,
+  DirectoryPlayer,
+  H2hPickerPlayer,
 } from "@/lib/bwf/types";
 import { cn } from "@/lib/utils";
-import { Avatar } from "@/components/ui/avatar";
 
 export function H2hView({
   players,
@@ -37,74 +30,33 @@ export function H2hView({
   meetings: CatalogMatch[];
   aWins: number;
   bWins: number;
-  a: CatalogPlayer | null;
-  b: CatalogPlayer | null;
+  /** Directory stats for the selected pair (no form/rivals payload). */
+  a: DirectoryPlayer | null;
+  b: DirectoryPlayer | null;
 }) {
   const router = useRouter();
-  const [h2hA, setH2hA] = useState(initialA);
-  const [h2hB, setH2hB] = useState(initialB);
-  const [pickAOpen, setPickAOpen] = useState(false);
-  const [pickBOpen, setPickBOpen] = useState(false);
-  const [pickAQuery, setPickAQuery] = useState("");
-  const [pickBQuery, setPickBQuery] = useState("");
+  const [isPending, startTransition] = useTransition();
+  // Short-lived optimistic ids so closed picker labels update immediately.
+  const [pendingA, setPendingA] = useState<string | null>(null);
+  const [pendingB, setPendingB] = useState<string | null>(null);
 
-  const pickerA = players.find((p) => p.id === h2hA) ?? players[0] ?? null;
-  const pickerB = players.find((p) => p.id === h2hB) ?? null;
-  const pa = a ?? (pickerA
-    ? {
-        id: pickerA.id,
-        name: pickerA.name,
-        disc: pickerA.disc,
-        discs: pickerA.disc ? [pickerA.disc] : [],
-        matches: pickerA.matches,
-        wins: 0,
-        losses: 0,
-        winRate: 0,
-        threeGames: 0,
-        withVideo: 0,
-        form: [],
-        rivals: [],
-        recentMatchIds: [],
-        imageUrl: null,
-      }
-    : null);
-  const pb = b ?? (pickerB
-    ? {
-        id: pickerB.id,
-        name: pickerB.name,
-        disc: pickerB.disc,
-        discs: pickerB.disc ? [pickerB.disc] : [],
-        matches: pickerB.matches,
-        wins: 0,
-        losses: 0,
-        winRate: 0,
-        threeGames: 0,
-        withVideo: 0,
-        form: [],
-        rivals: [],
-        recentMatchIds: [],
-        imageUrl: null,
-      }
-    : null);
+  useEffect(() => {
+    setPendingA(null);
+    setPendingB(null);
+  }, [initialA, initialB]);
+
+  const h2hA = pendingA ?? initialA;
+  const h2hB = pendingB ?? initialB;
+  const pa = a;
+  const pb = b;
 
   const syncUrl = (aid: string, bid: string) => {
-    router.replace(`/bwf/h2h?a=${aid}&b=${bid}`, { scroll: false });
+    setPendingA(aid);
+    setPendingB(bid);
+    startTransition(() => {
+      router.replace(`/bwf/h2h?a=${aid}&b=${bid}`, { scroll: false });
+    });
   };
-
-  const h2hAOptions = useMemo(() => {
-    const q = pickAQuery.trim().toLowerCase();
-    return players
-      .filter((p) => !q || p.name.toLowerCase().includes(q))
-      .slice(0, 40);
-  }, [players, pickAQuery]);
-
-  const h2hBOptions = useMemo(() => {
-    const q = pickBQuery.trim().toLowerCase();
-    return players
-      .filter((p) => p.id !== h2hA)
-      .filter((p) => !q || p.name.toLowerCase().includes(q))
-      .slice(0, 40);
-  }, [players, pickBQuery, h2hA]);
 
   if (!pa) {
     return (
@@ -115,9 +67,20 @@ export function H2hView({
   }
 
   const n = meetings.length;
+  // Prefer optimistic picker label; stats still come from server props.
+  const displayA =
+    players.find((p) => p.id === h2hA)?.name ?? pa.name;
+  const displayB =
+    players.find((p) => p.id === h2hB)?.name ?? pb?.name ?? null;
 
   return (
-    <section>
+    <section
+      className={cn(
+        "transition-opacity duration-150",
+        isPending && "opacity-60",
+      )}
+      aria-busy={isPending}
+    >
       <div className="mb-5">
         <h1 className="font-display text-[28px] font-semibold tracking-[-0.025em] text-[var(--text-strong)]">
           Head-to-Head
@@ -134,139 +97,34 @@ export function H2hView({
             className="h-2.5 w-2.5 shrink-0 rounded-full"
             style={{ background: PA }}
           />
-          <div className="relative min-w-0 flex-1">
-            {!pickAOpen ? (
-              <button
-                type="button"
-                onClick={() => {
-                  setPickAOpen(true);
-                  setPickAQuery("");
-                }}
-                className="flex h-[38px] w-full items-center gap-2.5 rounded-[9px] border border-[var(--border)] bg-[var(--surface-1)] px-3 text-left hover:border-[var(--border-strong)]"
-              >
-                <span className="min-w-0 flex-1 truncate text-[13.5px] text-[var(--text-strong)]">
-                  {pa.name}
-                </span>
-                <span className="shrink-0 font-mono text-[11px] text-[var(--text-muted)]">
-                  {pa.disc ?? "—"} · {pa.matches}
-                </span>
-                <ChevronsUpDown className="h-[15px] w-[15px] shrink-0 text-[var(--text-muted)]" />
-              </button>
-            ) : (
-              <div className="relative">
-                <div className="flex h-[38px] items-center gap-2 rounded-[9px] border border-[var(--player-a)] bg-[var(--surface-1)] px-3 shadow-[var(--ring)]">
-                  <Search className="h-[15px] w-[15px] shrink-0 text-[var(--text-faint)]" />
-                  <input
-                    autoFocus
-                    value={pickAQuery}
-                    onChange={(e) => setPickAQuery(e.target.value)}
-                    onBlur={() => setTimeout(() => setPickAOpen(false), 150)}
-                    placeholder="Search players…"
-                    className="min-w-0 flex-1 border-none bg-transparent text-[13px] text-[var(--text-strong)] outline-none"
-                  />
-                </div>
-                <div className="absolute left-0 right-0 top-11 z-60 max-h-[300px] overflow-y-auto rounded-[11px] border border-[var(--border-strong)] bg-[var(--surface-1)] p-1.5 shadow-[var(--shadow-xl)]">
-                  {h2hAOptions.map((p) => (
-                    <button
-                      key={p.id}
-                      type="button"
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => {
-                        setH2hA(p.id);
-                        let nextB = h2hB;
-                        if (nextB === p.id) {
-                          const opp = players.find((x) => x.id !== p.id);
-                          if (opp) {
-                            setH2hB(opp.id);
-                            nextB = opp.id;
-                          }
-                        }
-                        syncUrl(p.id, nextB);
-                        setPickAOpen(false);
-                      }}
-                      className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left hover:bg-[var(--surface-2)]"
-                    >
-                      <span className="min-w-0 flex-1 truncate text-[13px] text-[var(--text-strong)]">
-                        {p.name}
-                      </span>
-                      <span className="shrink-0 font-mono text-[10.5px] text-[var(--text-muted)]">
-                        {p.disc ?? "—"} · {p.matches}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
+          <PlayerPicker
+            players={players}
+            selectedId={h2hA}
+            accent="a"
+            disabled={isPending}
+            onSelect={(id) => {
+              let nextB = h2hB;
+              if (nextB === id) {
+                const opp = players.find((x) => x.id !== id);
+                if (opp) nextB = opp.id;
+              }
+              syncUrl(id, nextB);
+            }}
+          />
         </div>
         <span className="text-center font-mono text-[13px] text-[var(--text-faint)]">
           vs
         </span>
         <div className="flex items-center gap-2.5">
-          <div className="relative min-w-0 flex-1">
-            {!pickBOpen ? (
-              <button
-                type="button"
-                onClick={() => {
-                  setPickBOpen(true);
-                  setPickBQuery("");
-                }}
-                className="flex h-[38px] w-full items-center gap-2.5 rounded-[9px] border border-[var(--border)] bg-[var(--surface-1)] px-3 text-left hover:border-[var(--border-strong)]"
-              >
-                <span className="min-w-0 flex-1 truncate text-[13.5px] text-[var(--text-strong)]">
-                  {pb?.name ?? "Select opponent"}
-                </span>
-                {pb ? (
-                  <span className="shrink-0 font-mono text-[11px] text-[var(--text-muted)]">
-                    {pb.disc ?? "—"} · {pb.matches}
-                  </span>
-                ) : null}
-                <ChevronsUpDown className="h-[15px] w-[15px] shrink-0 text-[var(--text-muted)]" />
-              </button>
-            ) : (
-              <div className="relative">
-                <div
-                  className="flex h-[38px] items-center gap-2 rounded-[9px] border bg-[var(--surface-1)] px-3"
-                  style={{
-                    borderColor: PB,
-                    boxShadow: "0 0 0 3px rgba(251,191,36,0.22)",
-                  }}
-                >
-                  <Search className="h-[15px] w-[15px] shrink-0 text-[var(--text-faint)]" />
-                  <input
-                    autoFocus
-                    value={pickBQuery}
-                    onChange={(e) => setPickBQuery(e.target.value)}
-                    onBlur={() => setTimeout(() => setPickBOpen(false), 150)}
-                    placeholder="Search players…"
-                    className="min-w-0 flex-1 border-none bg-transparent text-[13px] text-[var(--text-strong)] outline-none"
-                  />
-                </div>
-                <div className="absolute left-0 right-0 top-11 z-60 max-h-[300px] overflow-y-auto rounded-[11px] border border-[var(--border-strong)] bg-[var(--surface-1)] p-1.5 shadow-[var(--shadow-xl)]">
-                  {h2hBOptions.map((p) => (
-                    <button
-                      key={p.id}
-                      type="button"
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => {
-                        setH2hB(p.id);
-                        syncUrl(h2hA, p.id);
-                        setPickBOpen(false);
-                      }}
-                      className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left hover:bg-[var(--surface-2)]"
-                    >
-                      <span className="min-w-0 flex-1 truncate text-[13px] text-[var(--text-strong)]">
-                        {p.name}
-                      </span>
-                      <span className="shrink-0 font-mono text-[10.5px] text-[var(--text-muted)]">
-                        {p.disc ?? "—"} · {p.matches}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
+          <PlayerPicker
+            players={players}
+            selectedId={h2hB}
+            accent="b"
+            excludeId={h2hA}
+            placeholder="Select opponent"
+            disabled={isPending}
+            onSelect={(id) => syncUrl(h2hA, id)}
+          />
           <span
             className="h-2.5 w-2.5 shrink-0 rounded-full"
             style={{ background: PB }}
@@ -279,16 +137,22 @@ export function H2hView({
           <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
             <div className="text-center">
               <Avatar
-                name={pa.name}
-                src={pa.imageUrl ?? undefined}
+                name={displayA}
+                src={
+                  h2hA === pa.id
+                    ? (pa.imageUrl ?? undefined)
+                    : undefined
+                }
                 size={52}
                 className="mx-auto mb-2.5"
               />
               <div className="font-display text-sm font-semibold text-[var(--text-strong)]">
-                {pa.name}
+                {displayA}
               </div>
               <div className="mt-1 font-mono text-[10.5px] text-[var(--text-muted)]">
-                {pa.winRate}% career · {pa.matches} matches
+                {h2hA === pa.id
+                  ? `${pa.winRate}% career · ${pa.matches} matches`
+                  : "Loading…"}
               </div>
             </div>
             <div className="text-center">
@@ -296,26 +160,38 @@ export function H2hView({
                 Catalog H2H
               </div>
               <div className="mt-1 font-display text-[32px] font-semibold tabular-nums text-[var(--text-strong)]">
-                {aWins}–{bWins}
+                {h2hA === pa.id && h2hB === (pb?.id ?? "")
+                  ? `${aWins}–${bWins}`
+                  : "–"}
               </div>
               <div className="mt-1 font-mono text-[10.5px] text-[var(--text-muted)]">
-                {n} meeting{n === 1 ? "" : "s"}
+                {h2hA === pa.id && h2hB === (pb?.id ?? "")
+                  ? `${n} meeting${n === 1 ? "" : "s"}`
+                  : isPending
+                    ? "Updating…"
+                    : "—"}
               </div>
             </div>
             <div className="text-center">
-              {pb ? (
+              {displayB ? (
                 <>
                   <Avatar
-                    name={pb.name}
-                    src={pb.imageUrl ?? undefined}
+                    name={displayB}
+                    src={
+                      pb && h2hB === pb.id
+                        ? (pb.imageUrl ?? undefined)
+                        : undefined
+                    }
                     size={52}
                     className="mx-auto mb-2.5"
                   />
                   <div className="font-display text-sm font-semibold text-[var(--text-strong)]">
-                    {pb.name}
+                    {displayB}
                   </div>
                   <div className="mt-1 font-mono text-[10.5px] text-[var(--text-muted)]">
-                    {pb.winRate}% career · {pb.matches} matches
+                    {pb && h2hB === pb.id
+                      ? `${pb.winRate}% career · ${pb.matches} matches`
+                      : "Loading…"}
                   </div>
                 </>
               ) : (
@@ -333,50 +209,33 @@ export function H2hView({
               Meeting history
             </div>
             <div className="mt-[3px] font-mono text-[10.5px] text-[var(--text-muted)]">
-              {n === 0
-                ? "No shared matches in the catalog"
-                : `All ${n} meeting${n === 1 ? "" : "s"}`}
+              {h2hA !== pa.id || h2hB !== (pb?.id ?? "")
+                ? isPending
+                  ? "Loading meetings…"
+                  : "—"
+                : n === 0
+                  ? "No shared matches in the catalog"
+                  : `All ${n} meeting${n === 1 ? "" : "s"} · scoreline + event`}
             </div>
           </div>
           <div className="max-h-[280px] space-y-2 overflow-y-auto">
-            {n === 0 ? (
+            {h2hA !== pa.id || h2hB !== (pb?.id ?? "") ? (
+              <div className="rounded-lg border border-dashed border-[var(--border)] px-3 py-8 text-center text-[12.5px] text-[var(--text-muted)]">
+                {isPending ? "Updating head-to-head…" : "Select players above."}
+              </div>
+            ) : n === 0 ? (
               <div className="rounded-lg border border-dashed border-[var(--border)] px-3 py-8 text-center text-[12.5px] text-[var(--text-muted)]">
                 These two players have not met in the loaded BWF data.
               </div>
             ) : (
-              meetings.map((m) => {
-                const aWon = playerWon(m, pa.id);
-                return (
-                  <Link
-                    key={m.id}
-                    href={`/bwf/matches/${m.id}`}
-                    className="flex items-center gap-2 rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-2)] px-3 py-2 hover:border-[var(--border)]"
-                  >
-                    <span
-                      className={cn(
-                        "inline-flex h-6 w-6 items-center justify-center rounded-md font-mono text-[10px] font-semibold",
-                        aWon === true
-                          ? "bg-[rgba(54,147,255,0.16)] text-[var(--player-a)]"
-                          : aWon === false
-                            ? "bg-[rgba(251,191,36,0.16)] text-[#d99a1a]"
-                            : "bg-[var(--surface-3)] text-[var(--text-muted)]",
-                      )}
-                    >
-                      {aWon === true ? "A" : aWon === false ? "B" : "—"}
-                    </span>
-                    <span className="min-w-0 flex-1 truncate text-[12.5px] text-[var(--text-strong)]">
-                      {m.event}
-                      {m.round ? ` · ${m.round}` : ""}
-                    </span>
-                    <span className="font-mono text-[10.5px] tabular-nums text-[var(--text-muted)]">
-                      {formatScoreLine(m.games)}
-                    </span>
-                    <span className="hidden font-mono text-[10.5px] text-[var(--text-faint)] sm:inline">
-                      {displayDate(m)}
-                    </span>
-                  </Link>
-                );
-              })
+              meetings.map((m) => (
+                <MatchRow
+                  key={m.id}
+                  m={m}
+                  highlightPlayerId={pa.id}
+                  outcomeMode="ab"
+                />
+              ))
             )}
           </div>
         </div>
@@ -391,7 +250,7 @@ export function H2hView({
             from match rows
           </span>
         </div>
-        {pb ? (
+        {pb && h2hA === pa.id && h2hB === pb.id ? (
           <div className="space-y-3">
             {[
               { k: "Win rate", a: pa.winRate, b: pb.winRate, unit: "%" },
@@ -453,7 +312,7 @@ export function H2hView({
                     className={cn(
                       "font-mono text-sm tabular-nums",
                       !aHi
-                        ? "font-semibold text-[#d99a1a]"
+                        ? "font-semibold text-[var(--player-b)]"
                         : "text-[var(--text-secondary)]",
                     )}
                   >
@@ -466,35 +325,12 @@ export function H2hView({
           </div>
         ) : (
           <div className="text-[13px] text-[var(--text-muted)]">
-            Select a second player to compare catalog stats.
+            {isPending
+              ? "Updating catalog comparison…"
+              : "Select a second player to compare catalog stats."}
           </div>
         )}
       </div>
-
-      {n > 0 && pb ? (
-        <div className="mt-3.5 rounded-[14px] border border-[var(--border)] bg-[var(--surface-1)] px-5 py-4">
-          <div className="mb-3 text-[13px] font-medium text-[var(--text-strong)]">
-            Scorelines
-          </div>
-          <div className="space-y-2">
-            {meetings.map((m) => (
-              <div
-                key={`score-${m.id}`}
-                className="flex flex-wrap items-center gap-2 font-mono text-[12px] text-[var(--text-secondary)]"
-              >
-                <span className="text-[var(--text-strong)]">
-                  {formatTeam(m.team1)} {formatScoreLine(m.games)}{" "}
-                  {formatTeam(m.team2)}
-                </span>
-                <span className="text-[var(--text-faint)]">
-                  · {m.event}
-                  {m.round ? ` · ${m.round}` : ""}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-      ) : null}
     </section>
   );
 }

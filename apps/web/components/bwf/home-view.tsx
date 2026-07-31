@@ -2,21 +2,30 @@ import Link from "next/link";
 import { ArrowRight } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
 import { MatchCard } from "@/components/bwf/match-card";
-import type { CatalogMatch, CatalogPlayer, CatalogStats, Disc } from "@/lib/bwf/types";
+import type {
+  CatalogMatch,
+  DirectoryPlayer,
+  Disc,
+  HomeStats,
+} from "@/lib/bwf/types";
 import { DISC_LABEL } from "@/lib/bwf/types";
 
 export function HomeView({
   stats,
-  recentMatches,
+  featuredMatches,
   topMs,
   topWs,
 }: {
-  stats: CatalogStats;
-  recentMatches: CatalogMatch[];
-  topMs: CatalogPlayer[];
-  topWs: CatalogPlayer[];
+  stats: HomeStats;
+  featuredMatches: CatalogMatch[];
+  topMs: DirectoryPlayer[];
+  topWs: DirectoryPlayer[];
 }) {
-  const topGroups: { title: string; disc: Disc; players: CatalogPlayer[] }[] = [
+  const topGroups: {
+    title: string;
+    disc: Disc;
+    players: DirectoryPlayer[];
+  }[] = [
     { title: DISC_LABEL.MS, disc: "MS", players: topMs },
     { title: DISC_LABEL.WS, disc: "WS", players: topWs },
   ];
@@ -179,13 +188,13 @@ export function HomeView({
           <ArrowRight className="h-3.5 w-3.5" />
         </Link>
       </div>
-      {recentMatches.length === 0 ? (
+      {featuredMatches.length === 0 ? (
         <div className="rounded-[14px] border border-dashed border-[var(--border)] px-6 py-12 text-center text-[13px] text-[var(--text-muted)]">
           No matches loaded yet.
         </div>
       ) : (
         <div className="grid grid-cols-1 gap-4 pb-2 md:grid-cols-2 xl:grid-cols-3">
-          {recentMatches.map((m) => (
+          {featuredMatches.map((m) => (
             <MatchCard key={m.id} m={m} />
           ))}
         </div>

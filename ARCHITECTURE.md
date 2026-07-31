@@ -394,12 +394,18 @@ in `wrangler.toml`).
 3. **Queue tech** — pgmq is the recommendation; if Supabase Queues proves
    limiting for priority/rate-caps, the fallback is a plain `jobs`-table
    dispatcher with `FOR UPDATE SKIP LOCKED`.
-4. ~~**BWF catalog visibility**~~ — **decided:** public BWF rows
-   (`matches.owner_id IS NULL`) are readable by `anon` and `authenticated`
-   (see SUPABASE.md RLS + migration `20260729000000_public_bwf_catalog_read`).
-   User-owned matches stay private. There is no separate players/nations graph;
-   the web BWF UI derives player profiles from the four name columns. Apply the
-   anon policy on PROD at cutover if not already present.
+4. ~~**BWF catalog visibility**~~ — **decided:** the **web** BWF catalog is
+   **server-private** via service role (`SUPABASE_SERVICE_ROLE_KEY`) with
+   `owner_id IS NULL` on every query. Next.js builds a single cached
+   `CatalogSnapshot` (matches + slim directory players + stats;
+   `bwf-catalog-v6`, 5 min); full profiles (form/rivals) are built on demand.
+   Catalog load does **not** enqueue GPU jobs. Multi-year data is held entirely
+   in process memory for the cache TTL — document/scale limits before loading
+   many seasons. There is no separate players table — identity is a **name
+   slug** from the four roster columns (known collision limit). Public anon
+   SELECT on system matches is **revoked**
+   (`20260731000000_revoke_anon_bwf_catalog_read`). User-owned matches stay
+   private.
 
 Decided (2026-07): all footage is **single-camera** (shuttle 3D comes from
 physics-fit trajectories; no multi-view tables anywhere). Also decided

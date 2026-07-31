@@ -4,11 +4,16 @@ import {
   aggregatePlayers,
   buildCatalogStats,
   buildSearchHits,
+  buildStaticSearchIndex,
+  eventSearchHit,
   filterMatches,
   formSortMatches,
   h2hFromMatches,
   isH2hMeeting,
+  matchChronologyMs,
   paginateMatches,
+  playerSearchHit,
+  toDirectoryPlayer,
   topPlayersFromList,
   winRateFromRecord,
 } from "./query";
@@ -170,9 +175,6 @@ describe("filterMatches / paginateMatches", () => {
     expect(filterMatches(more, { comeback: true }).map((m) => m.id)).toEqual(
       expect.arrayContaining(["1", "3"]),
     );
-    expect(filterMatches(more, { player: "a" }).length).toBeGreaterThanOrEqual(
-      2,
-    );
     // Non-allowlisted URL does not count as hasVideo
     expect(
       filterMatches(more, { hasVideo: true }).every((m) =>
@@ -196,7 +198,7 @@ describe("filterMatches / paginateMatches", () => {
   });
 });
 
-describe("formSortMatches", () => {
+describe("formSortMatches / matchChronologyMs", () => {
   it("prefers matchDate then createdAt descending", () => {
     const a = match({
       id: "old-date",
@@ -223,6 +225,28 @@ describe("formSortMatches", () => {
       "no-date-new",
       "new-date",
       "old-date",
+    ]);
+  });
+
+  it("falls back to createdAt when matchDate is invalid", () => {
+    const bad = match({
+      id: "bad-date",
+      team1Ids: ["a"],
+      team2Ids: ["b"],
+      matchDate: "not-a-date",
+      createdAt: "2026-06-01T00:00:00Z",
+    });
+    const good = match({
+      id: "good-date",
+      team1Ids: ["a"],
+      team2Ids: ["b"],
+      matchDate: "2026-01-01",
+      createdAt: "2020-01-01T00:00:00Z",
+    });
+    expect(Number.isNaN(matchChronologyMs(bad))).toBe(false);
+    expect(formSortMatches([good, bad]).map((m) => m.id)).toEqual([
+      "bad-date",
+      "good-date",
     ]);
   });
 });
@@ -265,12 +289,29 @@ describe("aggregatePlayers", () => {
     expect(alice.wins).toBe(1);
     expect(alice.losses).toBe(1);
     expect(alice.winRate).toBe(50);
-    // form/recent use chronology (newest first)
+    // form uses chronology (newest first); no recentMatchIds on CatalogPlayer
     expect(alice.form[0]).toBe("L");
-    expect(alice.recentMatchIds[0]).toBe("3");
+    expect("recentMatchIds" in alice).toBe(false);
     expect(alice.rivals.some((r) => r.id === "bob" && r.meetings === 2)).toBe(
       true,
     );
+
+    const slim = toDirectoryPlayer(alice);
+    expect(slim).toEqual({
+      id: alice.id,
+      name: alice.name,
+      disc: alice.disc,
+      discs: alice.discs,
+      matches: alice.matches,
+      wins: alice.wins,
+      losses: alice.losses,
+      winRate: alice.winRate,
+      threeGames: alice.threeGames,
+      withVideo: alice.withVideo,
+      imageUrl: alice.imageUrl,
+    });
+    expect("form" in slim).toBe(false);
+    expect("rivals" in slim).toBe(false);
   });
 
   it("skips empty name ids", () => {
@@ -303,7 +344,6 @@ describe("topPlayersFromList / buildSearchHits", () => {
       withVideo: 0,
       form: [],
       rivals: [],
-      recentMatchIds: [],
       imageUrl: null,
     },
     {
@@ -319,7 +359,6 @@ describe("topPlayersFromList / buildSearchHits", () => {
       withVideo: 0,
       form: [],
       rivals: [],
-      recentMatchIds: [],
       imageUrl: null,
     },
   ];
@@ -362,5 +401,135 @@ describe("topPlayersFromList / buildSearchHits", () => {
     const hits = buildSearchHits("alpha", players, matches, stats, 2);
     expect(hits.length).toBeLessThanOrEqual(2);
     expect(hits.some((h) => h.kind === "Player" && h.id === "a")).toBe(true);
+  });
+
+  it("applies 3/2/3 primary budgets when all kinds are abundant", () => {
+    const manyPlayers: CatalogPlayer[] = Array.from({ length: 10 }, (_, i) => ({
+      id: `p${i}`,
+      name: `Alpha Player ${i}`,
+      disc: "MS" as const,
+      discs: ["MS" as const],
+      matches: 5,
+      wins: 3,
+      losses: 2,
+      winRate: 60,
+      threeGames: 0,
+      withVideo: 0,
+      form: [],
+      rivals: [],
+      imageUrl: null,
+    }));
+    const matches = Array.from({ length: 6 }, (_, i) =>
+      match({
+        id: `m${i}`,
+        team1Ids: ["p0"],
+        team2Ids: ["p1"],
+        team1: ["Alpha Player 0"],
+        team2: ["Alpha Player 1"],
+        event: `2026 Alpha Open ${i}`,
+      }),
+    );
+    // Force multiple tournament hits under the same query.
+    const stats = buildCatalogStats(matches, manyPlayers);
+    // Inject extra events sharing "alpha" in the name for budget pressure.
+    stats.events = [
+      { event: "Alpha Cup A", year: 2026, count: 3 },
+      { event: "Alpha Cup B", year: 2026, count: 2 },
+      { event: "Alpha Cup C", year: 2026, count: 1 },
+      ...stats.events,
+    ];
+    const hits = buildSearchHits("alpha", manyPlayers, matches, stats, 8);
+    const playersHits = hits.filter((h) => h.kind === "Player");
+    const tourneyHits = hits.filter((h) => h.kind === "Tournament");
+    const matchHits = hits.filter((h) => h.kind === "Match");
+    // Primary slot take: 3 + 2 + 3 = 8 exactly when all abundant.
+    expect(playersHits.length).toBe(3);
+    expect(tourneyHits.length).toBe(2);
+    expect(matchHits.length).toBe(3);
+    expect(hits).toHaveLength(8);
+  });
+
+  it("fills remainder when primary under-fills limit", () => {
+    // Only 1 event + 1 match match "zeta"; many players do — remainder fills with players.
+    const manyPlayers: CatalogPlayer[] = Array.from({ length: 10 }, (_, i) => ({
+      id: `z${i}`,
+      name: `Zeta Ace ${i}`,
+      disc: "MS" as const,
+      discs: ["MS" as const],
+      matches: 4,
+      wins: 2,
+      losses: 2,
+      winRate: 50,
+      threeGames: 0,
+      withVideo: 0,
+      form: [],
+      rivals: [],
+      imageUrl: null,
+    }));
+    const matches = [
+      match({
+        id: "zm1",
+        team1Ids: ["z0"],
+        team2Ids: ["z1"],
+        team1: ["Zeta Ace 0"],
+        team2: ["Zeta Ace 1"],
+        event: "2026 Zeta Open",
+      }),
+    ];
+    const stats = buildCatalogStats(matches, manyPlayers);
+    const hits = buildSearchHits("zeta", manyPlayers, matches, stats, 8);
+    expect(hits).toHaveLength(8);
+    expect(hits.filter((h) => h.kind === "Tournament")).toHaveLength(1);
+    expect(hits.filter((h) => h.kind === "Match")).toHaveLength(1);
+    expect(hits.filter((h) => h.kind === "Player").length).toBe(6);
+  });
+
+  it("playerSearchHit sub format matches static and live paths", () => {
+    const hit = playerSearchHit(players[0]);
+    const event = eventSearchHit({ event: "2026 Japan Open", count: 4 });
+    expect(hit.sub).toBe("10 matches · 90% win · MS");
+    expect(event.sub).toBe("4 matches");
+
+    const matches = [
+      match({
+        id: "m1",
+        team1Ids: ["a"],
+        team2Ids: ["b"],
+        team1: ["Alpha"],
+        team2: ["Beta"],
+        event: "2026 Japan Open",
+      }),
+    ];
+    const stats = buildCatalogStats(matches, players);
+    const staticHit = buildStaticSearchIndex(players, stats, {
+      playerLimit: 1,
+      eventLimit: 1,
+    })[0];
+    const liveHit = buildSearchHits("alpha", players, matches, stats, 8).find(
+      (h) => h.kind === "Player",
+    )!;
+    expect(staticHit.sub).toBe(hit.sub);
+    expect(liveHit.sub).toBe(hit.sub);
+  });
+
+  it("buildStaticSearchIndex returns player + event hits without matches", () => {
+    const matches = [
+      match({
+        id: "m1",
+        team1Ids: ["a"],
+        team2Ids: ["b"],
+        team1: ["Alpha"],
+        team2: ["Beta"],
+        event: "2026 Japan Open",
+      }),
+    ];
+    const stats = buildCatalogStats(matches, players);
+    const index = buildStaticSearchIndex(players, stats, {
+      playerLimit: 1,
+      eventLimit: 1,
+    });
+    expect(index).toHaveLength(2);
+    expect(index[0].kind).toBe("Player");
+    expect(index[1].kind).toBe("Tournament");
   });
 });

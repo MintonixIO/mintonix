@@ -177,24 +177,20 @@ BWF “owner” are awkward). Determinism belongs on `matches.id`, not job ids.
 
 Content-addressed so re-scrapes hit the same row and the same B2 prefix.
 
-Hash a **stable identity payload**, not scores (scores get corrected on
-Wikipedia and must not mint a new id):
+**One algorithm only** (loader + schema docs — not roster/date/`source_url`):
 
 ```
-canonical = join with fixed separators, NFC, trimmed, case-folded names:
-  tournament
-  match_date          # ISO date or empty if unknown
-  team1_player1, team1_player2   # empty string if null; sort the two slots
-  team2_player1, team2_player2   # same
-  source_url or youtube video id if known and stable
+match_key = "{season}|{tournament}|{discipline}|{section}|{round}|{match_idx}"
+id        = sha256(utf-8(match_key)).hexdigest()   # full 64-char hex
 ```
 
-```
-id = hex(sha256(canonical))   # or first 32 hex chars if you accept truncation risk;
-                              # prefer full hash or UUIDv5 from a fixed namespace
-```
+Implemented in `workers/github/match-data/load_to_supabase.py`
+(`make_match_key` / `bwf_match_id`). `section` is required: split draws restart
+`match_idx` within each section. See `workers/github/match-data/schema.md`.
 
-**Do not** put game scores in the hash.
+**Do not** put game scores in the hash (Wikipedia score corrections must not
+mint a new id). **Do not** invent a second scheme (e.g. YouTube video id as
+`matches.id`) for BWF catalog rows.
 
 ### Match id (user)
 
@@ -489,7 +485,7 @@ Returns jsonb: `ok`, `match_id`, `job_id`, `stage`, `enqueue`, `queue`, `msg_id`
 |------|-----------|--------|
 | `service_role` | Full DML (edge functions, BWF loader) | Full DML |
 | `authenticated` | `SELECT` where `owner_id = (select auth.uid()) OR owner_id IS NULL` | `SELECT` via parent match |
-| `anon` | `SELECT` where `owner_id IS NULL` only (BWF catalog; migration `20260729000000_public_bwf_catalog_read.sql`) | none |
+| `anon` | **No** SELECT on BWF matches (revoked by `20260731000000_revoke_anon_bwf_catalog_read.sql`; historical grant migration is not the product path) | none |
 | Clients | **No direct table writes** | **No direct table writes** |
 
 User-authored files (original upload, `annotation.json`) go through
@@ -499,12 +495,19 @@ through edge functions as `service_role`.
 **RLS performance:** policies wrap `auth.uid()` in `(select …)` so Postgres
 caches one initPlan evaluation per statement instead of calling per row.
 
-**Product choice:** BWF catalog (`owner_id IS NULL`) is readable by `anon` and
-any signed-in user. User-owned rows stay private. The web BWF UI prefers the
-**publishable/anon key** for catalog reads (RLS enforced) and falls back to the
-**service role** only when anon is missing, errors, or returns empty under
-missing RLS (e.g. PROD before the public-catalog migration). Aggregation still
-filters `owner_id IS NULL` on every path.
+**Product choice (web BWF catalog):** private server path only. Next.js BWF
+loaders (`apps/web/lib/bwf/catalog.ts`) always use **service role**
+(`SUPABASE_SERVICE_ROLE_KEY`) and filter `owner_id IS NULL` on every query
+(defense in depth; service role bypasses RLS). Missing service-role env fails
+clearly. Catalog data is aggregated once into an in-memory **CatalogSnapshot**
+(`unstable_cache` key `bwf-catalog-v6`, revalidate 300s) with matches, slim
+directory players, and stats — full player profiles (form/rivals) are built on
+demand for player detail only. Multi-year catalogs are held entirely in process
+memory for the TTL; scale carefully before loading decades of seasons.
+
+Public anon read of system matches is **revoked** (not the product path).
+Authenticated users may still SELECT BWF rows via RLS for other product
+surfaces, but the BWF website does not rely on that.
 
 pgmq and RPCs: `EXECUTE` only for `service_role` (security definer + fixed
 `search_path = public` as required for pgmq schema access).
@@ -645,19 +648,17 @@ yet (detect is terminal → match `ready`). Optional
 Match-data scraper loads BWF **into `matches`** via PostgREST upsert on
 `id = sha256(match_key)` (`workers/github/match-data/load_to_supabase.py`).
 It does **not** call `matches-ingest` / enqueue GPU jobs — catalog load and
-pipeline enqueue stay separate. It does not need a parallel private schema
-unless product requires service-only BWF before launch (RLS).
+pipeline enqueue stay separate. Web BWF reads are service-role private
+(see Access control above); anon SELECT on system matches is revoked.
 
 ---
 
 ## Open follow-ups
 
-1. **Exact hash canonicalization** for BWF — loader uses
-   `sha256(utf-8 match_key)` where
-   `match_key = season|tournament|discipline|section|round|match_idx`
-   (see `workers/github/match-data/schema.md`). Pin test vectors if a second
-   producer invents ids. Edge functions accept a client/system-supplied `id`;
-   they do not invent a second hash algorithm.
+1. **Exact hash canonicalization** for BWF — single algorithm (Ids § above /
+   `schema.md`). Pin test vectors if a second producer invents ids. Edge
+   functions accept a client/system-supplied `id`; they do not invent a second
+   hash algorithm.
 2. **Stage advance vs re-queue** — after normalize, re-enter pgmq with same
    `job_id` and `stage = detect` (implemented in `complete_job`), or auto-dispatch
    next stage inside callback without a new queue hop (callback path must stay short).
@@ -668,11 +669,12 @@ unless product requires service-only BWF before launch (RLS).
    many events share geometry. Materialize `annotation.json` under `bwf/` when
    the service upload path lands (annotate still prints BWF geometry today).
 6. **Players table** — only if player pages / shared identity become product
-   (web currently derives profiles from name columns; name collisions possible).
-7. ~~**BWF read visibility**~~ — **done (DEV):** anon + authenticated may
-   `SELECT` where `owner_id IS NULL` (`20260729000000_public_bwf_catalog_read.sql`).
-   PROD not applied until cutover. Web catalog prefers publishable/anon client;
-   service role remains for admin/ops only.
+   (web currently derives profiles from name-slug ids; collisions possible when
+   two athletes share a display name). No players table today.
+7. ~~**BWF read visibility**~~ — **decided:** web catalog is **service-role
+   private** (`apps/web/lib/bwf/catalog.ts` + CatalogSnapshot cache). Anon
+   SELECT on system matches is **revoked**
+   (`20260731000000_revoke_anon_bwf_catalog_read.sql`).
 8. **Optional B2 existence check / per-owner live-job cap** on user ingest if abuse appears.
 9. **Prod cutover** — see runbook below (not automated in CI).
 

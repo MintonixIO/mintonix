@@ -2,12 +2,14 @@ import "server-only";
 
 import { unstable_cache } from "next/cache";
 import {
-  createAnonClient,
   createServiceClient,
-  hasAnonKey,
   hasServiceRoleKey,
 } from "@/lib/supabase/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import {
+  resolveMatchByIdOutcome,
+  type SnapshotAttempt,
+} from "./match-by-id";
 import {
   mapDbMatch,
   matchInvolvesPlayer,
@@ -17,46 +19,45 @@ import {
   aggregatePlayers,
   buildCatalogStats,
   buildSearchHits,
+  buildStaticSearchIndex,
   filterMatches,
   formSortMatches,
   h2hFromMatches,
   paginateMatches,
   sortMatches,
+  toDirectoryPlayer,
   topPlayersFromList,
 } from "./query";
 import type {
   CatalogMatch,
   CatalogPlayer,
   CatalogStats,
+  DirectoryPlayer,
   Disc,
   MatchFilters,
   SearchHit,
 } from "./types";
-
-export {
-  filterMatches,
-  formSortMatches,
-  h2hFromMatches,
-  paginateMatches,
-  sortMatches,
-  topPlayersFromList,
-  winRateFromRecord,
-  isH2hMeeting,
-  aggregatePlayers,
-  buildCatalogStats,
-  buildSearchHits,
-} from "./query";
+import { BWF_SEARCH_LIMIT } from "./types";
 
 const MATCH_SELECT =
   "id,tournament,match_date,team1_player1,team1_player2,team2_player1,team2_player2,g1_t1,g1_t2,g2_t1,g2_t2,g3_t1,g3_t2,status,source_url,duration_sec,created_at";
 
 /**
- * Dual-path catalog load:
- * 1. Prefer anon/publishable key (RLS: owner_id IS NULL).
- * 2. On permission/error or empty result when service role is available,
- *    fall back to service role with the same owner_id IS NULL filter.
- * PROD without the public BWF RLS migration still works via service role.
+ * Server-private catalog snapshot: matches + slim directory + stats.
+ * Full player profiles (form/rivals) are built on demand in getPlayerById.
+ * Loaded only via service role (never the public anon path).
+ * Bump the cache key when snapshot shape or load path changes.
+ *
+ * Scale note: multi-year catalogs are held entirely in this process memory
+ * for the cache TTL (all match rows + directory). Prefer year-scoped load
+ * later if RSS becomes a problem — no year filter today.
  */
+export type CatalogSnapshot = {
+  matches: CatalogMatch[];
+  directoryPlayers: DirectoryPlayer[];
+  stats: CatalogStats;
+};
+
 async function fetchPages(
   supabase: SupabaseClient,
 ): Promise<{ rows: DbMatchRow[]; error: string | null }> {
@@ -86,82 +87,94 @@ async function fetchPages(
   return { rows, error: null };
 }
 
+/**
+ * Load full BWF catalog via service role only.
+ * Always filters owner_id IS NULL (defense in depth; service role bypasses RLS).
+ */
 async function fetchAllBwfRows(): Promise<CatalogMatch[]> {
-  let lastError: string | null = null;
-
-  if (hasAnonKey()) {
-    const anon = await fetchPages(createAnonClient());
-    if (!anon.error && anon.rows.length > 0) {
-      return anon.rows.map(mapDbMatch);
-    }
-    lastError = anon.error;
-    if (!anon.error && anon.rows.length === 0 && hasServiceRoleKey()) {
-      // Empty may mean RLS denies all rows — try service role.
-      console.warn(
-        "[bwf] anon catalog returned 0 rows; trying service-role fallback",
-      );
-    } else if (anon.error && hasServiceRoleKey()) {
-      console.warn(
-        "[bwf] anon catalog failed; trying service-role fallback:",
-        anon.error,
-      );
-    } else if (anon.error) {
-      throw new Error(`BWF catalog load failed: ${anon.error}`);
-    } else {
-      // Truly empty catalog with no service fallback.
-      return [];
-    }
+  if (!hasServiceRoleKey()) {
+    throw new Error(
+      "Missing SUPABASE_SERVICE_ROLE_KEY — BWF catalog requires service-role credentials",
+    );
   }
 
-  if (hasServiceRoleKey()) {
-    const svc = await fetchPages(createServiceClient());
-    if (svc.error) {
-      throw new Error(
-        `BWF catalog load failed: ${svc.error}${lastError ? ` (anon: ${lastError})` : ""}`,
-      );
-    }
-    return svc.rows.map(mapDbMatch);
+  const svc = await fetchPages(createServiceClient());
+  if (svc.error) {
+    throw new Error(`BWF catalog load failed: ${svc.error}`);
   }
-
-  throw new Error(
-    lastError
-      ? `BWF catalog load failed: ${lastError}`
-      : "Missing Supabase catalog credentials",
-  );
+  return svc.rows.map(mapDbMatch);
 }
 
-/** Full BWF catalog (multi-year), cached 5 minutes. Bump cache key when schema/load changes. */
-export const getBwfMatches = unstable_cache(
-  async () => fetchAllBwfRows(),
-  ["bwf-catalog-matches-v4"],
+async function buildCatalogSnapshot(): Promise<CatalogSnapshot> {
+  const matches = await fetchAllBwfRows();
+  // Aggregate once for directory + stats; discard full CatalogPlayer[] so the
+  // cache does not dual-store form/rivals for every player.
+  const full = aggregatePlayers(matches);
+  const directoryPlayers = full.map(toDirectoryPlayer);
+  const stats = buildCatalogStats(matches, directoryPlayers);
+  return { matches, directoryPlayers, stats };
+}
+
+/** Single in-memory snapshot (matches + directory + stats), cached 5 minutes. */
+export const getCatalogSnapshot = unstable_cache(
+  async () => buildCatalogSnapshot(),
+  ["bwf-catalog-v6"],
   { revalidate: 300 },
 );
 
+export async function getDirectoryPlayers(): Promise<DirectoryPlayer[]> {
+  const snap = await getCatalogSnapshot();
+  return snap.directoryPlayers;
+}
+
+export async function getCatalogStats(): Promise<CatalogStats> {
+  const snap = await getCatalogSnapshot();
+  return snap.stats;
+}
+
+/**
+ * Prefer a direct single-row fetch (cold detail pages) over loading the full
+ * snapshot. Snapshot is recovery only when the direct fetch errors — a
+ * confirmed miss returns null without loading the catalog.
+ * Decision matrix lives in `resolveMatchByIdOutcome` (unit-tested).
+ */
 export async function getMatchById(id: string): Promise<CatalogMatch | null> {
-  const all = await getBwfMatches();
-  const hit = all.find((m) => m.id === id);
-  if (hit) return hit;
+  if (!hasServiceRoleKey()) {
+    throw new Error(
+      "Missing SUPABASE_SERVICE_ROLE_KEY — BWF catalog requires service-role credentials",
+    );
+  }
 
-  // Direct fetch with same dual-path preference.
-  const tryOne = async (client: SupabaseClient) => {
-    const { data, error } = await client
-      .from("matches")
-      .select(MATCH_SELECT)
-      .eq("id", id)
-      .is("owner_id", null)
-      .maybeSingle();
-    if (error || !data) return null;
+  const client = createServiceClient();
+  const { data, error } = await client
+    .from("matches")
+    .select(MATCH_SELECT)
+    .eq("id", id)
+    .is("owner_id", null)
+    .maybeSingle();
+
+  // Cold detail path: return immediately on direct hit — never load snapshot.
+  if (data && !error) {
     return mapDbMatch(data as DbMatchRow);
-  };
+  }
 
-  if (hasAnonKey()) {
-    const row = await tryOne(createAnonClient());
-    if (row) return row;
+  // Confirmed miss: true 404 — do not load the full catalog snapshot.
+  if (!error) {
+    return null;
   }
-  if (hasServiceRoleKey()) {
-    return tryOne(createServiceClient());
+
+  let snapshot: SnapshotAttempt;
+  try {
+    const snap = await getCatalogSnapshot();
+    const hit = snap.matches.find((m) => m.id === id);
+    snapshot = hit
+      ? { status: "hit", match: hit }
+      : { status: "miss" };
+  } catch (e) {
+    snapshot = { status: "error", error: e };
   }
-  return null;
+
+  return resolveMatchByIdOutcome(null, { message: error.message }, snapshot);
 }
 
 export async function queryMatches(filters: MatchFilters = {}): Promise<{
@@ -171,8 +184,8 @@ export async function queryMatches(filters: MatchFilters = {}): Promise<{
   pageSize: number;
   totalPages: number;
 }> {
-  const all = await getBwfMatches();
-  const filtered = filterMatches(all, filters);
+  const { matches } = await getCatalogSnapshot();
+  const filtered = filterMatches(matches, filters);
   return paginateMatches(
     filtered,
     filters.page ?? 1,
@@ -180,23 +193,17 @@ export async function queryMatches(filters: MatchFilters = {}): Promise<{
   );
 }
 
-export async function getCatalogStats(): Promise<CatalogStats> {
-  const matches = await getBwfMatches();
-  const players = await getCatalogPlayers();
-  return buildCatalogStats(matches, players);
-}
-
-/** Players derived from the same cached match catalog (no second table scan). */
-export const getCatalogPlayers = unstable_cache(
-  async () => aggregatePlayers(await getBwfMatches()),
-  ["bwf-catalog-players-v4"],
-  { revalidate: 300 },
-);
-
+/**
+ * Full profile with form/rivals — built on demand from this player's matches
+ * so the shared snapshot need not hold CatalogPlayer[] for everyone.
+ */
 export async function getPlayerById(
   id: string,
 ): Promise<CatalogPlayer | null> {
-  const players = await getCatalogPlayers();
+  const { matches } = await getCatalogSnapshot();
+  const involved = matches.filter((m) => matchInvolvesPlayer(m, id));
+  if (involved.length === 0) return null;
+  const players = aggregatePlayers(involved);
   return players.find((p) => p.id === id) ?? null;
 }
 
@@ -204,7 +211,7 @@ export async function getPlayerMatches(
   playerId: string,
   limit = 50,
 ): Promise<CatalogMatch[]> {
-  const matches = await getBwfMatches();
+  const { matches } = await getCatalogSnapshot();
   return formSortMatches(
     matches.filter((m) => matchInvolvesPlayer(m, playerId)),
   ).slice(0, limit);
@@ -214,47 +221,50 @@ export async function getH2h(
   aId: string,
   bId: string,
 ): Promise<{
-  a: CatalogPlayer | null;
-  b: CatalogPlayer | null;
+  a: DirectoryPlayer | null;
+  b: DirectoryPlayer | null;
   meetings: CatalogMatch[];
   aWins: number;
   bWins: number;
 }> {
-  const [players, matches] = await Promise.all([
-    getCatalogPlayers(),
-    getBwfMatches(),
-  ]);
-  const a = players.find((p) => p.id === aId) ?? null;
-  const b = players.find((p) => p.id === bId) ?? null;
+  const { directoryPlayers, matches } = await getCatalogSnapshot();
+  const a = directoryPlayers.find((p) => p.id === aId) ?? null;
+  const b = directoryPlayers.find((p) => p.id === bId) ?? null;
   const { meetings, aWins, bWins } = h2hFromMatches(matches, aId, bId);
   return { a, b, meetings, aWins, bWins };
 }
 
 export async function searchCatalog(
   q: string,
-  limit = 8,
+  limit = BWF_SEARCH_LIMIT,
 ): Promise<SearchHit[]> {
-  const [players, matches, stats] = await Promise.all([
-    getCatalogPlayers(),
-    getBwfMatches(),
-    getCatalogStats(),
-  ]);
-  return buildSearchHits(q, players, matches, stats, limit);
+  const { directoryPlayers, matches, stats } = await getCatalogSnapshot();
+  return buildSearchHits(q, directoryPlayers, matches, stats, limit);
 }
 
+/** Shell static index (players + tournaments) from the snapshot. */
+export async function getStaticSearchIndex(): Promise<SearchHit[]> {
+  const { directoryPlayers, stats } = await getCatalogSnapshot();
+  return buildStaticSearchIndex(directoryPlayers, stats);
+}
+
+/** Home leaderboard rows — slim directory DTOs (no form/rivals payload). */
 export async function getTopPlayers(opts?: {
   disc?: Disc | "all";
   limit?: number;
-}): Promise<CatalogPlayer[]> {
-  const players = await getCatalogPlayers();
-  return topPlayersFromList(players, {
+}): Promise<DirectoryPlayer[]> {
+  const { directoryPlayers } = await getCatalogSnapshot();
+  return topPlayersFromList(directoryPlayers, {
     disc: opts?.disc,
     limit: opts?.limit,
     minDecided: 3,
   });
 }
 
-export async function getRecentMatches(limit = 6): Promise<CatalogMatch[]> {
-  const matches = await getBwfMatches();
+/** Featured matches for home: late rounds first (not chronological “recent”). */
+export async function getFeaturedMatches(
+  limit = 6,
+): Promise<CatalogMatch[]> {
+  const { matches } = await getCatalogSnapshot();
   return sortMatches(matches, "round").slice(0, limit);
 }
