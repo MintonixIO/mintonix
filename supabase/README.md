@@ -614,8 +614,10 @@ envelope and presigns `frame_ranges.csv`. The **worker** maps annotation →
 geometry after probe, and writes the cleaned cut to `normalized.mp4`. Detect
 always GETs `normalized.mp4`. Analyze is not wired yet (detect is terminal →
 match `ready`; ops enqueue of `analyze` terminal-fails). Optional
-`VAST_DETECT_ENDPOINT_NAME` for the video-det vast endpoint (falls back to
-`VAST_ENDPOINT_NAME`). User confirm does not HEAD-check B2 before enqueue
+`VAST_NORMALIZE_ENDPOINT_NAME` / `VAST_DETECT_ENDPOINT_NAME` for the
+video-normalization and video-det vast endpoints (detect falls back to the
+normalize name if unset; legacy `VAST_ENDPOINT_NAME` still aliases normalize).
+User confirm does not HEAD-check B2 before enqueue
 (empty keys fail at normalize). Worker callback wire status is
 `success`|`failed` (see [`ARCHITECTURE.md`](../ARCHITECTURE.md) § One job
 contract); DB stores `complete`|`failed`.

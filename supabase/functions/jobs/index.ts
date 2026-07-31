@@ -40,8 +40,10 @@
  *   JOB_TOKEN_SECRET        HMAC secret for the callback token
  *   CDN_PRESIGN_URL         CDN Worker control plane (e.g. https://…/presign)
  *   PRESIGN_SERVICE_TOKEN   auth for /presign (shared with cdn-access)
- *   VAST_ENDPOINT_NAME      default vast serverless endpoint (normalize)
- *   VAST_DETECT_ENDPOINT_NAME  optional; detect endpoint (falls back to VAST_ENDPOINT_NAME)
+ *   VAST_NORMALIZE_ENDPOINT_NAME  vast serverless endpoint for normalize
+ *   VAST_DETECT_ENDPOINT_NAME     vast serverless endpoint for detect
+ *                                 (falls back to normalize endpoint if unset)
+ *   VAST_ENDPOINT_NAME      deprecated alias for VAST_NORMALIZE_ENDPOINT_NAME
  *   VAST_API_KEY            vast ACCOUNT API key
  *   VAST_AUTOSCALER_URL     optional, default https://run.vast.ai
  *   VAST_TLS_CA             optional PEM: vast's self-signed worker CA
@@ -269,14 +271,14 @@ async function b2ObjectExists(key: string): Promise<boolean> {
  */
 const STAGES: Record<string, {
   route: string;
-  /** Env var for vast endpoint name; defaults to VAST_ENDPOINT_NAME. */
+  /** Env var for this stage's vast endpoint name (see resolveVastEndpointName). */
   endpointEnv?: string;
   buildEnvelope(job: DispatchedJob, token: string): Promise<Record<string, unknown>>;
   settle(job: DispatchedJob, body: CallbackBody, ok: boolean): Settlement;
 }> = {
   normalize: {
     route: "/normalize/sync",
-    endpointEnv: "VAST_ENDPOINT_NAME",
+    endpointEnv: "VAST_NORMALIZE_ENDPOINT_NAME",
 
     async buildEnvelope(job, token) {
       const prefix = job.b2_prefix;
@@ -349,8 +351,8 @@ const STAGES: Record<string, {
 
   detect: {
     route: "/detect/sync",
-    // Separate GPU image/endpoint from normalize; falls back to VAST_ENDPOINT_NAME
-    // in invokeVast if unset (useful for single-endpoint local wiring).
+    // Separate GPU image/endpoint from normalize; falls back to the normalize
+    // endpoint name in invokeVast if unset (single-endpoint local wiring).
     endpointEnv: "VAST_DETECT_ENDPOINT_NAME",
 
     async buildEnvelope(job, token) {
@@ -420,21 +422,54 @@ async function resolveEndpointKey(endpointName: string, accountKey: string): Pro
   return match.api_key;
 }
 
+/**
+ * Resolve the vast serverless endpoint name for a stage.
+ *
+ * Prefer the stage-specific env (e.g. VAST_DETECT_ENDPOINT_NAME), then
+ * VAST_NORMALIZE_ENDPOINT_NAME, then legacy VAST_ENDPOINT_NAME.
+ */
+function resolveVastEndpointName(endpointEnv?: string): {
+  name: string | undefined;
+  usedEnv: string;
+} {
+  if (endpointEnv) {
+    const staged = Deno.env.get(endpointEnv);
+    if (staged) return { name: staged, usedEnv: endpointEnv };
+  }
+
+  const normalize = Deno.env.get("VAST_NORMALIZE_ENDPOINT_NAME");
+  if (normalize) {
+    return { name: normalize, usedEnv: "VAST_NORMALIZE_ENDPOINT_NAME" };
+  }
+
+  const legacy = Deno.env.get("VAST_ENDPOINT_NAME");
+  if (legacy) {
+    console.warn(
+      "VAST_ENDPOINT_NAME is deprecated; set VAST_NORMALIZE_ENDPOINT_NAME " +
+        "(and VAST_DETECT_ENDPOINT_NAME for detect)",
+    );
+    return { name: legacy, usedEnv: "VAST_ENDPOINT_NAME" };
+  }
+
+  return {
+    name: undefined,
+    usedEnv: endpointEnv ?? "VAST_NORMALIZE_ENDPOINT_NAME",
+  };
+}
+
 async function invokeVast(
   route: string,
   envelope: Record<string, unknown>,
   jobId: string,
   endpointEnv?: string,
 ): Promise<void> {
-  // Stage-specific endpoint (e.g. VAST_DETECT_ENDPOINT_NAME) with fallback to
-  // the default normalize endpoint so a single-endpoint deploy still works.
-  const endpoint =
-    (endpointEnv ? Deno.env.get(endpointEnv) : undefined) ||
-    Deno.env.get("VAST_ENDPOINT_NAME");
+  // Stage-specific name first; detect may fall back to the normalize endpoint
+  // so a single-endpoint local deploy still works.
+  const { name: endpoint, usedEnv } = resolveVastEndpointName(endpointEnv);
   const accountKey = Deno.env.get("VAST_API_KEY");
   if (!endpoint || !accountKey) {
     throw new Error(
-      `${endpointEnv ?? "VAST_ENDPOINT_NAME"} / VAST_API_KEY not configured`,
+      `${usedEnv} / VAST_API_KEY not configured`,
     );
   }
   const apiKey = await resolveEndpointKey(endpoint, accountKey);
