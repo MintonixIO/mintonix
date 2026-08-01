@@ -1,5 +1,14 @@
-<!-- BEGIN:nextjs-agent-rules -->
-# This is NOT the Next.js you know
+# apps/web — agent pointer
 
-This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` before writing any code. Heed deprecation notices.
-<!-- END:nextjs-agent-rules -->
+Monorepo agent rules and **file organization** live at the repo root:
+
+→ **[../../AGENTS.md](../../AGENTS.md)**
+
+Do not invent a separate web-only file layout. Follow root § File organization
+guide and § Package notes → `apps/web`.
+
+## Next.js note
+
+This app’s Next.js version may differ from older training data (APIs,
+conventions, file structure). Before using legacy patterns, read the relevant
+guide under `node_modules/next/dist/docs/` and heed deprecation notices.
