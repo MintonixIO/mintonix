@@ -1,7 +1,12 @@
+import path from "node:path";
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   reactCompiler: true,
+  // Monorepo: parent lockfiles confuse Turbopack workspace root inference.
+  turbopack: {
+    root: path.join(__dirname),
+  },
   // Legacy flat app paths → nested under /dashboard/*
   async redirects() {
     return [

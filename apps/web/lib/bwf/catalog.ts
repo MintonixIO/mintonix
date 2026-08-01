@@ -1,6 +1,5 @@
 import "server-only";
 
-import { unstable_cache } from "next/cache";
 import {
   createServiceClient,
   hasServiceRoleKey,
@@ -46,17 +45,32 @@ const MATCH_SELECT =
  * Server-private catalog snapshot: matches + slim directory + stats.
  * Full player profiles (form/rivals) are built on demand in getPlayerById.
  * Loaded only via service role (never the public anon path).
- * Bump the cache key when snapshot shape or load path changes.
  *
- * Scale note: multi-year catalogs are held entirely in this process memory
- * for the cache TTL (all match rows + directory). Prefer year-scoped load
- * later if RSS becomes a problem — no year filter today.
+ * Caching: multi-year snapshot is ~tens of MB. Next.js `unstable_cache` /
+ * Data Cache rejects entries over 2MB, so we use a process-local TTL cache
+ * with single-flight rebuild instead. Survives for the life of the Node
+ * process (dev server / one server instance); not shared across workers.
+ *
+ * Scale note: full multi-year catalogs stay in process RAM for the TTL.
+ * Prefer year-scoped load later if RSS becomes a problem — no year filter today.
  */
 export type CatalogSnapshot = {
   matches: CatalogMatch[];
   directoryPlayers: DirectoryPlayer[];
   stats: CatalogStats;
 };
+
+/** Process-local snapshot TTL (seconds), aligned with former revalidate: 300. */
+const SNAPSHOT_TTL_MS = 300_000;
+
+type SnapshotCacheEntry = {
+  snapshot: CatalogSnapshot;
+  expiresAt: number;
+};
+
+let snapshotCache: SnapshotCacheEntry | null = null;
+/** In-flight build so parallel layout+page callers share one Supabase page-in. */
+let snapshotInflight: Promise<CatalogSnapshot> | null = null;
 
 async function fetchPages(
   supabase: SupabaseClient,
@@ -115,12 +129,32 @@ async function buildCatalogSnapshot(): Promise<CatalogSnapshot> {
   return { matches, directoryPlayers, stats };
 }
 
-/** Single in-memory snapshot (matches + directory + stats), cached 5 minutes. */
-export const getCatalogSnapshot = unstable_cache(
-  async () => buildCatalogSnapshot(),
-  ["bwf-catalog-v6"],
-  { revalidate: 300 },
-);
+/**
+ * Full BWF snapshot for this server process.
+ * Not `unstable_cache` — multi-year payload exceeds Next Data Cache 2MB limit
+ * (~26MB observed), which forced a full rebuild every request.
+ */
+export async function getCatalogSnapshot(): Promise<CatalogSnapshot> {
+  const now = Date.now();
+  if (snapshotCache && snapshotCache.expiresAt > now) {
+    return snapshotCache.snapshot;
+  }
+  if (snapshotInflight) return snapshotInflight;
+
+  snapshotInflight = buildCatalogSnapshot()
+    .then((snapshot) => {
+      snapshotCache = {
+        snapshot,
+        expiresAt: Date.now() + SNAPSHOT_TTL_MS,
+      };
+      return snapshot;
+    })
+    .finally(() => {
+      snapshotInflight = null;
+    });
+
+  return snapshotInflight;
+}
 
 export async function getDirectoryPlayers(): Promise<DirectoryPlayer[]> {
   const snap = await getCatalogSnapshot();
