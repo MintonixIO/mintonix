@@ -1,99 +1,127 @@
 /* ============================================================
-   MINTONIX · COLOR TOKENS
-   Dark-first analytics palette. Logo blue is the spine; a cool
-   navy neutral ramp carries surfaces; mint signals positive.
+   MINTONIX · COLOR TOKENS — Ice lab
+   Deep navy atmosphere, steel chrome, ice-teal wins.
+   Logo blue (#3693FF) only on primary CTAs / Player A.
+   Cyan = live electric only. Amber = warning only.
    ============================================================ */
 
 :root {
-  /* ---- Brand blue (logo: #3693FF) ---- */
+  /* ---- Brand blue (logo / primary CTAs only: #3693FF) ---- */
   --blue-50:  #eaf3ff;
   --blue-100: #d2e5ff;
   --blue-200: #a6cbff;
   --blue-300: #79b0ff;
   --blue-400: #5ba8ff;
-  --blue-500: #3693ff; /* primary */
+  --blue-500: #3693ff; /* logo + primary buttons */
   --blue-600: #1e7bf0;
   --blue-700: #1763c7;
   --blue-800: #154e9c;
   --blue-900: #143f78;
 
-  /* ---- Accent cyan (data highlights, live signals) ---- */
+  /* ---- Live electric cyan (video / live chips only) ---- */
   --cyan-400: #7ce8ff;
   --cyan-500: #50deff;
   --cyan-600: #1fc4ec;
+  --live:       var(--cyan-500);
+  --live-soft:  rgba(80, 222, 255, 0.10);
+  --live-ring:  rgba(80, 222, 255, 0.28);
 
-  /* ---- Near-black neutral ramp (whisper of cool) ---- */
-  --ink-950: #070809;
-  --ink-900: #0a0b0e; /* app base */
-  --ink-850: #0d0e12;
-  --ink-800: #101116; /* panel base */
-  --ink-750: #14151b;
-  --ink-700: #17191f; /* surface */
-  --ink-650: #1c1e25;
-  --ink-600: #20222a; /* elevated surface */
-  --ink-550: #282b34;
-  --ink-500: #323641; /* hairline strong */
-  --ink-400: #454a57;
-  --ink-300: #5f6571;
-  --ink-200: #8b9099;
-  --ink-100: #bdc1c8;
-  --ink-50:  #e9eaed;
+  /* ---- Steel (secondary chrome — desaturated cool) ---- */
+  --steel-300: #9eb6d0;
+  --steel-400: #7a9ec4;
+  --steel-500: #5f87b0;
+  --steel:       var(--steel-400);
+  --steel-soft:  rgba(122, 158, 196, 0.12);
+  --steel-ring:  rgba(122, 158, 196, 0.28);
+
+  /* ---- Deep navy-ink ramp (Ice lab atmosphere) ---- */
+  --ink-950: #04060f;
+  --ink-900: #060a14; /* app base */
+  --ink-850: #080e1a;
+  --ink-800: #0b1220; /* panel base */
+  --ink-750: #0f1729;
+  --ink-700: #131c2e; /* surface */
+  --ink-650: #18243a;
+  --ink-600: #1e2b44; /* elevated */
+  --ink-550: #263550;
+  --ink-500: #334866;
+  --ink-400: #4a6080;
+  --ink-300: #6b829e;
+  --ink-200: #94a8c0;
+  --ink-100: #c5d0e0;
+  --ink-50:  #e8eef8;
   --white:   #ffffff;
 
-  /* ---- Semantic neutrals (mapped, dark theme) ---- */
+  /* ---- Semantic neutrals ---- */
   --bg-base:        var(--ink-900);
   --bg-sunken:      var(--ink-950);
   --surface-1:      var(--ink-800);
   --surface-2:      var(--ink-700);
   --surface-3:      var(--ink-600);
   --surface-hover:  var(--ink-650);
-  --border-subtle:  #1a1c22;
-  --border:         #2a2d36;
-  --border-strong:  #3a3e49;
+  --border-subtle:  #121a2c;
+  --border:         #1e2a40;
+  --border-strong:  #2d3f5c;
   --border-focus:   var(--blue-500);
 
-  /* ---- Text ---- */
-  --text-strong:    #f4f5f7;
-  --text-primary:   #e6e7ea;
-  --text-secondary: #a0a3ab;
-  --text-muted:     #6b6e78;
-  --text-faint: #6a6e7a;
+  /* ---- Frost glass (nav / sticky chrome) ---- */
+  --frost-bg:            rgba(8, 14, 28, 0.58);
+  --frost-bg-scrolled:   rgba(6, 12, 24, 0.84);
+  --frost-border:        rgba(160, 200, 255, 0.09);
+  --frost-border-strong: rgba(160, 200, 255, 0.14);
+  --frost-highlight:     inset 0 1px 0 rgba(200, 225, 255, 0.07);
+  --frost-blur:          16px;
+
+  /* ---- Text (silver-blue hierarchy) ---- */
+  --text-strong:    #eef3fb;
+  --text-primary:   #dde5f2;
+  --text-secondary: #8b97ab;
+  --text-muted:     #65738a;
+  --text-faint:     #536074;
   --text-on-blue:   #ffffff;
-  --text-link:      var(--blue-400);
+  --text-link:      var(--steel-300);
 
-  /* ---- Brand semantic ---- */
+  /* ---- Brand (logo blue CTAs only) ---- */
   --brand:          var(--blue-500);
-  --brand-hover:    var(--blue-400);
+  --brand-hover:    #4a9dff;
   --brand-active:   var(--blue-600);
-  --brand-subtle:   rgba(54, 147, 255, 0.12);
-  --brand-ring:     rgba(54, 147, 255, 0.40);
+  --brand-subtle:   rgba(54, 147, 255, 0.09);
+  --brand-ring:     rgba(54, 147, 255, 0.32);
+  /* Steel chrome for labels / mono / secondary UI (not logo blue) */
+  --brand-chrome:   var(--steel);
+  --brand-chrome-soft: var(--steel-soft);
 
-  /* ---- Status (mint = positive, nods to the name) ---- */
-  --success-500:  #2dd4a7;
-  --success-400:  #4ee3bb;
-  --success-bg:   rgba(45, 212, 167, 0.12);
+  /* ---- Status: ice-teal wins; amber warning only ---- */
+  --success-500:  #3dceb8;
+  --success-400:  #5eead4;
+  --success-bg:   rgba(61, 206, 184, 0.12);
   --warning-500:  #fbbf24;
   --warning-400:  #fcd34d;
-  --warning-bg:   rgba(251, 191, 36, 0.12);
+  --warning-bg:   rgba(251, 191, 36, 0.10);
   --danger-500:   #f4515c;
   --danger-400:   #ff7a83;
   --danger-bg:    rgba(244, 81, 92, 0.12);
-  --info-500:     var(--blue-500);
-  --info-bg:      var(--brand-subtle);
+  --info-500:     var(--steel-400);
+  --info-bg:      var(--steel-soft);
 
-  /* ---- Data-viz sequence (rally / shot charts) ---- */
+  /* ---- Data-viz (cool-first) ---- */
   --viz-1: #3693ff;
   --viz-2: #50deff;
-  --viz-3: #2dd4a7;
-  --viz-4: #fbbf24;
-  --viz-5: #b07bff;
+  --viz-3: #3dceb8; /* ice teal */
+  --viz-4: #8b9cff;
+  --viz-5: #a78bfa;
   --viz-6: #f4515c;
 
-  /* ---- Player A / B accents (match comparisons) ---- */
-  --player-a: #3693ff;
-  --player-b: #fbbf24;
+  /* ---- Player A / B (cool-on-cool) ---- */
+  --player-a:      #3693ff;
+  --player-a-soft: rgba(54, 147, 255, 0.14);
+  --player-b:      #8b9cff;
+  --player-b-soft: rgba(139, 156, 255, 0.14);
+  --player-b-ring: rgba(139, 156, 255, 0.26);
+  --player-b-deep: #6b7ae0;
 
-  /* ---- Glows ---- */
-  --glow-blue: 0 0 24px rgba(54, 147, 255, 0.35);
-  --glow-cyan: 0 0 24px rgba(80, 222, 255, 0.30);
+  /* ---- Glows (restrained) ---- */
+  --glow-blue: 0 0 20px rgba(54, 147, 255, 0.22);
+  --glow-cyan: 0 0 20px rgba(80, 222, 255, 0.18);
+  --glow-player-b: 0 0 14px rgba(139, 156, 255, 0.28);
 }

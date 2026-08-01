@@ -142,7 +142,7 @@ export function ReviewPanel() {
           const iconBg =
             "color" in r && r.color
               ? r.color === PB
-                ? "rgba(251,191,36,0.14)"
+                ? "color-mix(in srgb, var(--player-b) 14%, transparent)"
                 : "rgba(54,147,255,0.14)"
               : "ok" in r && r.ok
                 ? "var(--success-bg,rgba(45,212,167,0.12))"

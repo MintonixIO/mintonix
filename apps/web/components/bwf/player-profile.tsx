@@ -153,7 +153,7 @@ export function PlayerProfile({
                   className={cn(
                     "inline-flex h-8 w-8 items-center justify-center rounded-lg font-mono text-xs font-semibold",
                     f === "W"
-                      ? "bg-[rgba(45,212,167,0.16)] text-[var(--success-500)]"
+                      ? "bg-[var(--success-bg)] text-[var(--success-500)]"
                       : "bg-[rgba(244,81,92,0.14)] text-[var(--danger-500)]",
                   )}
                 >

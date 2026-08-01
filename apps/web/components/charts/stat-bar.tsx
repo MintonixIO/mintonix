@@ -6,9 +6,9 @@ import { cn } from "@/lib/utils";
 const BAR_H = { xs: 3, sm: 6, md: 24 } as const;
 
 const SEG_COLORS = {
-  success: "var(--success-500, #2dd4a7)",
-  "success-soft": "rgba(45,212,167,0.6)",
-  "success-faint": "rgba(45,212,167,0.3)",
+  success: "var(--success-500)",
+  "success-soft": "color-mix(in srgb, var(--success-500) 60%, transparent)",
+  "success-faint": "color-mix(in srgb, var(--success-500) 30%, transparent)",
   danger: "var(--danger-500, #f4515c)",
   "danger-soft": "rgba(244,81,92,0.6)",
   "danger-faint": "rgba(244,81,92,0.3)",
@@ -17,7 +17,7 @@ const SEG_COLORS = {
 
 const FILL_COLORS = {
   accent: "var(--accent, #3693ff)",
-  success: "var(--success-500, #2dd4a7)",
+  success: "var(--success-500)",
   danger: "var(--danger-500, #f4515c)",
   warning: "var(--warning-500, #fbbf24)",
   neutral: "var(--ink-300, #647391)",

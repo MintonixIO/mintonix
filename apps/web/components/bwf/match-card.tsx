@@ -239,12 +239,12 @@ export function MatchRow({
             "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md font-mono text-[10px] font-semibold",
             outcomeMode === "ab"
               ? won === true
-                ? "bg-[rgba(54,147,255,0.16)] text-[var(--player-a)]"
+                ? "bg-[var(--player-a-soft)] text-[var(--player-a)]"
                 : won === false
-                  ? "bg-[rgba(251,191,36,0.16)] text-[var(--player-b)]"
+                  ? "bg-[var(--player-b-soft)] text-[var(--player-b)]"
                   : "bg-[var(--surface-3)] text-[var(--text-muted)]"
               : won === true
-                ? "bg-[rgba(45,212,167,0.16)] text-[var(--success-500)]"
+                ? "bg-[var(--success-bg)] text-[var(--success-500)]"
                 : won === false
                   ? "bg-[rgba(244,81,92,0.14)] text-[var(--danger-500)]"
                   : "bg-[var(--surface-3)] text-[var(--text-muted)]",

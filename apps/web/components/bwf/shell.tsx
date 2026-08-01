@@ -158,7 +158,7 @@ export function BwfShell({
 
   return (
     <div className="min-h-screen bg-[var(--bg-base)] font-sans text-[var(--text-primary)] antialiased">
-      <header className="sticky top-0 z-50 grid grid-cols-[auto_1fr_auto] items-center gap-x-2 gap-y-2 border-b border-[var(--border-subtle)] bg-[var(--surface-1)]/95 px-3 py-2 backdrop-blur-[var(--blur-md,14px)] sm:flex sm:h-14 sm:gap-3 sm:px-5 sm:py-0">
+      <header className="sticky top-0 z-50 grid grid-cols-[auto_1fr_auto] items-center gap-x-2 gap-y-2 border-b border-[var(--frost-border)] bg-[var(--frost-bg-scrolled)] px-3 py-2 shadow-[var(--frost-highlight)] backdrop-blur-[var(--frost-blur,16px)] sm:flex sm:h-14 sm:gap-3 sm:px-5 sm:py-0">
         <Link
           href="/"
           aria-label="Back to Mintonix"

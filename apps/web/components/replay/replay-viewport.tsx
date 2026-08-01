@@ -157,12 +157,12 @@ export function ReplayViewport({
           >
             <PlayerFigure color="#3693ff" dark="#2563c9" />
           </div>
-          {/* player B near (amber) */}
+          {/* player B near (cool ice-violet) */}
           <div
             className="absolute left-[56%] top-[72%] h-0 w-0"
             style={{ transformStyle: "preserve-3d" }}
           >
-            <PlayerFigure color="#fbbf24" dark="#d09410" />
+            <PlayerFigure color="#8b9cff" dark="#6b7ae0" />
           </div>
           {/* shuttle */}
           <div

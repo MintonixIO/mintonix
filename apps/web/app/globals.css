@@ -40,8 +40,9 @@
 }
 
 :root {
-  --accent: var(--blue-500);
-  --accent-soft: rgba(54, 147, 255, 0.16);
+  /* Ice lab: steel chrome for UI chrome; logo blue only via --brand CTAs */
+  --accent: var(--steel);
+  --accent-soft: var(--steel-soft);
   --glow-op: 0;
   color-scheme: dark;
 }
@@ -110,9 +111,19 @@ body {
     border-color var(--dur-base) var(--ease-out);
 }
 .mx-pillar:hover .mx-pillar-icon {
-  background: var(--accent);
+  background: var(--brand);
   color: var(--text-on-blue, #fff);
-  border-color: var(--accent);
+  border-color: var(--brand);
+}
+.mx-pillar[data-tone="success"]:hover .mx-pillar-icon {
+  background: var(--success-500);
+  color: #042018;
+  border-color: var(--success-500);
+}
+.mx-pillar[data-tone="player-b"]:hover .mx-pillar-icon {
+  background: var(--player-b);
+  color: var(--ink-950);
+  border-color: var(--player-b);
 }
 
 @keyframes mx-pulse {

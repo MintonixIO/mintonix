@@ -70,7 +70,7 @@ export function PointsPanel() {
                 className={cn(
                   "inline-flex h-[23px] w-[23px] shrink-0 items-center justify-center rounded-[7px] font-mono text-[11px] font-semibold",
                   ph.done &&
-                    "bg-[rgba(45,212,167,0.16)] text-[var(--success-500)]",
+                    "bg-[var(--success-bg)] text-[var(--success-500)]",
                   ph.active && !ph.done && "bg-[var(--brand)] text-white",
                   !ph.active &&
                     !ph.done &&

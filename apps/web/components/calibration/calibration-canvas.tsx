@@ -369,7 +369,7 @@ export function CalibrationCanvas() {
               background: "rgba(7,8,9,0.72)",
               borderColor:
                 Q.level === "need"
-                  ? "rgba(251,191,36,0.4)"
+                  ? "color-mix(in srgb, var(--player-b) 40%, transparent)"
                   : "rgba(45,212,167,0.4)",
             }}
           >

@@ -28,7 +28,7 @@ export function PlayersPanel() {
       {(["a", "b"] as const).map((k) => {
         const color = k === "a" ? PA : PB;
         const tag = `Player ${k.toUpperCase()}`;
-        const sub = k === "a" ? "Near court · blue" : "Far court · amber";
+        const sub = k === "a" ? "Near court · blue" : "Far court · ice";
         const stt = players[k];
         const segmented = stt === "detected";
         const sel = identify[k].id

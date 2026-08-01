@@ -43,7 +43,7 @@ export const REELS: Reel[] = [
     dur: "1:12",
     status: "draft",
     match: "Tai Tzu-ying vs Sindhu · Group B",
-    glow: "rgba(251,191,36,0.12)",
+    glow: "rgba(139,156,255,0.12)",
   },
   {
     id: "r5",

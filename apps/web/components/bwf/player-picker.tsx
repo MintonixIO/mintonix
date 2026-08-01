@@ -117,7 +117,7 @@ export function PlayerPicker({
     accent === "b"
       ? {
           borderColor: "var(--player-b)",
-          boxShadow: "0 0 0 3px rgba(54,147,255,0.22)",
+          boxShadow: "var(--ring-player-b)",
         }
       : undefined;
 

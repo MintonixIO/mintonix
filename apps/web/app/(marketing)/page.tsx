@@ -83,27 +83,39 @@ export default async function HomePage() {
               title: "Tournament matches",
               body: "Filter by event, discipline, round, and year. Open any match for scorelines, rosters, and linked video when available.",
               href: "/bwf/matches",
+              tone: "brand" as const,
             },
             {
               icon: Users,
               title: "Player directory",
               body: "Career rollups from catalog results — win rates, form, and rivalries derived from real match rows.",
               href: "/bwf/players",
+              tone: "success" as const,
             },
             {
               icon: Swords,
               title: "Head-to-head",
               body: "Pick any two players and see every meeting in the loaded catalog with scorelines and event context.",
               href: "/bwf/h2h",
+              tone: "player-b" as const,
             },
           ].map((p) => (
             <Reveal
               key={p.title}
               as="article"
               className="mx-pillar flex flex-col rounded-2xl border border-[var(--border)] bg-[var(--surface-1)] p-6 shadow-[var(--shadow-ring-card)]"
+              data-tone={p.tone}
             >
               <Link href={p.href} className="flex flex-1 flex-col text-left">
-                <span className="mx-pillar-icon inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-[12px] border border-[var(--border)] bg-[var(--accent-soft)] text-[var(--accent)]">
+                <span
+                  className={
+                    p.tone === "success"
+                      ? "mx-pillar-icon inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-[12px] border border-[var(--border)] bg-[var(--success-bg)] text-[var(--success-500)]"
+                      : p.tone === "player-b"
+                        ? "mx-pillar-icon inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-[12px] border border-[var(--border)] bg-[var(--player-b-soft)] text-[var(--player-b)]"
+                        : "mx-pillar-icon inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-[12px] border border-[var(--border)] bg-[var(--brand-subtle)] text-[var(--brand)]"
+                  }
+                >
                   <p.icon className="h-5 w-5" strokeWidth={1.75} />
                 </span>
                 <div className="mt-4 flex flex-col gap-2">

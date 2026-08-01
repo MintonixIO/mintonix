@@ -9,18 +9,21 @@ const LINKS = [
     icon: Trophy,
     title: "Match library",
     body: "Filter by event, discipline, and round.",
+    iconClass: "border-[var(--border)] bg-[var(--brand-subtle)] text-[var(--brand)]",
   },
   {
     href: "/bwf/players",
     icon: Users,
     title: "Player directory",
     body: "Win–loss and form from real match rows.",
+    iconClass: "border-[var(--border)] bg-[var(--success-bg)] text-[var(--success-500)]",
   },
   {
     href: "/bwf/h2h",
     icon: Swords,
     title: "Head-to-head",
     body: "Every shared meeting in the catalog.",
+    iconClass: "border-[var(--border)] bg-[var(--player-b-soft)] text-[var(--player-b)]",
   },
 ] as const;
 
@@ -75,7 +78,7 @@ export function BwfHeroTeaser({
       )}
     >
       <div className="flex flex-wrap items-center gap-3 border-b border-[var(--border-subtle)] px-5 py-4 sm:px-6">
-        <span className="inline-flex h-9 w-9 items-center justify-center rounded-[10px] border border-[var(--border)] bg-[var(--accent-soft)] text-[var(--accent)]">
+        <span className="inline-flex h-9 w-9 items-center justify-center rounded-[10px] border border-[var(--border)] bg-[var(--brand-subtle)] text-[var(--brand)]">
           <Trophy className="h-4 w-4" strokeWidth={1.75} />
         </span>
         <div className="min-w-0 flex-1 text-left">
@@ -139,10 +142,15 @@ export function BwfHeroTeaser({
             href={item.href}
             className="group flex min-h-[5.5rem] flex-col bg-[var(--surface-1)] p-5 text-left transition-colors hover:bg-[var(--surface-2)]"
           >
-            <span className="inline-flex h-9 w-9 items-center justify-center rounded-[10px] border border-[var(--border)] bg-[var(--surface-2)] text-[var(--accent)]">
+            <span
+              className={
+                "inline-flex h-9 w-9 items-center justify-center rounded-[10px] border " +
+                item.iconClass
+              }
+            >
               <item.icon className="h-4 w-4" strokeWidth={1.75} />
             </span>
-            <span className="mt-3 font-display text-[15px] font-semibold text-[var(--text-strong)] group-hover:text-[var(--accent)]">
+            <span className="mt-3 font-display text-[15px] font-semibold text-[var(--text-strong)] group-hover:text-[var(--brand)]">
               {item.title}
             </span>
             <span className="mt-1 text-[13px] leading-snug text-[var(--text-secondary)]">

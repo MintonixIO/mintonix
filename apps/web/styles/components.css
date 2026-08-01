@@ -58,13 +58,13 @@
 
   .mx-badge--neutral { background: var(--surface-3); color: var(--text-secondary); border-color: var(--border); }
   .mx-badge--brand   { background: var(--brand-subtle); color: var(--blue-300); border-color: rgba(54,147,255,0.25); }
-  .mx-badge--success { background: var(--success-bg); color: var(--success-400); border-color: rgba(45,212,167,0.25); }
+  .mx-badge--success { background: var(--success-bg); color: var(--success-400); border-color: color-mix(in srgb, var(--success-500) 28%, transparent); }
   .mx-badge--warning { background: var(--warning-bg); color: var(--warning-400); border-color: rgba(251,191,36,0.25); }
   .mx-badge--danger  { background: var(--danger-bg);  color: var(--danger-400);  border-color: rgba(244,81,92,0.25); }
   .mx-badge--cyan    { background: rgba(80,222,255,0.12); color: var(--cyan-400); border-color: rgba(80,222,255,0.25); }
 
   .mx-badge--solid.mx-badge--brand   { background: var(--brand); color:#fff; border-color: transparent; }
-  .mx-badge--solid.mx-badge--success { background: var(--success-500); color:#04231a; border-color: transparent; }
+  .mx-badge--solid.mx-badge--success { background: var(--success-500); color:#042018; border-color: transparent; }
   .mx-badge--solid.mx-badge--danger  { background: var(--danger-500); color:#fff; border-color: transparent; }
   .mx-badge--solid.mx-badge--neutral { background: var(--ink-100); color: var(--ink-900); border-color: transparent; }
 
@@ -98,7 +98,7 @@
   .mx-btn--block { display: flex; width: 100%; }
 
   /* primary */
-  .mx-btn--primary { background: var(--brand); color: var(--text-on-blue); box-shadow: 0 1px 0 rgba(255,255,255,0.12) inset, 0 6px 16px rgba(54,147,255,0.28); }
+  .mx-btn--primary { background: var(--brand); color: var(--text-on-blue); box-shadow: 0 1px 0 rgba(255,255,255,0.10) inset, 0 4px 12px rgba(54,147,255,0.16); }
   .mx-btn--primary:hover { background: var(--brand-hover); }
   .mx-btn--primary:active { background: var(--brand-active); }
 
@@ -111,8 +111,8 @@
   .mx-btn--ghost:hover { background: var(--surface-2); color: var(--text-primary); }
 
   /* outline */
-  .mx-btn--outline { background: transparent; color: var(--blue-300); border-color: var(--border-strong); }
-  .mx-btn--outline:hover { border-color: var(--brand); color: var(--blue-200); background: var(--brand-subtle); }
+  .mx-btn--outline { background: transparent; color: var(--steel-300); border-color: var(--border-strong); }
+  .mx-btn--outline:hover { border-color: var(--steel); color: var(--text-strong); background: var(--steel-soft); }
 
   /* danger */
   .mx-btn--danger { background: var(--danger-500); color: #fff; }
@@ -145,9 +145,9 @@
   .mx-iconbtn--lg svg { width: 20px; height: 20px; }
   .mx-iconbtn--solid { background: var(--surface-3); border-color: var(--border); box-shadow: var(--shadow-edge); }
   .mx-iconbtn--solid:hover { background: var(--surface-hover); border-color: var(--border-strong); }
-  .mx-iconbtn--primary { background: var(--brand); color: #fff; box-shadow: 0 6px 16px rgba(54,147,255,0.28); }
+  .mx-iconbtn--primary { background: var(--brand); color: #fff; box-shadow: 0 4px 12px rgba(54,147,255,0.16); }
   .mx-iconbtn--primary:hover { background: var(--brand-hover); color: #fff; }
-  .mx-iconbtn--active { background: var(--brand-subtle); color: var(--blue-300); }
+  .mx-iconbtn--active { background: var(--steel-soft); color: var(--steel-300); }
 
 /* ---- forms/Checkbox.jsx ---- */
 .mx-check { display: inline-flex; align-items: center; gap: 9px; cursor: pointer; user-select: none; font-family: var(--font-sans); }
@@ -418,18 +418,20 @@
     max-width: var(--mx-nav-max, 1320px);
     margin: 0 auto;
     border-radius: 999px;
-    border: 1px solid rgba(255, 255, 255, 0.06);
-    background: rgba(10, 16, 32, 0.55);
-    backdrop-filter: blur(14px);
-    -webkit-backdrop-filter: blur(14px);
-    box-shadow: none;
+    border: 1px solid var(--frost-border);
+    background: var(--frost-bg);
+    backdrop-filter: blur(var(--frost-blur, 16px));
+    -webkit-backdrop-filter: blur(var(--frost-blur, 16px));
+    box-shadow: var(--frost-highlight);
     transition:
       background 180ms var(--ease-out, ease-out),
-      border-color 180ms var(--ease-out, ease-out);
+      border-color 180ms var(--ease-out, ease-out),
+      box-shadow 180ms var(--ease-out, ease-out);
   }
   .mx-nav--marketing.is-scrolled .mx-nav__shell {
-    background: rgba(9, 14, 28, 0.78);
-    border-color: rgba(255, 255, 255, 0.08);
+    background: var(--frost-bg-scrolled);
+    border-color: var(--frost-border-strong);
+    box-shadow: var(--frost-highlight), var(--shadow-sm);
   }
   .mx-nav--marketing .mx-nav__inner {
     max-width: none;
@@ -441,15 +443,16 @@
 
   /* App / default full-bleed */
   .mx-nav:not(.mx-nav--marketing) {
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
-    background: rgba(10, 16, 32, 0.72);
+    backdrop-filter: blur(var(--frost-blur, 16px));
+    -webkit-backdrop-filter: blur(var(--frost-blur, 16px));
+    background: var(--frost-bg);
     border-bottom: 1px solid transparent;
+    box-shadow: var(--frost-highlight);
     transition: background 180ms var(--ease-out, ease-out), border-color 180ms var(--ease-out, ease-out);
   }
   .mx-nav:not(.mx-nav--marketing).is-scrolled {
-    background: rgba(9, 14, 28, 0.9);
-    border-bottom-color: var(--border-subtle);
+    background: var(--frost-bg-scrolled);
+    border-bottom-color: var(--frost-border);
   }
   .mx-nav:not(.mx-nav--marketing) .mx-nav__shell { max-width: none; }
   .mx-nav:not(.mx-nav--marketing) .mx-nav__inner {
@@ -525,14 +528,14 @@
     bottom: -2px;
     height: 1px;
     border-radius: 1px;
-    background: var(--brand);
+    background: var(--steel);
   }
   .mx-nav__ind--dot {
     bottom: 4px;
     height: 4px;
     width: 4px !important;
     border-radius: 999px;
-    background: var(--brand);
+    background: var(--steel);
   }
 
   .mx-nav__link {
@@ -597,7 +600,7 @@
   .mx-nav__div {
     width: 1px;
     height: 14px;
-    background: rgba(255, 255, 255, 0.08);
+    background: var(--frost-border);
     flex: none;
   }
   .mx-nav__right { display: flex; align-items: center; gap: 6px; }

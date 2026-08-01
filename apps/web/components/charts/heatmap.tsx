@@ -14,7 +14,7 @@ function cellColors(value: number | string | null | undefined, scale: string) {
   const v = Number(value);
   if (scale === "diverging") {
     const m = Math.min(1, Math.abs(v));
-    const rgb = v >= 0 ? "45,212,167" : "244,81,92";
+    const rgb = v >= 0 ? "61,206,184" : "244,81,92";
     return {
       bg: `rgba(${rgb},${(0.07 + 0.4 * m).toFixed(3)})`,
       bd: `rgba(${rgb},${(0.18 + 0.3 * m).toFixed(3)})`,

@@ -1,56 +1,63 @@
 /* ============================================================
-   MINTONIX · EFFECTS — shadows, elevation, blur, motion
-   Dark UI: elevation comes from subtle borders + soft ambient
-   shadow + occasional blue glow on interactive/live elements.
+   MINTONIX · EFFECTS — Ice lab
+   Navy ambient depth, frost edges, logo-blue only on primary.
    ============================================================ */
 
 :root {
-  /* ---- Ambient shadows (dark theme: deep + soft) ---- */
-  --shadow-xs:  0 1px 2px rgba(3, 7, 18, 0.40);
-  --shadow-sm:  0 2px 6px rgba(3, 7, 18, 0.45);
-  --shadow-md:  0 6px 18px rgba(3, 7, 18, 0.50);
-  --shadow-lg:  0 16px 40px rgba(3, 7, 18, 0.55);
-  --shadow-xl:  0 28px 70px rgba(3, 7, 18, 0.62);
+  /* ---- Ambient shadows (deep navy) ---- */
+  --shadow-xs:  0 1px 2px rgba(2, 6, 18, 0.45);
+  --shadow-sm:  0 2px 6px rgba(2, 6, 18, 0.50);
+  --shadow-md:  0 6px 18px rgba(2, 6, 18, 0.55);
+  --shadow-lg:  0 16px 40px rgba(2, 6, 18, 0.60);
+  --shadow-xl:  0 28px 70px rgba(2, 6, 18, 0.66);
 
-  /* Inset hairline that reads as a 1px top highlight on surfaces */
-  --shadow-edge: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  /* Cold top hairline on elevated surfaces */
+  --shadow-edge: var(--frost-highlight, inset 0 1px 0 rgba(200, 225, 255, 0.06));
 
-  /* ---- Focus ring ---- */
-  --ring:        0 0 0 3px var(--brand-ring);
-  --ring-danger: 0 0 0 3px rgba(244, 81, 92, 0.35);
+  /* ---- Focus rings ---- */
+  --ring:          0 0 0 3px var(--brand-ring);
+  --ring-danger:   0 0 0 3px rgba(244, 81, 92, 0.35);
+  --ring-live:     0 0 0 3px var(--live-ring);
+  --ring-player-b: 0 0 0 3px var(--player-b-ring);
+  --ring-steel:    0 0 0 3px var(--steel-ring);
 
-  /* ---- Glows (live / primary emphasis) ---- */
-  --elev-glow-blue: 0 0 0 1px rgba(54,147,255,0.30), 0 8px 28px rgba(54,147,255,0.22);
-  --elev-glow-cyan: 0 0 0 1px rgba(80,222,255,0.28), 0 8px 28px rgba(80,222,255,0.20);
+  /* ---- Glows (restrained primary; cyan = live only) ---- */
+  --elev-glow-blue: 0 0 0 1px rgba(54,147,255,0.22), 0 6px 20px rgba(54,147,255,0.12);
+  --elev-glow-cyan: 0 0 0 1px rgba(80,222,255,0.22), 0 6px 20px rgba(80,222,255,0.10);
 
   /* ---- Backdrop blur ---- */
-  --blur-sm: 6px; /* @kind other */
-  --blur-md: 14px; /* @kind other */
-  --blur-lg: 24px; /* @kind other */
+  --blur-sm: 6px;
+  --blur-md: 14px;
+  --blur-lg: 24px;
 
   /* ---- Surface gradients ---- */
-  --grad-panel: linear-gradient(180deg, rgba(255,255,255,0.025), rgba(255,255,255,0) 60%); /* @kind color */
-  --grad-brand: linear-gradient(135deg, #4a9dff 0%, #2d7ff0 100%); /* @kind color */
-  --grad-brand-cyan: linear-gradient(120deg, #3693ff 0%, #50deff 100%); /* @kind color */
-  --grad-court: radial-gradient(120% 80% at 50% -10%, rgba(54,147,255,0.16), transparent 60%); /* @kind color */
+  --grad-panel: linear-gradient(180deg, rgba(160,200,255,0.035), rgba(255,255,255,0) 58%);
+  --grad-brand: linear-gradient(135deg, #3693ff 0%, #2a6fd4 100%);
+  --grad-brand-cyan: linear-gradient(120deg, #3693ff 0%, #50deff 100%);
+  --grad-court: radial-gradient(120% 80% at 50% -10%, rgba(50, 100, 180, 0.12), transparent 62%);
+  --grad-frost: linear-gradient(180deg, rgba(160,200,255,0.06), transparent 70%);
 
   /* ---- Motion ---- */
-  --ease-out:   cubic-bezier(0.22, 1, 0.36, 1); /* @kind other */
-  --ease-in-out:cubic-bezier(0.65, 0, 0.35, 1); /* @kind other */
-  --ease-spring:cubic-bezier(0.34, 1.56, 0.64, 1); /* @kind other */
-  --dur-fast:   120ms; /* @kind other */
-  --dur-base:   200ms; /* @kind other */
-  --dur-slow:   340ms; /* @kind other */
+  --ease-out:    cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --dur-fast:    120ms;
+  --dur-base:    200ms;
+  --dur-slow:    340ms;
 
   /* ---- Z-index ---- */
-  --z-base: 1; /* @kind other */
-  --z-sticky: 100; /* @kind other */
-  --z-overlay: 800; /* @kind other */
-  --z-modal: 900; /* @kind other */
-  --z-toast: 1000; /* @kind other */
+  --z-base: 1;
+  --z-sticky: 100;
+  --z-overlay: 800;
+  --z-modal: 900;
+  --z-toast: 1000;
 
-  /* Elevated card ring + quiet hero wash (design-ui) */
-  --shadow-ring-card: 0 0 0 1px rgba(255, 255, 255, 0.08);
-  --hero-wash: radial-gradient(100% 55% at 50% -12%, rgba(54, 147, 255, 0.08), transparent 55%);
+  /* Card ring + ice-lab hero wash (one cold field) */
+  --shadow-ring-card: 0 0 0 1px rgba(160, 200, 255, 0.08);
+  --hero-wash: radial-gradient(
+    110% 60% at 50% -14%,
+    rgba(60, 110, 190, 0.13),
+    rgba(20, 40, 80, 0.04) 42%,
+    transparent 62%
+  );
 }
-

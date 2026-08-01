@@ -12,8 +12,8 @@ export const REASON_STYLE: Record<
   ReasonKey,
   { icon: LucideIcon; tone: BadgeTone; color: string }
 > = {
-  rec: { icon: Gauge, tone: "success", color: "#2dd4a7" },
-  ctx: { icon: Flag, tone: "warning", color: "#fbbf24" },
+  rec: { icon: Gauge, tone: "success", color: "var(--success-500)" },
+  ctx: { icon: Flag, tone: "warning", color: "var(--warning-500)" },
   qua: { icon: Clapperboard, tone: "cyan", color: "#50deff" },
   top: { icon: Star, tone: "brand", color: "#3693ff" },
 };
