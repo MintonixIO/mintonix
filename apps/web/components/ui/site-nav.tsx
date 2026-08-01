@@ -10,8 +10,7 @@ function marketingActiveFromPath(pathname: string): string | undefined {
   if (pathname.startsWith("/pricing")) return "Pricing";
   if (pathname.startsWith("/blog")) return "Blog";
   if (pathname.startsWith("/about")) return "About";
-  if (pathname.startsWith("/bwf") || pathname.startsWith("/features/bwf"))
-    return "BWF";
+  if (pathname.startsWith("/bwf")) return "BWF";
   return undefined;
 }
 

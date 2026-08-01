@@ -18,7 +18,6 @@ export const footerColumns = [
       { label: "Matches", href: "/bwf/matches" },
       { label: "Players", href: "/bwf/players" },
       { label: "Head-to-head", href: "/bwf/h2h" },
-      { label: "How BWF works", href: "/features/bwf" },
     ],
   },
   {

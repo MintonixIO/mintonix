@@ -124,8 +124,8 @@ export default function FeatureHighlightsPage() {
         ctas={[
           { href: "/bwf", label: "Explore BWF catalog" },
           {
-            href: "/features/bwf",
-            label: "How BWF analysis works",
+            href: "/bwf/matches",
+            label: "Browse matches",
             variant: "outline",
           },
         ]}
