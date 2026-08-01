@@ -46,7 +46,7 @@ Secrets (~/.mintonix/dev-secrets.env)
   PIPELINE_SERVICE_TOKEN, SUPABASE_SERVICE_ROLE_KEY, PRESIGN_SERVICE_TOKEN
   SUPABASE_ANON_KEY + SUPABASE_TEST_EMAIL/PASSWORD (upload lane)
   Optional: SUPABASE_URL, CDN_PRESIGN_URL
-  SlimSAM: pip install torch transformers
+  SlimSAM: pip install torch transformers torchvision Pillow
 """
 
 from __future__ import annotations
@@ -74,6 +74,7 @@ _SCRIPTS = os.path.dirname(os.path.abspath(__file__))
 if _SCRIPTS not in sys.path:
     sys.path.insert(0, _SCRIPTS)
 
+import ssl_certs  # noqa: E402, F401  — fix empty macOS python.org CA store before HTTPS
 from ops_stage import (  # noqa: E402
     STAGE_ORDER,
     STAGE_PRIMARY,
@@ -189,7 +190,14 @@ def http_json(
         detail = e.read().decode(errors="replace")[:500]
         raise RuntimeError(f"HTTP {e.code} on {method} {url}: {detail}") from e
     except urllib.error.URLError as e:
-        raise RuntimeError(f"Network error on {method} {url}: {e.reason}") from e
+        reason = e.reason
+        hint = ""
+        if "CERTIFICATE_VERIFY_FAILED" in str(reason):
+            hint = (
+                " (macOS python.org CA store empty — install certifi in this "
+                "interpreter, or run Applications/Python*/Install Certificates.command)"
+            )
+        raise RuntimeError(f"Network error on {method} {url}: {reason}{hint}") from e
 
 
 def rest_headers(secrets: dict[str, str]) -> dict[str, str]:
@@ -507,12 +515,35 @@ class SlimSam:
             import torch
             from transformers import SamModel, SamProcessor
         except ImportError:
-            sys.exit("SlimSAM needs torch + transformers:  pip install torch transformers")
+            sys.exit(
+                "SlimSAM needs torch + transformers:  "
+                "pip install torch transformers torchvision Pillow"
+            )
+        # SamProcessor image backends (fail late with a clear message if missing).
+        try:
+            import PIL  # noqa: F401
+        except ImportError:
+            sys.exit("SlimSAM needs Pillow:  pip install Pillow")
+        try:
+            import torchvision  # noqa: F401
+        except ImportError:
+            # Older transformers may work with Pillow only; newer ones need torchvision.
+            pass
         self.torch = torch
         self.device = "mps" if torch.backends.mps.is_available() else "cpu"
         print(f"[info] loading SlimSAM ({self.MODEL_ID}) on {self.device}…")
-        self.model = SamModel.from_pretrained(self.MODEL_ID).to(self.device).eval()
-        self.processor = SamProcessor.from_pretrained(self.MODEL_ID)
+        try:
+            self.model = SamModel.from_pretrained(self.MODEL_ID).to(self.device).eval()
+            self.processor = SamProcessor.from_pretrained(self.MODEL_ID)
+        except ValueError as e:
+            msg = str(e)
+            if "Pillow" in msg or "torchvision" in msg or "image processor" in msg.lower():
+                sys.exit(
+                    f"{e}\n"
+                    "Install SlimSAM image backends:  "
+                    "pip install torchvision Pillow"
+                )
+            raise
         self._rgb = None
         self._embeddings = None
 

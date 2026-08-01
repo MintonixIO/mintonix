@@ -18,10 +18,15 @@ description: >
 
   Pass criteria (MVP): primary normalized.mp4 then detections.json present;
   match ready after detect settle; job complete@detect; keep_on_regress not
-  purged. Primary harness: scripts/annotate_and_ingest.py (DEV secrets). Use when
-  the user runs /mintonix-test-suite, or asks to E2E test, run the test suite,
-  verify the pipeline, smoke-test normalize/detect, monitor a match to ready, or
-  validate stage contracts.
+  purged. Also verify GitHub Actions for the current branch/PR (migrate,
+  functions, contracts, worker images, CDN, match-data) with gh. Can check
+  environment readiness for DEV or PROD (local secrets, project secrets by
+  name, Supabase/CDN reachability, vast endpoint names). Primary harness:
+  scripts/annotate_and_ingest.py (DEV secrets). Use when the user runs
+  /mintonix-test-suite, or asks to E2E test, run the test suite, verify the
+  pipeline, smoke-test normalize/detect, monitor a match to ready, validate
+  stage contracts, check CI, monitor Actions, watch PR checks, or check if
+  DEV/PROD is ready / environment readiness / env health.
 ---
 
 # Mintonix test suite
@@ -195,21 +200,137 @@ Loadable copy: `references/stage-contract.json` in this skill.
 
 If contract and code disagree, treat **ARCHITECTURE.md + stage_outputs / ops_stage** as code truth and report the drift; do not silently invent a third map.
 
-## Secrets and environment
+## Secrets and environment profiles
 
-**DEV only** unless the user explicitly targets another env.
+Default runtime E2E is **DEV**. Use **PROD** only when the user explicitly asks
+for prod readiness or prod E2E. Profiles match `scripts/manage.py`:
 
-File: `~/.mintonix/dev-secrets.env` (script also accepts process env; `DEV_*` overrides).
+| Env | Local secrets file | Project ref | Default Supabase URL | Default CDN presign |
+|-----|--------------------|-------------|----------------------|---------------------|
+| **dev** | `~/.mintonix/dev-secrets.env` | `xaxyuytvgcdbdnndhgwj` | `https://xaxyuytvgcdbdnndhgwj.supabase.co` | `https://mintonix-cdn-dev.peterouyang14.workers.dev/presign` |
+| **prod** | `~/.mintonix/prod-secrets.env` | `grkaepnplgotsxdudlfn` | `https://grkaepnplgotsxdudlfn.supabase.co` | `https://mintonix-cdn.peterouyang14.workers.dev/presign` |
 
-| Key | Used for |
-|---|---|
-| `PIPELINE_SERVICE_TOKEN` | matches-ingest, `/jobs/dispatch`, pipeline edges |
-| `SUPABASE_SERVICE_ROLE_KEY` (or `SUPABASE_SERVICE_KEY`) | service reads of matches/jobs; BWF catalog resolve |
-| `PRESIGN_SERVICE_TOKEN` | CDN `/presign` for BWF `annotation.json` + B2 list/checks |
-| `SUPABASE_ANON_KEY` + `SUPABASE_TEST_EMAIL` / `SUPABASE_TEST_PASSWORD` | user-upload lane JWT |
-| Optional `SUPABASE_URL`, `CDN_PRESIGN_URL` | defaults in harness point at DEV project + CDN |
+Process env can fill gaps; `DEV_*` / profile-style overrides apply per tool.
+`annotate_and_ingest.py` is DEV-oriented (`~/.mintonix/dev-secrets.env`, `DEV_*`).
+For prod readiness, prefer `manage.py` profiles + the checklist below — do not
+silently run GPU E2E against prod.
 
-Do **not** print secret values. If secrets are missing, fail fast and tell the user which keys are absent.
+### Local secret keys (names only — never print values)
+
+| Key | Required for | Used for |
+|---|---|---|
+| `PIPELINE_SERVICE_TOKEN` | enqueue / dispatch / ops | matches-ingest, `/jobs/dispatch`, pipeline edges |
+| `SUPABASE_SERVICE_ROLE_KEY` (or `SUPABASE_SERVICE_KEY`) | all service REST | matches/jobs reads; BWF catalog resolve |
+| `PRESIGN_SERVICE_TOKEN` | B2 / annotation / dual-truth list | CDN `/presign` |
+| `SUPABASE_ANON_KEY` + `SUPABASE_TEST_EMAIL` / `SUPABASE_TEST_PASSWORD` | user-upload lane only | JWT ingest |
+| `SUPABASE_URL`, `CDN_PRESIGN_URL` | optional override | blank → profile defaults |
+| `VAST_API_KEY` | optional local vast list | readiness probe of endpoint names (not on worker) |
+| `SUPABASE_DB_PASSWORD` | optional | `supabase migration list` / DB CLI only |
+
+Do **not** print secret values. If required keys are missing, fail fast and list **key names** only.
+
+## Environment readiness (DEV or PROD)
+
+When the user asks if an environment is **ready**, or before a long E2E, run this
+checklist for the chosen env (`dev` default). Full map: `references/env-ready.json`.
+
+**Verdicts:** `ready` | `ready_with_warnings` | `not_ready`  
+Report a per-check table (pass / fail / skip / warn). Do not claim ready if any
+**blocking** check fails.
+
+### Blocking checks (must pass for `ready`)
+
+1. **Local secrets file** — `~/.mintonix/{dev|prod}-secrets.env` exists; required keys present (names only):
+   - `PIPELINE_SERVICE_TOKEN`
+   - `SUPABASE_SERVICE_ROLE_KEY` or `SUPABASE_SERVICE_KEY`
+   - `PRESIGN_SERVICE_TOKEN`
+2. **Supabase REST** — `GET {SUPABASE_URL}/rest/v1/matches?select=id&limit=1` with service role → **200**.
+3. **Edge functions reachable** — `POST {SUPABASE_URL}/functions/v1/jobs/dispatch` with wrong/missing pipeline token → **401** (proves function is deployed and auth works). Do **not** dispatch real jobs as part of readiness unless the user asks.
+4. **CDN presign** — `POST {CDN_PRESIGN_URL}` with `Authorization: Bearer $PRESIGN_SERVICE_TOKEN` and a harmless body (e.g. LIST under a throwaway prefix or GET presign for a non-critical key). Expect **2xx** or a structured **4xx** from the worker (not Cloudflare 1010 / HTML block). Use a non-empty `User-Agent` (Python urllib default is blocked).
+5. **Project edge secrets (names only)** — `supabase secrets list --project-ref <ref>` must include digests for:
+   - `PIPELINE_SERVICE_TOKEN`, `JOB_TOKEN_SECRET`, `PRESIGN_SERVICE_TOKEN`, `CDN_PRESIGN_URL`
+   - `VAST_API_KEY`
+   - `VAST_NORMALIZE_ENDPOINT_NAME` (or legacy `VAST_ENDPOINT_NAME` with a **warn**)
+   - `VAST_DETECT_ENDPOINT_NAME` (warn if missing — detect falls back to normalize endpoint)
+6. **Migrations aligned** — `supabase migration list --linked` (with DB password if needed): no remote-only versions missing from local `supabase/migrations/` for the branch you intend to maintain. Remote-ahead without local files → **not_ready** for “maintain this branch”; remote up-to-date with local → pass.
+
+### Warning-only checks (do not alone force `not_ready`)
+
+| Check | How | Notes |
+|---|---|---|
+| User-upload lane keys | Anon + test email/password in local secrets | Skip if only testing BWF |
+| `VAST_TLS_CA` on project | secrets list | Needed if vast workers use custom CA |
+| Vast endpoint names resolve | With local `VAST_API_KEY`, `GET https://console.vast.ai/api/v0/endptjobs/` — endpoint_name matches project secret values if known | Digests alone cannot show the name string unless you set secrets yourself or read from local file |
+| Expected DEV endpoint names | Prefer `Normalization-DEV` / `Detection-DEV` when checking DEV vast account | PROD may use different names — report actual names, do not invent PROD names if absent |
+| Ready workers 0/0 | vast console | Cold start OK; not a failure |
+| Edge functions list | `supabase functions list --project-ref` or dashboard | `jobs`, `matches-ingest`, `ops`, `cdn-access` should exist |
+| Recent CI deploy | `gh run list` for workflows targeting this env | Master success for prod; PR/dev success for dev — informational |
+| Catalog non-empty | `matches` with `owner_id is null` count ≥ 1 | Needed for BWF E2E only |
+
+### Optional deep readiness (explicit user ask only)
+
+- Manual `jobs/dispatch` with valid token and empty queue → `{ dispatched: [] }` or similar.
+- Full `annotate_and_ingest.py` E2E on **DEV only** by default.
+- **Never** run destructive purge or mass re-queue on PROD as a “readiness” step.
+
+### Example readiness commands (agent)
+
+```bash
+ENV=dev   # or prod
+REF=xaxyuytvgcdbdnndhgwj   # prod: grkaepnplgotsxdudlfn
+SECRETS=~/.mintonix/${ENV}-secrets.env
+
+# 1) Keys present? (names only)
+python3 - <<'PY'
+from pathlib import Path
+import os, sys
+env = os.environ.get("ENV", "dev")
+path = Path.home() / ".mintonix" / f"{env}-secrets.env"
+required = ["PIPELINE_SERVICE_TOKEN", "PRESIGN_SERVICE_TOKEN"]
+# service role has aliases
+if not path.is_file():
+    print("FAIL local_secrets_file missing", path); sys.exit(1)
+vals = {}
+for line in path.read_text().splitlines():
+    line=line.strip()
+    if not line or line.startswith("#") or "=" not in line: continue
+    k,v=line.split("=",1); vals[k.strip()]=v.strip().strip('"').strip("'")
+missing=[]
+for k in required:
+    if not vals.get(k): missing.append(k)
+if not (vals.get("SUPABASE_SERVICE_ROLE_KEY") or vals.get("SUPABASE_SERVICE_KEY")):
+    missing.append("SUPABASE_SERVICE_ROLE_KEY|SUPABASE_SERVICE_KEY")
+print("OK keys" if not missing else "FAIL missing " + ",".join(missing))
+# never print values
+PY
+
+# 2) Project secret names
+supabase secrets list --project-ref "$REF"
+
+# 3) REST smoke (load service key in shell without echoing)
+# curl -sS -o /dev/null -w "%{http_code}" \
+#   -H "apikey: $KEY" -H "Authorization: Bearer $KEY" \
+#   "$URL/rest/v1/matches?select=id&limit=1"
+
+# 4) Vast endpoint names (if VAST_API_KEY in local secrets)
+# python3 … list endpoint_name only
+```
+
+### Readiness report format
+
+```
+Environment: DEV|PROD  ref=<project_ref>
+Verdict: ready | ready_with_warnings | not_ready
+
+| Check | Result | Detail |
+| ... | pass/fail/warn/skip | one line, no secrets |
+
+Blocking failures: …
+Warnings: …
+Next actions: …
+```
+
+**PROD extra rules:** confirm user wanted prod; no secret dumps; no GPU E2E unless explicitly requested; prefer readiness-only probes.
 
 ## Primary E2E harness
 
@@ -309,22 +430,105 @@ cd workers/vast/video-det && python3 -m unittest \
 
 GPU/TensorRT full worker e2e is environment-specific; do not claim GPU product path passed from CPU unit tests alone.
 
+## GitHub Actions / CI (required when testing a branch or PR)
+
+When the user runs the test suite on a **branch/PR**, or asks about CI / Actions /
+workflows, **also verify GitHub checks**. Prefer `gh` (authenticated CLI). Do not
+paste tokens or secret values. Workflow map: `references/ci-workflows.json`.
+
+### Workflows that matter for this pipeline
+
+| Workflow file | Display name | Jobs (typical check names) | What green means |
+|---|---|---|---|
+| `supabase.yml` | Supabase — migrations + edge functions | `migrate`, `unit`, `functions` | DEV (PR) / PROD (master): `db push` + edge function deploy; unit = stage_outputs goldens |
+| `contracts.yml` | Contracts | `stage-artifacts` | `contracts/stage_artifacts.json` + callback fixtures match Python/TS maps |
+| `video-normalization.yml` | Video Normalization Worker | `image / build-test-push`, `image / promote` | Docker image builds, unit tests in image, GHCR push/promote |
+| `video-det.yml` | Video Detection Worker | `image / build-test-push`, `image / promote` | Same for detect GPU image |
+| `cloudflare-cdn.yml` | Cloudflare CDN Worker | `deploy` | Typecheck + deploy CDN worker (dev env on PR) |
+| `match-data.yml` | Match data — scrape & load to Supabase | `scrape-and-load` | Catalog scrape/load path (creates BWF rows; **does not** enqueue GPU) |
+| `vast-worker.yml` | Vast worker image (reusable) | called by video-* only | Not a top-level PR check |
+
+Path filters apply: only workflows whose `paths:` match the PR diff will run.
+Missing checks for untouched areas is normal — do not invent failures for
+untriggered workflows.
+
+### Commands
+
+```bash
+# Discover repo + open PR for current branch
+gh repo view --json nameWithOwner -q .nameWithOwner
+gh pr view --json number,url,headRefName,statusCheckRollup
+
+# Check rollup for a PR (tab-separated: name, status, duration, url)
+gh pr checks <N> --repo <owner/repo>
+
+# Recent runs on this branch
+gh run list --repo <owner/repo> --branch <branch> --limit 12
+
+# Failed logs
+gh run view <run_id> --repo <owner/repo> --log-failed
+
+# Re-run only failed jobs (e.g. flake)
+gh run rerun <run_id> --repo <owner/repo> --failed
+```
+
+### Pass / fail interpretation
+
+| Outcome | Agent action |
+|---|---|
+| All **triggered** checks **pass** | Report CI green for this PR/push |
+| `migrate` fail | Remote migration history vs `supabase/migrations/` drift — do not claim functions deployed |
+| `functions` skipped | Usually blocked by failed `migrate` or `unit` (`needs:`) |
+| `stage-artifacts` fail | Contract drift or missing `contracts/*` — re-align with `ops_stage.py` / `stage_outputs.ts` |
+| `functions` fail on `setup-cli` **rate limit** | Infra flake; re-run failed jobs; not an app regression |
+| Worker image fail | Read failed job log; distinguish unit test vs Docker/GHCR |
+| `scrape-and-load` fail | Catalog pipeline issue — separate from normalize/detect GPU E2E |
+| Check **pending** | Poll with backoff (e.g. 30s); use a background monitor for long image builds (~4–10m) |
+
+### CI vs dual-truth E2E
+
+CI green ≠ match ready. Treat as **layers**:
+
+1. **Contracts + unit** — basename/callback maps consistent  
+2. **Migrate + functions** — schema + edge deploy on DEV (PR)  
+3. **Worker images** — buildable/testable containers published  
+4. **CDN deploy** — presign path deployable  
+5. **Match-data** — catalog loader healthy (BWF rows only)  
+6. **Runtime E2E** — `annotate_and_ingest.py` dual-truth (this skill’s primary harness)
+
+When reporting “test suite” results on a PR: include **both** CI rollup and
+runtime E2E if both were in scope. If only CI was requested, still note that
+runtime GPU path was not exercised.
+
+### CI agent checklist
+
+1. Resolve current branch and PR number (`gh pr view` / `gh pr list --head`).
+2. `gh pr checks` — list every check with status.
+3. For failures: `gh run view … --log-failed`; classify flake vs real drift.
+4. Optional: re-run failed only after rate-limit / cancel races; do not loop forever.
+5. Confirm path-filtered expectations (e.g. only docs change → fewer workflows).
+6. Do **not** commit/push unless the user asks. Do **not** merge the PR unless asked.
+
 ## Agent workflow
 
-1. **Clarify target** — new E2E vs monitor existing match; lane (BWF vs user); `--until normalize|detect`; DEV only unless told otherwise.
-2. **BWF only:** ensure catalog match exists (`--match-id` or resolvable `--url`). Do not invent new BWF rows or rewrite tournament/roster.
-3. **Confirm secrets** — file exists and required keys present (names only).
-4. **Pick command** — prefer `annotate_and_ingest.py` for E2E; use unit suites for pure contract work.
-5. **Run with long enough timeout** for vast cold start + normalize + detect (often many minutes; default 2h is intentional).
-6. **Report dual truth** using the verification contract:
+1. **Clarify target** — new E2E vs monitor existing match vs **env readiness only**; lane (BWF vs user); `--until normalize|detect`; **env = dev|prod** (default **dev**); CI/workflows (default **yes** on a branch/PR).
+2. **Environment readiness** — when asked “is DEV/PROD ready?” or before E2E: run **Environment readiness** for that env; stop with `not_ready` + next actions if blocking checks fail. Default env is DEV; prod only if user said prod.
+3. **CI first (when applicable)** — `gh pr checks` / `gh run list`; settle or monitor; re-run flakes if appropriate.
+4. **BWF only:** ensure catalog match exists (`--match-id` or resolvable `--url`). Do not invent new BWF rows or rewrite tournament/roster.
+5. **Confirm secrets** — covered by readiness; re-check names only before long runs.
+6. **Pick command** — prefer `annotate_and_ingest.py` for DEV E2E; unit suites for contracts; `gh` for workflows; readiness probes for env health.
+7. **Run E2E with long enough timeout** for vast cold start + normalize + detect (default 2h intentional). **PROD E2E only if user explicitly requested.**
+8. **Report dual truth** using the verification contract:
    - match id, prefix (`bwf/…` or `users/…`), lane
    - basenames present vs primary/outputs map
    - for BWF: note that `normalized.mp4` is the valid cut; soft-check `frame_ranges.csv`
    - job stage/status vs callback wire mapping
    - match status (`ready` only after **detect** settle)
    - whether `detections.json` is present (content deep-check only if user asks or a small sample is already downloaded)
-7. **On failure** — distinguish: missing secrets, catalog miss (BWF), enqueue, dispatch not firing, normalize callback fail, detect callback fail, B2 missing primary, DB settle without object, timeout while still `processing`/`queued`.
-8. **Do not** require analyze / `analysis.json` for MVP green. **Do not** treat ReID/`player_id` as required. **Do not** purge `keep_on_regress` when advising regress tests. **Do not** expect live `scores.csv` or primary `valid.mp4`.
+   - **CI rollup** when branch/PR in scope
+   - **env readiness verdict** when that was in scope
+9. **On failure** — distinguish: env not ready (secrets, REST, CDN, project secrets, migration drift), CI, catalog miss, enqueue, dispatch, normalize/detect callback, B2 missing primary, DB settle without object, timeout.
+10. **Do not** require analyze / `analysis.json` for MVP green. **Do not** treat ReID/`player_id` as required. **Do not** purge `keep_on_regress` when advising regress tests. **Do not** expect live `scores.csv` or primary `valid.mp4`.
 
 ## Content expectations (detect)
 
@@ -348,9 +552,13 @@ When the user asks whether detect “really worked,” not only that keys exist:
 | CDN | `workers/cloudflare/cdn/README.md` |
 | Match-data (catalog only) | `workers/github/match-data/README.md` |
 | Harness | `scripts/annotate_and_ingest.py` |
+| CI workflows | `.github/workflows/*.yml` + skill `references/ci-workflows.json` |
+| Env readiness | skill `references/env-ready.json` + `scripts/manage.py` `PROFILES` |
+| Repo contracts golden | `contracts/stage_artifacts.json` |
 
 ## Safety
 
 - Prefer DEV project tokens and CDN.
 - No force-push, no prod secret dumps, no destructive B2/DB cleanup unless the user explicitly asks.
 - Long-running monitors: use appropriate timeouts; do not spin tight poll loops in the agent beyond the harness.
+- Environment readiness may list secret **names** and HTTP status codes only — never values or full JWTs.

@@ -11,6 +11,9 @@ import urllib.error
 import urllib.request
 from typing import Any
 
+# macOS python.org CA fix for urllib (no-op when certs already present).
+import ssl_certs  # noqa: F401
+
 # Stage ↔ B2 artifact map.
 # Regression *to* stage S deletes S outputs and every later stage's outputs.
 # original.* and annotation.json are never purged by stage control.

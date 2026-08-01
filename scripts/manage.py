@@ -47,6 +47,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Any
 
+import ssl_certs  # noqa: F401  — fix empty macOS python.org CA store before HTTPS
 import ops_stage as _ops_stage
 from ops_stage import (
     KEEP_ON_REGRESS,
