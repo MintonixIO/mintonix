@@ -1,3 +1,4 @@
+import Link from "next/link";
 import {
   FileVideo,
   Folder,
@@ -44,7 +45,7 @@ const RECENTS = [
 const TEAM = [
   { in: "VA", bg: "linear-gradient(135deg,#3693ff,#1f5fb0)" },
   { in: "KM", bg: "linear-gradient(135deg,#2dd4a7,#157e63)" },
-  { in: "LS", bg: "linear-gradient(135deg,#fbbf24,#c98a06)" },
+  { in: "LS", bg: "linear-gradient(135deg,var(--accent),var(--brand))" },
   { in: "TP", bg: "linear-gradient(135deg,#f4515c,#a82b34)" },
 ];
 
@@ -54,9 +55,9 @@ export default function FeatureDashboardPage() {
       <div className="border-b border-[rgba(54,147,255,0.22)] bg-[rgba(54,147,255,0.07)] px-4 py-2.5 text-center text-[12.5px] text-[var(--text-secondary)]">
         <strong className="font-medium text-[var(--text-strong)]">Roadmap / preview.</strong>{" "}
         Not part of the live public product — explore the{" "}
-        <a href="/bwf" className="text-[var(--text-link)] underline-offset-2 hover:underline">
+        <Link href="/bwf" className="text-[var(--text-link)] underline-offset-2 hover:underline">
           BWF catalog
-        </a>{" "}
+        </Link>{" "}
         today.
       </div>
       <FeatureHero
@@ -64,7 +65,7 @@ export default function FeatureDashboardPage() {
         eyebrow="Dashboard"
         titleClassName="max-w-[14ch]"
         title="Every match, in one place."
-        body="Upload footage and it lands as a fully analyzed match. Watch what's processing, jump back into recent breakdowns, search the whole archive, and share any match with a link — without leaving the page."
+        body="Planned private workspace: upload footage and it lands as an analyzed match. Watch what's processing, jump into recent breakdowns, search the archive, and share a match with a link — preview only today."
         ctas={[
           { href: "/bwf", label: "Open BWF catalog" },
           { href: "/bwf/matches", label: "Browse matches", variant: "outline" },
@@ -303,7 +304,7 @@ export default function FeatureDashboardPage() {
 
       <FeatureCTA
         title="Your whole season, organized from day one."
-        body="Spin up a workspace in seconds and upload your first match free."
+        body="Workspace upload is planned — browse the free BWF catalog today."
         ctas={[{ href: "/bwf", label: "Open BWF catalog" }]}
       />
     </div>

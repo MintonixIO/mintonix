@@ -193,13 +193,13 @@ describe("displayDate", () => {
     const m = mapDbMatch(row({ id: "d2" }));
     m.matchDate = "not-a-date";
     m.year = null;
-    expect(displayDate(m)).toBe("");
+    expect(displayDate(m)).toBe("Date unknown");
   });
 
   it("falls back to year when matchDate is invalid", () => {
     const m = mapDbMatch(row({ id: "d3" }));
     m.matchDate = "not-a-date";
     m.year = 2025;
-    expect(displayDate(m)).toBe("2025");
+    expect(displayDate(m)).toBe("2025 · event year");
   });
 });

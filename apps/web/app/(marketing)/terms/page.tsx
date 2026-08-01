@@ -244,10 +244,10 @@ export default function TermsPage() {
               <P>
                 Questions? Reach us at{" "}
                 <a
-                  href="mailto:legal@mintonix.com"
+                  href="mailto:legal@mintonix.io"
                   className="text-[var(--text-link)] hover:underline"
                 >
-                  legal@mintonix.com
+                  legal@mintonix.io
                 </a>{" "}
                 or through the{" "}
                 <Link href="/about#contact" className="text-[var(--text-link)] hover:underline">

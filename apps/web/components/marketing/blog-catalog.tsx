@@ -14,8 +14,6 @@ import {
 import { useMemo, useState } from "react";
 import { Avatar } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Tabs } from "@/components/ui/tabs";
 import { blogPosts } from "@/lib/mock-data";
 
@@ -212,24 +210,23 @@ export function BlogCatalog() {
                 Get it in your inbox
               </div>
               <h2 className="font-display text-[clamp(24px,3vw,34px)] font-semibold tracking-[-0.025em] text-[var(--text-strong)]">
-                One note a month. No noise.
+                Shipping notes — coming later.
               </h2>
               <p className="mt-3 max-w-[46ch] text-[14.5px] leading-[1.6] text-[var(--text-secondary)]">
                 Match-reading notes, product shipping logs, and the occasional
                 dataset — only when it&apos;s worth the inbox slot.
               </p>
             </div>
-            <form
-              className="flex flex-col gap-3 sm:flex-row sm:items-end"
-              onSubmit={(e) => e.preventDefault()}
-            >
-              <div className="min-w-0 flex-1">
-                <Input type="email" placeholder="you@club.com" label="Email" />
-              </div>
-              <Button type="submit" className="sm:mb-0">
-                Subscribe
-              </Button>
-            </form>
+            <div className="rounded-[12px] border border-[var(--border)] bg-[var(--surface-2)] px-4 py-4">
+              <p className="text-[13.5px] leading-relaxed text-[var(--text-secondary)]">
+                Email notes are planned — there is no mailing list signup yet.
+                Follow the{" "}
+                <a href="/changelog" className="text-[var(--text-link)] hover:underline">
+                  changelog
+                </a>{" "}
+                for public BWF releases.
+              </p>
+            </div>
           </div>
         </div>
       </section>

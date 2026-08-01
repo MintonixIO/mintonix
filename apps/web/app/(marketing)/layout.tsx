@@ -21,7 +21,8 @@ export default function MarketingLayout({
         mode="marketing"
         indicator="spotlight"
         signInLabel={null}
-        ctaLabel={null}
+        ctaLabel="Open BWF"
+        ctaHref="/bwf"
       />
       <main className="flex-1">{children}</main>
       <Footer

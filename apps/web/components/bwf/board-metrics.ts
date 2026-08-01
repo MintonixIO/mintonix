@@ -24,7 +24,7 @@ export const BOARD_METRICS = [
     short: "Wins",
     unit: "",
     icon: Trophy,
-    color: "var(--warning-400, #fcd34d)",
+    color: "var(--brand)",
     get: (p: DirectoryPlayer) => p.wins,
   },
   {
@@ -42,7 +42,7 @@ export const BOARD_METRICS = [
     short: "3-game",
     unit: "",
     icon: Clapperboard,
-    color: "var(--viz-5, #b07bff)",
+    color: "var(--viz-5)",
     get: (p: DirectoryPlayer) => p.threeGames,
   },
   {

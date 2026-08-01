@@ -102,7 +102,7 @@ export function MatchDetail({ m }: { m: CatalogMatch }) {
     <section>
       <Link
         href="/bwf/matches"
-        className="mb-[18px] inline-flex items-center gap-[7px] rounded-[9px] border border-[var(--border)] bg-[var(--surface-1)] px-3 py-[7px] text-[13px] text-[var(--text-secondary)] hover:border-[var(--border-strong)] hover:text-[var(--text-strong)]"
+        className="mb-[18px] inline-flex items-center gap-[7px] rounded-[9px] border border-[var(--border)] bg-[var(--surface-1)] px-3 py-2.5 min-h-10 text-[13px] text-[var(--text-secondary)] hover:border-[var(--border-strong)] hover:text-[var(--text-strong)]"
       >
         <ArrowLeft className="h-[15px] w-[15px]" />
         All matches
@@ -122,7 +122,7 @@ export function MatchDetail({ m }: { m: CatalogMatch }) {
           </span>
           <div className="flex-1" />
           <span className="font-mono text-[12px] text-[var(--text-muted)]">
-            {displayDate(m) || "Date unknown"}
+            {displayDate(m)}
           </span>
         </div>
 
@@ -155,7 +155,7 @@ export function MatchDetail({ m }: { m: CatalogMatch }) {
           ) : null}
           {m.comeback ? (
             <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--border-subtle)] bg-[var(--surface-2)] px-2.5 py-1 text-xs text-[var(--text-secondary)]">
-              <Flame className="h-3.5 w-3.5 text-[var(--warning-400,#fcd34d)]" />
+              <Flame className="h-3.5 w-3.5 text-[var(--warning-400)]" />
               Comeback win
             </span>
           ) : null}
@@ -207,7 +207,7 @@ export function MatchDetail({ m }: { m: CatalogMatch }) {
               <ExternalLink className="h-3.5 w-3.5" />
             </a>
           </div>
-          <div className="aspect-video w-full bg-black">
+          <div className="aspect-video w-full bg-[var(--bg-sunken,#05070c)]">
             <iframe
               title="Match video (YouTube when allowlisted)"
               src={`https://www.youtube-nocookie.com/embed/${youtube.id}`}
@@ -220,11 +220,39 @@ export function MatchDetail({ m }: { m: CatalogMatch }) {
         </div>
       ) : m.sourceUrl ? (
         <div className="mb-4 rounded-[14px] border border-dashed border-[var(--border)] bg-[var(--surface-1)] px-5 py-8 text-center text-[13px] text-[var(--text-muted)]">
-          Video source on file is not a recognized YouTube URL (link omitted).
+          <p>Video source on file is not a recognized YouTube URL (link omitted).</p>
+          <div className="mt-4 flex flex-wrap items-center justify-center gap-3">
+            <Link
+              href="/bwf/matches?lens=video"
+              className="inline-flex min-h-10 items-center text-[13px] text-[var(--text-link)] hover:text-[var(--accent)]"
+            >
+              Browse matches with video
+            </Link>
+            <Link
+              href="/bwf/matches"
+              className="inline-flex min-h-10 items-center text-[13px] text-[var(--text-link)] hover:text-[var(--accent)]"
+            >
+              Back to library
+            </Link>
+          </div>
         </div>
       ) : (
         <div className="mb-4 rounded-[14px] border border-dashed border-[var(--border)] bg-[var(--surface-1)] px-5 py-8 text-center text-[13px] text-[var(--text-muted)]">
-          No YouTube source linked for this match yet.
+          <p>No YouTube source linked for this match yet.</p>
+          <div className="mt-4 flex flex-wrap items-center justify-center gap-3">
+            <Link
+              href="/bwf/matches?lens=video"
+              className="inline-flex min-h-10 items-center text-[13px] text-[var(--text-link)] hover:text-[var(--accent)]"
+            >
+              Browse matches with video
+            </Link>
+            <Link
+              href="/bwf/matches"
+              className="inline-flex min-h-10 items-center text-[13px] text-[var(--text-link)] hover:text-[var(--accent)]"
+            >
+              Back to library
+            </Link>
+          </div>
         </div>
       )}
 
@@ -262,7 +290,7 @@ export function MatchDetail({ m }: { m: CatalogMatch }) {
           <div className="mt-4">
             <Link
               href={`/bwf/h2h?a=${m.team1Ids[0]}&b=${m.team2Ids[0]}`}
-              className="inline-flex text-[13px] text-[var(--text-link)] hover:text-[var(--accent)]"
+              className="inline-flex min-h-10 items-center text-[13px] text-[var(--text-link)] hover:text-[var(--accent)]"
             >
               Head-to-head · {m.team1[0]} vs {m.team2[0]}
             </Link>

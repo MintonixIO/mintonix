@@ -20,17 +20,17 @@ const VALUE_PROPS = [
   {
     icon: Unlock,
     title: "Nothing to upload",
-    body: "The library is analyzed and waiting — sign in and start studying immediately.",
+    body: "Finished BWF results are already in the catalog — browse free, no account.",
   },
   {
     icon: Layers,
-    title: "Same depth as your matches",
-    body: "Rallies, shot data, heatmaps and speeds — the full Mintonix breakdown on every match.",
+    title: "Structured match data",
+    body: "Scores, disciplines, rounds, rosters, and YouTube links when a source is allowlisted.",
   },
   {
     icon: GitCompare,
     title: "Built for comparison",
-    body: "Line a pro up against your own footage to see exactly where the gap is.",
+    body: "Open head-to-head to see every shared meeting between two players in the catalog.",
   },
 ];
 
@@ -114,34 +114,34 @@ const PLAYERS = [
     in: "AY",
     name: "Akane Yamaguchi",
     meta: "JPN · 12 matches",
-    bg: "linear-gradient(135deg,#f5b43c,#c98a06)",
+    bg: "linear-gradient(135deg,var(--brand),#1e7bf0)",
   },
 ];
 
 const COVERAGE = [
   {
-    big: "480+",
-    label: "BWF singles matches analyzed and growing every week.",
+    big: "Live",
+    label: "Catalog counts load from the public BWF match table.",
   },
   {
-    big: "60k",
-    label: "rallies broken down shot by shot across the library.",
+    big: "H2H",
+    label: "Meetings computed from real match rows, not fantasy rankings.",
   },
-  { big: "2014", label: "earliest broadcast match in the archive." },
+  { big: "YT", label: "Video embeds only when the source is allowlisted YouTube." },
   { big: "$0", label: "to explore — free, no account required." },
 ];
 
 export default function FeatureBwfPage() {
   return (
     <div className="overflow-x-clip">
-      <div className="border-b border-[rgba(45,212,167,0.28)] bg-[rgba(45,212,167,0.08)] px-4 py-2.5 text-center text-[12.5px] text-[var(--text-secondary)]">
+      <div className="border-b border-[rgba(54,147,255,0.28)] bg-[rgba(54,147,255,0.08)] px-4 py-2.5 text-center text-[12.5px] text-[var(--text-secondary)]">
         <strong className="font-medium text-[var(--text-strong)]">Live product.</strong>{" "}
         The BWF catalog is available now — no account required.
       </div>
       <FeatureHero
         EyebrowIcon={Trophy}
         eyebrow="BWF match library"
-        eyebrowClassName="bg-[rgba(245,180,60,0.16)] text-[#f5b43c]"
+        eyebrowClassName="bg-[var(--accent-soft)] text-[var(--accent)]"
         titleClassName="max-w-[15ch]"
         title="BWF analysis, ready to browse."
         body="Browse a full catalog of BWF tournament matches — real scores, players, head-to-head records, and match video when a source is available. Free to explore, no account required."
@@ -153,7 +153,7 @@ export default function FeatureBwfPage() {
             variant: "outline",
           },
         ]}
-        glow="radial-gradient(110% 60% at 50% -10%, rgba(245,180,60,0.12), transparent 56%)"
+        glow="radial-gradient(110% 60% at 50% -10%, rgba(54,147,255,0.10), transparent 56%)"
         gridClassName="grid items-center gap-10 lg:grid-cols-2 lg:gap-14"
       >
         <div className="relative overflow-hidden rounded-[18px] border border-[var(--border)] bg-[linear-gradient(150deg,#14182b,#0a1120)] shadow-[var(--shadow-xl)]">
@@ -161,13 +161,13 @@ export default function FeatureBwfPage() {
             className="pointer-events-none absolute inset-0"
             style={{
               backgroundImage:
-                "repeating-linear-gradient(45deg, rgba(245,180,60,0.04) 0 12px, transparent 12px 24px)",
+                "repeating-linear-gradient(45deg, rgba(54,147,255,0.04) 0 12px, transparent 12px 24px)",
             }}
           />
           <div className="relative p-[22px]">
             <div className="flex items-center justify-between">
-              <span className="inline-flex items-center gap-1.5 font-mono text-[10.5px] uppercase tracking-[0.1em] text-[#f5b43c]">
-                <span className="h-1.5 w-1.5 rounded-full bg-[#f5b43c]" />
+              <span className="inline-flex items-center gap-1.5 font-mono text-[10.5px] uppercase tracking-[0.1em] text-[var(--accent)]">
+                <span className="h-1.5 w-1.5 rounded-full bg-[var(--accent)]" />
                 Featured · final
               </span>
               <span className="font-mono text-[11px] text-[var(--text-muted)]">
@@ -176,7 +176,7 @@ export default function FeatureBwfPage() {
             </div>
             <div className="mt-[22px] flex items-center gap-3.5">
               <div className="flex-1 text-center">
-                <div className="mx-auto inline-flex h-14 w-14 items-center justify-center rounded-full bg-[linear-gradient(135deg,#3693ff,#1f5fb0)] font-display text-lg font-semibold text-white">
+                <div className="mx-auto inline-flex h-14 w-14 items-center justify-center rounded-full bg-[linear-gradient(135deg,#3693ff,#1f5fb0)] font-display text-lg font-semibold text-[var(--text-on-blue)]">
                   VA
                 </div>
                 <div className="mt-2.5 font-display text-[15px] font-semibold text-[var(--text-strong)]">
@@ -186,14 +186,14 @@ export default function FeatureBwfPage() {
                   DEN · #1
                 </div>
               </div>
-              <div className="text-center font-display text-[22px] font-semibold tabular-nums tracking-wide text-[#f5b43c]">
+              <div className="text-center font-display text-[22px] font-semibold tabular-nums tracking-wide text-[var(--accent)]">
                 21–18
                 <span className="mt-0.5 block text-center text-[13px] text-[var(--text-muted)]">
                   21–16
                 </span>
               </div>
               <div className="flex-1 text-center">
-                <div className="mx-auto inline-flex h-14 w-14 items-center justify-center rounded-full bg-[linear-gradient(135deg,#f4515c,#a82b34)] font-display text-lg font-semibold text-white">
+                <div className="mx-auto inline-flex h-14 w-14 items-center justify-center rounded-full bg-[linear-gradient(135deg,#f4515c,#a82b34)] font-display text-lg font-semibold text-[var(--text-on-blue)]">
                   KM
                 </div>
                 <div className="mt-2.5 font-display text-[15px] font-semibold text-[var(--text-strong)]">
@@ -206,9 +206,9 @@ export default function FeatureBwfPage() {
             </div>
             <div className="mt-[22px] grid grid-cols-3 gap-2">
               {[
-                { v: "148", k: "Rallies" },
-                { v: "334", k: "Smash max" },
-                { v: "9.4", k: "Avg length" },
+                { v: "MS", k: "Discipline" },
+                { v: "F", k: "Round" },
+                { v: "YT", k: "Video when linked" },
               ].map((f) => (
                 <div
                   key={f.k}
@@ -225,10 +225,10 @@ export default function FeatureBwfPage() {
             </div>
             <Link
               href="/bwf"
-              className="mt-[18px] flex h-10 items-center justify-center gap-2 rounded-[10px] bg-[#f5b43c] text-[13.5px] font-semibold text-[#2a1c00]"
+              className="mt-[18px] flex min-h-11 items-center justify-center gap-2 rounded-[10px] bg-[var(--brand)] text-[13.5px] font-semibold text-[var(--text-on-blue)]"
             >
               <Play className="h-[15px] w-[15px]" />
-              Open the breakdown
+              Open in catalog
             </Link>
           </div>
         </div>
@@ -236,7 +236,7 @@ export default function FeatureBwfPage() {
 
       <FeatureSection className="pt-24">
         <FeatureValueGrid
-          iconWrapClassName="bg-[rgba(245,180,60,0.16)] text-[#f5b43c]"
+          iconWrapClassName="bg-[rgba(54,147,255,0.16)] text-[var(--accent)]"
           cardClassName="transition-none hover:translate-y-0"
           items={VALUE_PROPS}
         />
@@ -245,12 +245,12 @@ export default function FeatureBwfPage() {
       <FeatureSection
         className="pt-[116px]"
         eyebrow="Marquee matches"
-        eyebrowClassName="text-[#f5b43c]"
-        title="Marquee matches, already broken down."
+        eyebrowClassName="text-[var(--accent)]"
+        title="Sample match layouts — open the live catalog for real rows."
         headerAside={
           <Link
             href="/bwf"
-            className="text-[13.5px] font-medium text-[#f5b43c] no-underline hover:underline"
+            className="text-[13.5px] font-medium text-[var(--accent)] no-underline hover:underline"
           >
             Browse all →
           </Link>
@@ -262,14 +262,15 @@ export default function FeatureBwfPage() {
               key={m.title}
               className="group overflow-hidden rounded-[14px] border border-[var(--border)] bg-[var(--surface-1)] transition-transform hover:-translate-y-0.5"
             >
+              {/* Illustration cards — not live match IDs */}
               <div
                 className="relative h-[120px] border-b border-[var(--border-subtle)] p-4"
                 style={{
                   background: `linear-gradient(145deg, ${m.g1}, ${m.g2})`,
                 }}
               >
-                <span className="inline-flex rounded-full border border-[rgba(245,180,60,0.35)] bg-[rgba(245,180,60,0.16)] px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.08em] text-[#f5b43c]">
-                  {m.tag}
+                <span className="inline-flex rounded-full border border-[rgba(54,147,255,0.35)] bg-[rgba(54,147,255,0.16)] px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.08em] text-[var(--accent)]">
+                  Sample · {m.tag}
                 </span>
                 <div className="absolute bottom-3 left-4 font-display text-[18px] font-semibold tabular-nums text-[var(--text-strong)]">
                   {m.score}
@@ -294,7 +295,7 @@ export default function FeatureBwfPage() {
       <FeatureSection
         className="pt-[116px]"
         eyebrow="Player profiles"
-        eyebrowClassName="text-[#f5b43c]"
+        eyebrowClassName="text-[var(--accent)]"
         title="Follow a player across every match."
         headerClassName="mb-8 max-w-[640px]"
       >
@@ -305,7 +306,7 @@ export default function FeatureBwfPage() {
               className="flex items-center gap-3 rounded-[14px] border border-[var(--border)] bg-[var(--surface-1)] p-4 transition-transform hover:-translate-y-0.5"
             >
               <span
-                className="inline-flex h-12 w-12 flex-none items-center justify-center rounded-full font-display text-[15px] font-semibold text-white"
+                className="inline-flex h-12 w-12 flex-none items-center justify-center rounded-full font-display text-[15px] font-semibold text-[var(--text-on-blue)]"
                 style={{ background: p.bg }}
               >
                 {p.in}
@@ -350,7 +351,7 @@ export default function FeatureBwfPage() {
             variant: "outline",
           },
         ]}
-        glow="radial-gradient(120% 140% at 50% -20%, rgba(245,180,60,0.14), transparent 60%), var(--surface-1)"
+        glow="radial-gradient(120% 140% at 50% -20%, rgba(54,147,255,0.12), transparent 60%), var(--surface-1)"
       />
     </div>
   );

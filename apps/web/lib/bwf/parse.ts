@@ -280,8 +280,8 @@ export function displayDate(m: CatalogMatch): string {
     const d = new Date(m.matchDate + "T00:00:00Z");
     if (Number.isNaN(d.getTime())) {
       // Invalid calendar date — fall through rather than printing "Invalid Date".
-      if (m.year) return String(m.year);
-      return "";
+      if (m.year) return `${m.year} · event year`;
+      return "Date unknown";
     }
     return d.toLocaleDateString("en-GB", {
       day: "2-digit",
@@ -290,6 +290,6 @@ export function displayDate(m: CatalogMatch): string {
       timeZone: "UTC",
     });
   }
-  if (m.year) return String(m.year);
-  return "";
+  if (m.year) return `${m.year} · event year`;
+  return "Date unknown";
 }

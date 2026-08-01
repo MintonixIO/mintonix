@@ -44,3 +44,4 @@ next-env.d.ts
 # Playwright visual comparison artifacts
 visual-compare/
 
+.env.local

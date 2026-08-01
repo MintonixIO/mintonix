@@ -67,7 +67,7 @@ export function ReplayCameraDemo() {
   const current = VIEWS[view];
 
   return (
-    <div className="overflow-hidden rounded-[18px] border border-[var(--border)] bg-[linear-gradient(160deg,#0c1426,#070d1a)] shadow-[var(--shadow-xl),0_0_0_1px_rgba(80,222,255,0.1)]">
+    <div aria-label="Product illustration — not the live product" className="overflow-hidden rounded-[18px] border border-[var(--border)] bg-[linear-gradient(160deg,#0c1426,#070d1a)] shadow-[var(--shadow-xl),0_0_0_1px_rgba(80,222,255,0.1)]">
       <div className="flex items-center gap-2 border-b border-[var(--border-subtle)] px-4 py-3">
         <span className="h-2 w-2 rounded-full bg-[var(--cyan-500,#50deff)] shadow-[0_0_8px_rgba(80,222,255,0.8)]" />
         <span className="font-mono text-[11px] uppercase tracking-wide text-[var(--text-muted)]">

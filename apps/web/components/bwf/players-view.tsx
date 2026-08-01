@@ -102,7 +102,7 @@ export function PlayersView({
 
   return (
     <section
-      className={cn(isPending && "opacity-60 transition-opacity")}
+      className={cn(isPending && "opacity-90 transition-opacity")}
       aria-busy={isPending}
     >
       <div className="mb-5">
@@ -115,7 +115,7 @@ export function PlayersView({
         </p>
       </div>
 
-      <div className="mb-[18px] flex flex-wrap items-center gap-3">
+      <div className="mb-[18px] flex flex-wrap items-center gap-3 [&_button]:min-h-10">
         <Tabs
           variant="pill"
           value={disc}
@@ -139,7 +139,7 @@ export function PlayersView({
           ]}
         />
         <Input
-          size="sm"
+          size="md"
           defaultValue={q}
           key={`q-${q}`}
           onChange={(e) => {
@@ -169,7 +169,14 @@ export function PlayersView({
       {mode === "profiles" ? (
         total === 0 ? (
           <div className="rounded-[14px] border border-dashed border-[var(--border)] px-6 py-14 text-center text-[13px] text-[var(--text-muted)]">
-            No players match this filter.
+            <p>No players match those filters. Try clearing search or switching discipline.</p>
+            <button
+              type="button"
+              onClick={() => navigate({ q: "", disc: "all", page: 1 })}
+              className="mt-5 inline-flex min-h-10 h-10 items-center rounded-[9px] border border-[var(--border)] bg-[var(--surface-2)] px-4 text-[13px] text-[var(--text-strong)] hover:border-[var(--border-strong)]"
+            >
+              Reset filters
+            </button>
           </div>
         ) : (
           <>
@@ -230,7 +237,7 @@ export function PlayersView({
                   disabled={page <= 1 || isPending}
                   onClick={() => navigate({ page: page - 1 })}
                   className={cn(
-                    "inline-flex h-9 items-center rounded-[9px] border border-[var(--border)] bg-[var(--surface-1)] px-3 text-[13px] text-[var(--text-secondary)]",
+                    "inline-flex min-h-10 h-10 items-center rounded-[9px] border border-[var(--border)] bg-[var(--surface-1)] px-3 text-[13px] text-[var(--text-secondary)]",
                     page <= 1 && "opacity-40",
                   )}
                 >
@@ -245,7 +252,7 @@ export function PlayersView({
                   disabled={page >= totalPages || isPending}
                   onClick={() => navigate({ page: page + 1 })}
                   className={cn(
-                    "inline-flex h-9 items-center rounded-[9px] border border-[var(--border)] bg-[var(--surface-1)] px-3 text-[13px] text-[var(--text-secondary)]",
+                    "inline-flex min-h-10 h-10 items-center rounded-[9px] border border-[var(--border)] bg-[var(--surface-1)] px-3 text-[13px] text-[var(--text-secondary)]",
                     page >= totalPages && "opacity-40",
                   )}
                 >
@@ -268,7 +275,7 @@ export function PlayersView({
                     type="button"
                     onClick={() => navigate({ metric: m.key })}
                     className={cn(
-                      "inline-flex h-[34px] items-center gap-1.5 rounded-full border px-[13px] text-[13px]",
+                      "inline-flex min-h-10 items-center gap-1.5 rounded-full border px-[13px] text-[13px]",
                       on
                         ? "border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--text-strong)]"
                         : "border-[var(--border)] bg-[var(--surface-1)] text-[var(--text-secondary)] hover:border-[var(--border-strong)] hover:text-[var(--text-strong)]",
@@ -296,7 +303,14 @@ export function PlayersView({
           </div>
           {boardRows.length === 0 ? (
             <div className="rounded-[14px] border border-dashed border-[var(--border)] px-6 py-14 text-center text-[13px] text-[var(--text-muted)]">
-              No players match this filter.
+              <p>No players match those filters. Try clearing search or switching discipline.</p>
+              <button
+                type="button"
+                onClick={() => navigate({ q: "", disc: "all", page: 1 })}
+                className="mt-5 inline-flex min-h-10 h-10 items-center rounded-[9px] border border-[var(--border)] bg-[var(--surface-2)] px-4 text-[13px] text-[var(--text-strong)] hover:border-[var(--border-strong)]"
+              >
+                Reset filters
+              </button>
             </div>
           ) : (
             <div className="overflow-hidden rounded-[13px] border border-[var(--border)] bg-[var(--surface-1)] shadow-[var(--shadow-edge)]">
@@ -326,7 +340,7 @@ export function PlayersView({
                     src={r.p.imageUrl ?? undefined}
                     size={34}
                   />
-                  <span className="w-[168px] shrink-0 min-w-0">
+                  <span className="min-w-0 flex-1 min-w-0 flex-1 max-w-[40%]">
                     <span className="block truncate font-display text-sm font-semibold text-[var(--text-strong)]">
                       {r.p.name}
                     </span>

@@ -8,7 +8,7 @@ import {
 /** Marketing highlight-builder demo — matches home design showcase. */
 export function HighlightsDemo() {
   return (
-    <div className="overflow-hidden rounded-[14px] border border-[var(--border)] bg-[var(--surface-1)] shadow-[var(--shadow-lg),var(--shadow-edge)]">
+    <div aria-label="Product illustration — not the live product" className="overflow-hidden rounded-[14px] border border-[var(--border)] bg-[var(--surface-1)] shadow-[var(--shadow-lg),var(--shadow-edge)]">
       <div className="flex items-center gap-[11px] border-b border-[var(--border-subtle)] px-4 py-3">
         <ListTree className="h-4 w-4 text-[var(--accent)]" strokeWidth={1.75} />
         <span className="font-display text-sm font-semibold text-[var(--text-strong)]">
@@ -63,7 +63,7 @@ export function HighlightsDemo() {
                   { c: "#f4515c", l: "Smash", on: true },
                   { c: "#3693ff", l: "Drop" },
                   { c: "#2dd4a7", l: "Net" },
-                  { c: "#fbbf24", l: "Drive" },
+                  { c: "var(--accent)", l: "Drive" },
                 ].map((s) => (
                   <span
                     key={s.l}

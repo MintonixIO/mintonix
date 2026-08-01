@@ -19,7 +19,7 @@ export function PlayerProfile({
     <section>
       <Link
         href="/bwf/players"
-        className="mb-[18px] inline-flex items-center gap-[7px] rounded-[9px] border border-[var(--border)] bg-[var(--surface-1)] px-3 py-[7px] text-[13px] text-[var(--text-secondary)] hover:border-[var(--border-strong)] hover:text-[var(--text-strong)]"
+        className="mb-[18px] inline-flex items-center gap-[7px] rounded-[9px] border border-[var(--border)] bg-[var(--surface-1)] px-3 py-2.5 min-h-10 text-[13px] text-[var(--text-secondary)] hover:border-[var(--border-strong)] hover:text-[var(--text-strong)]"
       >
         <ArrowLeft className="h-[15px] w-[15px]" />
         All players
@@ -30,7 +30,7 @@ export function PlayerProfile({
           className="pointer-events-none absolute inset-0 opacity-80"
           style={{
             background:
-              "radial-gradient(80% 130% at 0% 0%, rgba(54,147,255,0.10), transparent 55%)",
+              "var(--hero-wash)",
           }}
         />
         <div className="relative flex flex-wrap items-center gap-5">
@@ -39,7 +39,7 @@ export function PlayerProfile({
             src={profile.imageUrl ?? undefined}
             size={76}
           />
-          <div className="min-w-[220px] flex-1">
+          <div className="min-w-0 flex-1">
             <h1 className="font-display text-[27px] font-semibold tracking-[-0.025em] text-[var(--text-strong)]">
               {profile.name}
             </h1>
@@ -56,7 +56,7 @@ export function PlayerProfile({
                 </>
               ) : null}
             </div>
-            <p className="mt-2 max-w-[52ch] text-[11.5px] leading-relaxed text-[var(--text-faint)]">
+            <p className="mt-2 max-w-[52ch] text-[12.5px] leading-relaxed text-[var(--text-muted)]">
               Profiles are keyed by player name only. Homonyms or the same
               display name across eras may be merged until a dedicated players
               table exists. Form uses match date when present, otherwise
@@ -131,9 +131,14 @@ export function PlayerProfile({
             Recent form{" "}
             <span className="font-mono text-[11px] font-normal text-[var(--text-muted)]">
               — last {profile.form.length} decided
-              {matches.some((m) => m.matchDate)
-                ? " (by match date)"
-                : " (by ingest order; match dates missing)"}
+              {(() => {
+                const dated = matches.filter((m) => m.matchDate).length;
+                if (matches.length === 0) return "";
+                if (dated === matches.length) return " (by match date)";
+                if (dated === 0)
+                  return " (by ingest order; match dates missing)";
+                return " (match date when present, else ingest)";
+              })()}
             </span>
           </div>
           {profile.form.length === 0 ? (
@@ -166,13 +171,17 @@ export function PlayerProfile({
             {defaultOpp ? (
               <Link
                 href={`/bwf/h2h?a=${profile.id}&b=${defaultOpp.id}`}
-                className="inline-flex items-center gap-1 text-xs text-[var(--text-link)] hover:text-[var(--accent)]"
+                className="inline-flex min-h-10 items-center gap-1 text-xs text-[var(--text-link)] hover:text-[var(--accent)]"
               >
                 <Swords className="h-3.5 w-3.5" />
                 Compare
               </Link>
             ) : null}
           </div>
+          <p className="mb-3 text-[12px] leading-relaxed text-[var(--text-muted)]">
+            Opponents counted per person; doubles partners are excluded. H2H is
+            pairwise, not pair-vs-pair.
+          </p>
           <div className="space-y-2">
             {profile.rivals.length === 0 ? (
               <div className="text-[13px] text-[var(--text-muted)]">
@@ -183,7 +192,7 @@ export function PlayerProfile({
                 <Link
                   key={opp.id}
                   href={`/bwf/h2h?a=${profile.id}&b=${opp.id}`}
-                  className="flex w-full items-center justify-between rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-2)] px-3 py-2 text-left hover:border-[var(--border)]"
+                  className="flex min-h-10 w-full items-center justify-between rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-2)] px-3 py-2.5 text-left hover:border-[var(--border)]"
                 >
                   <span className="min-w-0 truncate text-[13px] text-[var(--text-strong)]">
                     {opp.name}
@@ -208,7 +217,7 @@ export function PlayerProfile({
           </div>
           <Link
             href={`/bwf/matches?q=${encodeURIComponent(profile.name)}`}
-            className="text-xs text-[var(--text-link)] hover:text-[var(--accent)]"
+            className="inline-flex min-h-10 items-center text-xs text-[var(--text-link)] hover:text-[var(--accent)]"
           >
             View in library
           </Link>

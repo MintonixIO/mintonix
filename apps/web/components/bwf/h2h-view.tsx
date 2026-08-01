@@ -104,7 +104,7 @@ export function H2hView({
     <section
       className={cn(
         "transition-opacity duration-150",
-        isPending && "opacity-60",
+        isPending && "opacity-90",
       )}
       aria-busy={isPending}
     >
@@ -115,7 +115,8 @@ export function H2hView({
         <p className="mt-[7px] max-w-[60ch] text-[14.5px] leading-[1.55] text-[var(--text-secondary)]">
           Career meetings computed from the BWF match catalog — not simulated
           records. Search the full directory from the pickers (type 2+
-          characters).
+          characters). Players are keyed by display name; homonyms may be
+          merged until a dedicated identity table exists.
         </p>
       </div>
 
@@ -259,7 +260,29 @@ export function H2hView({
               </div>
             ) : n === 0 ? (
               <div className="rounded-lg border border-dashed border-[var(--border)] px-3 py-8 text-center text-[12.5px] text-[var(--text-muted)]">
-                These two players have not met in the loaded BWF data.
+                <p>These two players have not met in the loaded BWF data.</p>
+                <div className="mt-4 flex flex-wrap items-center justify-center gap-3">
+                  <a
+                    href={`/bwf/players/${h2hA}`}
+                    className="inline-flex min-h-10 items-center text-[13px] text-[var(--text-link)] hover:text-[var(--accent)]"
+                  >
+                    Open {displayA}
+                  </a>
+                  {displayB ? (
+                    <a
+                      href={`/bwf/players/${h2hB}`}
+                      className="inline-flex min-h-10 items-center text-[13px] text-[var(--text-link)] hover:text-[var(--accent)]"
+                    >
+                      Open {displayB}
+                    </a>
+                  ) : null}
+                  <a
+                    href="/bwf/matches"
+                    className="inline-flex min-h-10 items-center text-[13px] text-[var(--text-link)] hover:text-[var(--accent)]"
+                  >
+                    Browse matches
+                  </a>
+                </div>
               </div>
             ) : (
               shownMeetings.map((m) => (
@@ -308,7 +331,7 @@ export function H2hView({
               return (
                 <div
                   key={m.k}
-                  className="grid grid-cols-[72px_1fr_100px_1fr_72px] items-center gap-2"
+                  className="grid min-w-0 grid-cols-[minmax(48px,1fr)_minmax(0,1.4fr)_auto_minmax(0,1.4fr)_minmax(48px,1fr)] sm:grid-cols-[72px_1fr_100px_1fr_72px] items-center gap-2"
                 >
                   <span
                     className={cn(

@@ -112,7 +112,7 @@ export function MatchesView({
         </p>
       </div>
 
-      <div className="mb-[18px] flex flex-wrap items-center gap-3">
+      <div className="mb-[18px] flex flex-wrap items-center gap-3 [&_button]:min-h-10 [&_a]:min-h-10">
         <Tabs
           variant="pill"
           value={filters.disc}
@@ -126,7 +126,7 @@ export function MatchesView({
         <span
           className={cn(
             "font-mono text-xs text-[var(--text-muted)]",
-            pending && "opacity-60",
+            pending && "opacity-90",
           )}
         >
           {total.toLocaleString()} matches
@@ -138,7 +138,8 @@ export function MatchesView({
         <Input
           key={`q-${filters.q}`}
           label="Search"
-          size="sm"
+          size="md"
+          className="min-h-10"
           defaultValue={filters.q}
           placeholder="Player, event…"
           aria-label="Search matches by player or event"
@@ -176,7 +177,7 @@ export function MatchesView({
               const v = e.target.value;
               if (v !== filters.event) setParams({ event: v || null });
             }}
-            className="h-9 rounded-[9px] border border-[var(--border)] bg-[var(--surface-1)] px-3 text-[13px] text-[var(--text-strong)] outline-none placeholder:text-[var(--text-faint)] focus:border-[var(--brand)] focus:shadow-[var(--ring)]"
+            className="min-h-10 h-10 rounded-[9px] border border-[var(--border)] bg-[var(--surface-1)] px-3 text-[13px] text-[var(--text-strong)] outline-none placeholder:text-[var(--text-faint)] focus:border-[var(--brand)] focus:shadow-[var(--ring)]"
           />
           <datalist id="bwf-event-options">
             {stats.events.map((e) => (
@@ -188,7 +189,8 @@ export function MatchesView({
         </div>
         <Select
           label="Round"
-          size="sm"
+          size="md"
+          className="min-h-10"
           value={filters.round}
           onChange={(e) => setParams({ round: e.target.value || null })}
         >
@@ -201,7 +203,8 @@ export function MatchesView({
         </Select>
         <Select
           label="Year"
-          size="sm"
+          size="md"
+          className="min-h-10"
           value={filters.year === "all" ? "" : filters.year}
           onChange={(e) => setParams({ year: e.target.value || null })}
         >
@@ -214,7 +217,8 @@ export function MatchesView({
         </Select>
         <Select
           label="Sort"
-          size="sm"
+          size="md"
+          className="min-h-10"
           value={filters.sort}
           onChange={(e) => setParams({ sort: e.target.value })}
         >
@@ -236,7 +240,7 @@ export function MatchesView({
                 type="button"
                 onClick={() => setParams({ lens: l.id === "all" ? null : l.id })}
                 className={cn(
-                  "inline-flex h-[34px] items-center gap-1.5 rounded-full border px-[13px] text-[13px]",
+                  "inline-flex min-h-10 h-10 items-center gap-1.5 rounded-full border px-[13px] text-[13px]",
                   on
                     ? "border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--text-strong)]"
                     : "border-[var(--border)] bg-[var(--surface-1)] text-[var(--text-secondary)] hover:border-[var(--border-strong)] hover:text-[var(--text-strong)]",
@@ -280,7 +284,7 @@ export function MatchesView({
                 router.push("/bwf/matches");
               })
             }
-            className="mt-5 inline-flex h-9 items-center rounded-[9px] border border-[var(--border)] bg-[var(--surface-2)] px-4 text-[13px] text-[var(--text-strong)] hover:border-[var(--border-strong)]"
+            className="mt-5 inline-flex min-h-10 h-10 items-center rounded-[9px] border border-[var(--border)] bg-[var(--surface-2)] px-4 text-[13px] text-[var(--text-strong)] hover:border-[var(--border-strong)]"
           >
             Reset filters
           </button>
@@ -289,7 +293,7 @@ export function MatchesView({
         <div
           className={cn(
             "grid grid-cols-1 gap-4 pb-2 md:grid-cols-2 xl:grid-cols-3",
-            pending && "opacity-70 transition-opacity",
+            pending && "opacity-90 transition-opacity",
           )}
         >
           {matches.map((m) => (
@@ -300,30 +304,34 @@ export function MatchesView({
 
       {totalPages > 1 ? (
         <div className="mt-6 flex flex-wrap items-center justify-center gap-2">
-          <Link
-            href={pageHref(Math.max(1, page - 1))}
-            aria-disabled={page <= 1}
-            className={cn(
-              "inline-flex h-9 items-center rounded-[9px] border border-[var(--border)] bg-[var(--surface-1)] px-3 text-[13px] text-[var(--text-secondary)]",
-              page <= 1 && "pointer-events-none opacity-40",
-            )}
-          >
-            Previous
-          </Link>
+          {page <= 1 ? (
+            <span className="inline-flex min-h-10 h-10 items-center rounded-[9px] border border-[var(--border)] bg-[var(--surface-1)] px-3 text-[13px] text-[var(--text-secondary)] opacity-40">
+              Previous
+            </span>
+          ) : (
+            <Link
+              href={pageHref(page - 1)}
+              className="inline-flex min-h-10 h-10 items-center rounded-[9px] border border-[var(--border)] bg-[var(--surface-1)] px-3 text-[13px] text-[var(--text-secondary)]"
+            >
+              Previous
+            </Link>
+          )}
           <span className="px-2 font-mono text-xs text-[var(--text-muted)]">
             {(page - 1) * pageSize + 1}–{Math.min(page * pageSize, total)} of{" "}
             {total.toLocaleString()}
           </span>
-          <Link
-            href={pageHref(Math.min(totalPages, page + 1))}
-            aria-disabled={page >= totalPages}
-            className={cn(
-              "inline-flex h-9 items-center rounded-[9px] border border-[var(--border)] bg-[var(--surface-1)] px-3 text-[13px] text-[var(--text-secondary)]",
-              page >= totalPages && "pointer-events-none opacity-40",
-            )}
-          >
-            Next
-          </Link>
+          {page >= totalPages ? (
+            <span className="inline-flex min-h-10 h-10 items-center rounded-[9px] border border-[var(--border)] bg-[var(--surface-1)] px-3 text-[13px] text-[var(--text-secondary)] opacity-40">
+              Next
+            </span>
+          ) : (
+            <Link
+              href={pageHref(page + 1)}
+              className="inline-flex min-h-10 h-10 items-center rounded-[9px] border border-[var(--border)] bg-[var(--surface-1)] px-3 text-[13px] text-[var(--text-secondary)]"
+            >
+              Next
+            </Link>
+          )}
         </div>
       ) : null}
     </section>

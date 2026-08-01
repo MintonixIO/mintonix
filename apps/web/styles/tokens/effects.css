@@ -48,4 +48,9 @@
   --z-overlay: 800; /* @kind other */
   --z-modal: 900; /* @kind other */
   --z-toast: 1000; /* @kind other */
+
+  /* Elevated card ring + quiet hero wash (design-ui) */
+  --shadow-ring-card: 0 0 0 1px rgba(255, 255, 255, 0.08);
+  --hero-wash: radial-gradient(100% 55% at 50% -12%, rgba(54, 147, 255, 0.08), transparent 55%);
 }
+

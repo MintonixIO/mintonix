@@ -312,10 +312,10 @@ export default function PrivacyPage() {
                 Questions about privacy, or want to exercise a right? Reach our
                 team at{" "}
                 <a
-                  href="mailto:privacy@mintonix.com"
+                  href="mailto:privacy@mintonix.io"
                   className="text-[var(--text-link)] hover:underline"
                 >
-                  privacy@mintonix.com
+                  privacy@mintonix.io
                 </a>
                 , or through the{" "}
                 <Link

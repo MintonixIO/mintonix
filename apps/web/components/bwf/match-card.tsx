@@ -175,7 +175,7 @@ export function MatchCard({
                 : "border-[var(--border-subtle)] bg-[var(--surface-2)]",
             )}
           >
-            <Flame className="h-[13px] w-[13px] text-[var(--warning-400,#fcd34d)]" />
+            <Flame className="h-[13px] w-[13px] text-[var(--warning-400,var(--accent))]" />
             Comeback
           </span>
         ) : null}
@@ -231,7 +231,7 @@ export function MatchRow({
   return (
     <Link
       href={`/bwf/matches/${m.id}`}
-      className="flex flex-wrap items-center gap-3 rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-2)] px-3 py-2.5 hover:border-[var(--border)]"
+      className="flex min-h-10 flex-wrap items-center gap-3 rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-2)] px-3 py-2.5 hover:border-[var(--border)]"
     >
       {hasPlayer ? (
         <span

@@ -227,11 +227,17 @@ export function SiteNav({
 
   return (
     <header
-      className={cn("mx-nav", scrolled && "is-scrolled", className)}
+      className={cn(
+        "mx-nav",
+        mode === "marketing" && "mx-nav--marketing",
+        scrolled && "is-scrolled",
+        className,
+      )}
       style={{ ["--mx-nav-max" as string]: maxWidth + "px", ...style }}
       {...rest}
     >
-      <nav className="mx-nav__inner">
+      <div className="mx-nav__shell">
+      <nav className="mx-nav__inner" aria-label="Primary">
         <Link className="mx-nav__logo" href={brandHref} aria-label={brand}>
           {logoSrc ? (
             <Image src={logoSrc} alt={brand} width={26} height={26} priority />
@@ -272,13 +278,14 @@ export function SiteNav({
               href={featured.href || "#"}
               aria-current={featActive ? "page" : undefined}
             >
-              {ICONS[featured.icon || "trophy"] || ICONS.trophy}
               {featured.label}
             </Link>
           ) : null}
         </div>
 
-        <span className="mx-nav__div" />
+        {mode === "app" || signInLabel || ctaLabel ? (
+          <span className="mx-nav__div" />
+        ) : null}
 
         {mode === "app" ? (
           <div className="mx-nav__right">
@@ -374,6 +381,7 @@ export function SiteNav({
           </button>
         ) : null}
       </nav>
+      </div>
 
       {mode === "marketing" && mobileOpen ? (
         <div

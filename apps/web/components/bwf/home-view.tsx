@@ -67,7 +67,7 @@ export function HomeView({
         </p>
       </div>
 
-      <div className="mb-[22px] grid grid-cols-2 gap-px overflow-hidden rounded-[13px] border border-[var(--border-subtle)] bg-[var(--border-subtle)] sm:grid-cols-4">
+      <div className="mb-[22px] grid grid-cols-2 gap-px overflow-hidden rounded-2xl border border-[var(--border-subtle)] bg-[var(--border-subtle)] sm:grid-cols-4">
         {chips.map((ls) => (
           <div key={ls.label} className="bg-[var(--surface-1)] px-[18px] py-4">
             <div className="font-mono text-[10px] uppercase tracking-[0.13em] text-[var(--text-faint)]">
@@ -92,7 +92,7 @@ export function HomeView({
             <Link
               key={d}
               href={`/bwf/matches?disc=${d}`}
-              className="inline-flex h-8 items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--surface-1)] px-3 text-[12.5px] text-[var(--text-secondary)] hover:border-[var(--border-strong)] hover:text-[var(--text-strong)]"
+              className="inline-flex min-h-10 items-center gap-2 rounded-full border border-[var(--border)] bg-[var(--surface-1)] px-3 text-[12.5px] text-[var(--text-secondary)] hover:border-[var(--border-strong)] hover:text-[var(--text-strong)]"
             >
               <span className="font-mono text-[10.5px] text-[var(--accent)]">
                 {d}
@@ -113,7 +113,7 @@ export function HomeView({
           <div className="flex-1" />
           <Link
             href="/bwf/players"
-            className="inline-flex items-center gap-1.5 text-[13px] text-[var(--text-link)] hover:text-[var(--accent)]"
+            className="inline-flex min-h-10 items-center gap-1.5 text-[13px] text-[var(--text-link)] hover:text-[var(--accent)]"
           >
             All players
             <ArrowRight className="h-3.5 w-3.5" />
@@ -123,7 +123,7 @@ export function HomeView({
           {topGroups.map((g) => (
             <div
               key={g.title}
-              className="overflow-hidden rounded-[13px] border border-[var(--border)] bg-[var(--surface-1)] shadow-[var(--shadow-edge)]"
+              className="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface-1)] shadow-[var(--shadow-edge)]"
             >
               <div className="px-4 py-3 font-mono text-[10.5px] uppercase tracking-[0.08em] text-[var(--accent)]">
                 {g.title}
@@ -138,7 +138,7 @@ export function HomeView({
                     <Link
                       key={p.id}
                       href={`/bwf/players/${p.id}`}
-                      className="flex w-full items-center gap-3 border-t border-[var(--border-subtle)] px-4 py-[11px] text-left hover:bg-[var(--surface-2)]"
+                      className="flex w-full items-center gap-3 border-t border-[var(--border-subtle)] px-4 py-3 min-h-10 text-left hover:bg-[var(--surface-2)]"
                     >
                       <span className="w-5 text-right font-mono text-xs tabular-nums text-[var(--text-faint)]">
                         {i + 1}
@@ -183,15 +183,23 @@ export function HomeView({
         <div className="flex-1" />
         <Link
           href="/bwf/matches"
-          className="inline-flex items-center gap-1.5 text-[13px] text-[var(--text-link)] hover:text-[var(--accent)]"
+          className="inline-flex min-h-10 items-center gap-1.5 text-[13px] text-[var(--text-link)] hover:text-[var(--accent)]"
         >
           Browse all matches
           <ArrowRight className="h-3.5 w-3.5" />
         </Link>
       </div>
       {featuredMatches.length === 0 ? (
-        <div className="rounded-[14px] border border-dashed border-[var(--border)] px-6 py-12 text-center text-[13px] text-[var(--text-muted)]">
-          No matches loaded yet.
+        <div className="rounded-[14px] border border-dashed border-[var(--border)] px-6 py-12 text-center">
+          <p className="text-[13px] text-[var(--text-muted)]">
+            No matches loaded yet.
+          </p>
+          <Link
+            href="/bwf/matches"
+            className="mt-4 inline-flex min-h-10 items-center justify-center rounded-[10px] border border-[var(--border)] px-4 text-[13px] font-medium text-[var(--text-strong)] hover:bg-[var(--surface-2)]"
+          >
+            Browse match library
+          </Link>
         </div>
       ) : (
         <div className="grid grid-cols-1 gap-4 pb-2 md:grid-cols-2 xl:grid-cols-3">

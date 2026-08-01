@@ -24,7 +24,7 @@ export function AuthShell({
 }) {
   return (
     <main className="flex min-h-screen bg-[var(--bg-base)] pt-10 text-[var(--text-primary)]">
-      <div className="fixed inset-x-0 top-0 z-50 border-b border-[rgba(245,180,60,0.35)] bg-[rgba(245,180,60,0.12)] px-4 py-2 text-center text-[12.5px] text-[var(--text-secondary)]">
+      <div className="fixed inset-x-0 top-0 z-50 border-b border-[rgba(54,147,255,0.30)] bg-[rgba(54,147,255,0.10)] px-4 py-2 text-center text-[12.5px] text-[var(--text-secondary)]">
         <strong className="font-medium text-[var(--text-strong)]">Preview only.</strong>{" "}
         Accounts are not live — use the{" "}
         <Link href="/bwf" className="text-[var(--text-link)] underline-offset-2 hover:underline">
