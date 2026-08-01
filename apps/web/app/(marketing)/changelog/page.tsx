@@ -33,28 +33,45 @@ const RELEASES: {
   changes: { type: ChangeType; text: string }[];
 }[] = [
   {
-    version: "v3.4",
-    date: "Jun 18, 2026",
+    version: "v0.9",
+    date: "Aug 1, 2026",
     latest: true,
-    title: "Smarter highlight presets and faster reels",
+    title: "Public BWF catalog",
     summary:
-      "The highlight builder now learns from how you filter — and assembles reels roughly twice as fast on long matches.",
+      "The live site is a free BWF match analysis catalog — scores, players, H2H, and YouTube links. Private workspace tools remain preview/roadmap.",
     changes: [
       {
         type: "New",
-        text: "Saveable highlight presets: pin any filter combination and reuse it across matches in one click.",
+        text: "BWF home, matches, players, and head-to-head powered by the Supabase catalog.",
       },
       {
         type: "Improved",
-        text: "Reel assembly is now ~2× faster for matches over 60 minutes thanks to incremental clip caching.",
+        text: "Marketing repositioned around BWF analysis (no account CTA funnel).",
       },
       {
         type: "Improved",
-        text: "Shot-type chips show live clip counts as you toggle them.",
+        text: "Player directory server pagination and rate-limited search APIs.",
       },
       {
         type: "Fixed",
-        text: "Resolved an issue where the speed slider occasionally excluded clips exactly at the threshold.",
+        text: "Mobile marketing navigation via hamburger menu.",
+      },
+    ],
+  },
+  {
+    version: "v3.4",
+    date: "Jun 18, 2026",
+    title: "Smarter highlight presets and faster reels (roadmap notes)",
+    summary:
+      "Historical product notes for private analysis tools — not part of the public BWF experience yet.",
+    changes: [
+      {
+        type: "New",
+        text: "Saveable highlight presets (planned private product).",
+      },
+      {
+        type: "Improved",
+        text: "Reel assembly performance notes for future private matches.",
       },
     ],
   },
@@ -127,6 +144,7 @@ const RELEASES: {
   },
 ];
 
+// Public changelog prioritizes the live BWF catalog.
 export default function ChangelogPage() {
   return (
     <div>

@@ -23,7 +23,15 @@ export function AuthShell({
   children: ReactNode;
 }) {
   return (
-    <main className="flex min-h-screen bg-[var(--bg-base)] text-[var(--text-primary)]">
+    <main className="flex min-h-screen bg-[var(--bg-base)] pt-10 text-[var(--text-primary)]">
+      <div className="fixed inset-x-0 top-0 z-50 border-b border-[rgba(245,180,60,0.35)] bg-[rgba(245,180,60,0.12)] px-4 py-2 text-center text-[12.5px] text-[var(--text-secondary)]">
+        <strong className="font-medium text-[var(--text-strong)]">Preview only.</strong>{" "}
+        Accounts are not live — use the{" "}
+        <Link href="/bwf" className="text-[var(--text-link)] underline-offset-2 hover:underline">
+          BWF catalog
+        </Link>{" "}
+        (no sign-in required).
+      </div>
       {/* Left brand panel */}
       <aside className="relative hidden min-h-screen w-[46%] max-w-[640px] shrink-0 overflow-hidden border-r border-[var(--border-subtle)] bg-[linear-gradient(180deg,#0c1426_0%,#0a1020_100%)] px-12 py-10 md:flex md:flex-col">
         <div

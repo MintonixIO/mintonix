@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import { BwfErrorState } from "@/components/bwf/error-state";
 import { H2hView } from "@/components/bwf/h2h-view";
 import {
@@ -11,6 +12,12 @@ import type {
   DirectoryPlayer,
   H2hPickerPlayer,
 } from "@/lib/bwf/types";
+
+
+export const metadata: Metadata = {
+  title: "BWF head-to-head",
+  description: "Head-to-head meetings computed from the BWF match catalog.",
+};
 
 export const revalidate = 300;
 

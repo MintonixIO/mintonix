@@ -52,3 +52,10 @@ Never expose the service role with a `NEXT_PUBLIC_` prefix. Without it, BWF page
 
 Tracked checklist: repo root [MARKETING_BWF_CHECKLIST.md](../../MARKETING_BWF_CHECKLIST.md).
 
+
+## BWF catalog notes
+
+- Server-only catalog module (`lib/bwf/catalog.ts`) uses the service role and filters `owner_id IS NULL`.
+- Snapshot cache is **process-local** with a 300s TTL (Next Data Cache is too small for multi-year dumps).
+- Player directory pages are server-paginated; H2H uses a slim seed + `/api/bwf/players` typeahead.
+- Search APIs are rate-limited per IP (~60/min).

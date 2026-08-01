@@ -141,6 +141,7 @@ export function MatchesView({
           size="sm"
           defaultValue={filters.q}
           placeholder="Player, event…"
+          aria-label="Search matches by player or event"
           onKeyDown={(e) => {
             if (e.key === "Enter") {
               setParams({ q: (e.target as HTMLInputElement).value });
@@ -150,19 +151,41 @@ export function MatchesView({
             if (e.target.value !== filters.q) setParams({ q: e.target.value });
           }}
         />
-        <Select
-          label="Tournament"
-          size="sm"
-          value={filters.event}
-          onChange={(e) => setParams({ event: e.target.value || null })}
-        >
-          <option value="">All tournaments</option>
-          {stats.events.map((e) => (
-            <option key={e.event} value={e.event}>
-              {e.event} ({e.count})
-            </option>
-          ))}
-        </Select>
+        <div className="flex min-w-[min(220px,100%)] flex-col gap-1">
+          <label
+            htmlFor="bwf-event-filter"
+            className="text-[11px] font-medium tracking-wide text-[var(--text-secondary)]"
+          >
+            Tournament
+          </label>
+          <input
+            id="bwf-event-filter"
+            list="bwf-event-options"
+            defaultValue={filters.event}
+            key={filters.event || "all-events"}
+            placeholder="Type to filter events…"
+            aria-label="Filter by tournament"
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                setParams({
+                  event: (e.target as HTMLInputElement).value || null,
+                });
+              }
+            }}
+            onBlur={(e) => {
+              const v = e.target.value;
+              if (v !== filters.event) setParams({ event: v || null });
+            }}
+            className="h-9 rounded-[9px] border border-[var(--border)] bg-[var(--surface-1)] px-3 text-[13px] text-[var(--text-strong)] outline-none placeholder:text-[var(--text-faint)] focus:border-[var(--brand)] focus:shadow-[var(--ring)]"
+          />
+          <datalist id="bwf-event-options">
+            {stats.events.map((e) => (
+              <option key={e.event} value={e.event}>
+                {e.count} matches
+              </option>
+            ))}
+          </datalist>
+        </div>
         <Select
           label="Round"
           size="sm"

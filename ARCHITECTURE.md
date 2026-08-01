@@ -4,6 +4,8 @@ Badminton video analysis platform: ingest match footage (BWF broadcasts + user
 uploads), normalize it, track shuttle and players, and produce 3D positions and
 match analytics.
 
+**Web (public):** marketing + BWF catalog live; dashboard workspace is preview-only. See MARKETING_BWF_CHECKLIST.md.
+
 **Code organization** (colocate by use, split by real boundary, abstract on
 second use) for agents and humans: **[AGENTS.md](./AGENTS.md)**. This file owns
 system design and the trust model; AGENTS.md owns how we lay out and edit code.

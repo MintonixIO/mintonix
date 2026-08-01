@@ -1,4 +1,10 @@
+import type { Metadata } from "next";
 import { BlogCatalog } from "@/components/marketing/blog-catalog";
+
+export const metadata: Metadata = {
+  title: "Blog",
+  description: "Notes on badminton analysis, BWF data, and Mintonix product updates.",
+};
 
 export default function BlogPage() {
   return (

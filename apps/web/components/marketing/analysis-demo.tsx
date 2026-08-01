@@ -19,10 +19,11 @@ const RALLIES = [
   { n: "09", shots: 8, dur: "12s", end: "Unforced", tone: "danger" as const },
 ];
 
-/** Marketing hero demo — matches the design's embedded video-analysis frame. */
+/** Marketing illustration only — not the live product surface. */
 export function AnalysisDemo({ className }: { className?: string }) {
   return (
     <div
+      aria-label="Product illustration — video analysis preview"
       className={cn(
         "flex h-full min-h-[520px] flex-col overflow-hidden rounded-[14px] border border-[var(--border)] bg-[var(--bg-base)] text-[var(--text-primary)] shadow-[var(--shadow-xl),var(--shadow-edge)]",
         className,

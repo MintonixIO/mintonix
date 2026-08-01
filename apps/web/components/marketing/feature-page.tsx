@@ -151,20 +151,20 @@ function HeroCopy({
           )}
         >
           {ctas.map((c) => (
-            <Link key={c.href + c.label} href={c.href}>
-              <Button
-                size="lg"
-                variant={
-                  c.variant === "outline"
-                    ? "outline"
-                    : c.variant === "ghost"
-                      ? "ghost"
-                      : "primary"
-                }
-              >
-                {c.label}
-              </Button>
-            </Link>
+            <Button
+              key={c.href + c.label}
+              href={c.href}
+              size="lg"
+              variant={
+                c.variant === "outline"
+                  ? "outline"
+                  : c.variant === "ghost"
+                    ? "ghost"
+                    : "primary"
+              }
+            >
+              {c.label}
+            </Button>
           ))}
         </div>
       ) : null}
@@ -376,20 +376,20 @@ export function FeatureCTA({
               )}
             >
               {ctas.map((c) => (
-                <Link key={c.href + c.label} href={c.href}>
-                  <Button
-                    size="lg"
-                    variant={
-                      c.variant === "outline"
-                        ? "outline"
-                        : c.variant === "ghost"
-                          ? "ghost"
-                          : "primary"
-                    }
-                  >
-                    {c.label}
-                  </Button>
-                </Link>
+                <Button
+                  key={c.href + c.label}
+                  href={c.href}
+                  size="lg"
+                  variant={
+                    c.variant === "outline"
+                      ? "outline"
+                      : c.variant === "ghost"
+                        ? "ghost"
+                        : "primary"
+                  }
+                >
+                  {c.label}
+                </Button>
               ))}
             </div>
           ) : null}

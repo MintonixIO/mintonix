@@ -563,3 +563,14 @@
   .mx-tabs--pill .mx-tab:hover { color: var(--text-primary); }
   .mx-tabs--pill .mx-tab[aria-selected="true"] { color: var(--text-strong); background: var(--surface-3); box-shadow: var(--shadow-xs), var(--shadow-edge); }
   .mx-tabs--pill .mx-tab[aria-selected="true"] .mx-tab__count { background: var(--brand-subtle); color: var(--blue-300); }
+
+
+/* Marketing / BWF residual responsive + motion */
+@media (max-width: 640px) {
+  .mx-nav__word { font-size: 17px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mx-pillar, .mx-pillar-icon, [class*="hover:-translate"] {
+    transition: none !important;
+  }
+}

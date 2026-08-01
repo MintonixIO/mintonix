@@ -134,6 +134,10 @@ const COVERAGE = [
 export default function FeatureBwfPage() {
   return (
     <div className="overflow-x-clip">
+      <div className="border-b border-[rgba(45,212,167,0.28)] bg-[rgba(45,212,167,0.08)] px-4 py-2.5 text-center text-[12.5px] text-[var(--text-secondary)]">
+        <strong className="font-medium text-[var(--text-strong)]">Live product.</strong>{" "}
+        The BWF catalog is available now — no account required.
+      </div>
       <FeatureHero
         EyebrowIcon={Trophy}
         eyebrow="BWF match library"

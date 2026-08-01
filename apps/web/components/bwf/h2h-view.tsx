@@ -91,7 +91,10 @@ export function H2hView({
     );
   }
 
+  const MEETING_CAP = 50;
+  const shownMeetings = meetings.slice(0, MEETING_CAP);
   const n = meetings.length;
+  const truncated = n > MEETING_CAP;
   const displayA =
     allPlayers.find((p) => p.id === h2hA)?.name ?? pa.name;
   const displayB =
@@ -244,7 +247,9 @@ export function H2hView({
                   : "—"
                 : n === 0
                   ? "No shared matches in the catalog"
-                  : `All ${n} meeting${n === 1 ? "" : "s"} · scoreline + event`}
+                  : truncated
+                    ? `Showing latest ${MEETING_CAP} of ${n} meetings · scoreline + event`
+                    : `All ${n} meeting${n === 1 ? "" : "s"} · scoreline + event`}
             </div>
           </div>
           <div className="max-h-[280px] space-y-2 overflow-y-auto">
@@ -257,7 +262,7 @@ export function H2hView({
                 These two players have not met in the loaded BWF data.
               </div>
             ) : (
-              meetings.map((m) => (
+              shownMeetings.map((m) => (
                 <MatchRow
                   key={m.id}
                   m={m}

@@ -62,7 +62,8 @@ export function HomeView({
         <p className="mt-[7px] max-w-[62ch] text-[14.5px] leading-[1.55] text-[var(--text-secondary)]">
           Browse finished BWF matches loaded into Mintonix — scores, disciplines,
           and video links where we have coverage. Open a match for full detail or
-          jump into player records and head-to-head.
+          jump into player records and head-to-head. Player identity is name-based
+          for now (homonyms may share a profile).
         </p>
       </div>
 
@@ -107,7 +108,7 @@ export function HomeView({
             Top players
           </h2>
           <span className="font-mono text-[11px] text-[var(--text-muted)]">
-            by win rate · min 3 matches
+            by win rate · min 3 decided results
           </span>
           <div className="flex-1" />
           <Link

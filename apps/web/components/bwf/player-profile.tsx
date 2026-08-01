@@ -56,13 +56,12 @@ export function PlayerProfile({
                 </>
               ) : null}
             </div>
-            {profile.discs.length > 1 || profile.matches >= 15 ? (
-              <p className="mt-2 max-w-[52ch] text-[11.5px] leading-relaxed text-[var(--text-faint)]">
-                Profiles are keyed by player name only. Homonyms or the same
-                display name across eras may be merged until a dedicated players
-                table exists.
-              </p>
-            ) : null}
+            <p className="mt-2 max-w-[52ch] text-[11.5px] leading-relaxed text-[var(--text-faint)]">
+              Profiles are keyed by player name only. Homonyms or the same
+              display name across eras may be merged until a dedicated players
+              table exists. Form uses match date when present, otherwise
+              catalog ingest time.
+            </p>
           </div>
           <div className="relative flex items-center gap-[22px]">
             <div className="text-right">

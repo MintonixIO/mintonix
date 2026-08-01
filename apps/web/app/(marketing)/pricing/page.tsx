@@ -1,4 +1,3 @@
-import Link from "next/link";
 import { Layers } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { pricingRows } from "@/lib/mock-data";
@@ -113,11 +112,9 @@ export default function PricingPage() {
                   For players exploring the engine.
                 </div>
                 <div className="mt-auto pt-[18px]">
-                  <Link href="/bwf" className="flex">
-                    <Button variant="outline" block>
-                      Browse BWF free
-                    </Button>
-                  </Link>
+                  <Button href="/bwf" variant="outline" block>
+                    Browse BWF free
+                  </Button>
                 </div>
               </div>
 
@@ -142,11 +139,9 @@ export default function PricingPage() {
                   + pay-as-you-go uploads beyond your monthly allowance.
                 </div>
                 <div className="mt-auto pt-[18px]">
-                  <Link href="/about#contact" className="flex">
-                    <Button variant="primary" block>
-                      Contact us
-                    </Button>
-                  </Link>
+                  <Button href="/about#contact" variant="primary" block>
+                    Contact us
+                  </Button>
                 </div>
               </div>
 
@@ -161,11 +156,9 @@ export default function PricingPage() {
                   For federations, academies & teams.
                 </div>
                 <div className="mt-auto pt-[18px]">
-                  <Link href="/about#contact" className="flex">
-                    <Button variant="secondary" block>
-                      Contact sales
-                    </Button>
-                  </Link>
+                  <Button href="/about#contact" variant="secondary" block>
+                    Contact sales
+                  </Button>
                 </div>
               </div>
             </div>

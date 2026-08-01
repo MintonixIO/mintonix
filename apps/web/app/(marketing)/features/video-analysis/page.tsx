@@ -78,6 +78,14 @@ function heat(v: number) {
 export default function FeatureVideoAnalysisPage() {
   return (
     <div className="overflow-x-clip">
+      <div className="border-b border-[rgba(54,147,255,0.22)] bg-[rgba(54,147,255,0.07)] px-4 py-2.5 text-center text-[12.5px] text-[var(--text-secondary)]">
+        <strong className="font-medium text-[var(--text-strong)]">Roadmap / preview.</strong>{" "}
+        Not part of the live public product — explore the{" "}
+        <a href="/bwf" className="text-[var(--text-link)] underline-offset-2 hover:underline">
+          BWF catalog
+        </a>{" "}
+        today.
+      </div>
       <FeatureHero
         EyebrowIcon={ScanLine}
         eyebrow="Video analysis"

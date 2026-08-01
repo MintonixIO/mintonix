@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import { BwfErrorState } from "@/components/bwf/error-state";
 import { HomeView } from "@/components/bwf/home-view";
 import {
@@ -11,6 +12,12 @@ import type {
   DirectoryPlayer,
   HomeStats,
 } from "@/lib/bwf/types";
+
+
+export const metadata: Metadata = {
+  title: "BWF home",
+  description: "BWF match catalog home — stats, top players, featured matches.",
+};
 
 export const revalidate = 300;
 

@@ -28,6 +28,23 @@ export const metadata: Metadata = {
   icons: {
     icon: "/assets/logomark.png",
   },
+  metadataBase: new URL("https://mintonix.io"),
+  openGraph: {
+    title: "Mintonix — BWF match analysis",
+    description:
+      "Browse BWF matches, players, and head-to-head from the Mintonix catalog.",
+    siteName: "Mintonix",
+    type: "website",
+    images: [{ url: "/assets/logo-full.png", alt: "Mintonix" }],
+  },
+  twitter: {
+    card: "summary",
+    title: "Mintonix — BWF match analysis",
+    description:
+      "Browse BWF matches, players, and head-to-head from the Mintonix catalog.",
+    images: ["/assets/logo-full.png"],
+  },
+  robots: { index: true, follow: true },
 };
 
 export default function RootLayout({

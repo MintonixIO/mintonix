@@ -52,7 +52,7 @@ const MATCH_SELECT =
  * process (dev server / one server instance); not shared across workers.
  *
  * Scale note: full multi-year catalogs stay in process RAM for the TTL.
- * Prefer year-scoped load later if RSS becomes a problem — no year filter today.
+ * YEAR-SCOPE: Prefer year-scoped load later if RSS becomes a problem — no year filter on snapshot today (client filters still work after full load).
  */
 export type CatalogSnapshot = {
   matches: CatalogMatch[];

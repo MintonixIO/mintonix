@@ -95,7 +95,7 @@ export function BwfShell({
 
   return (
     <div className="min-h-screen bg-[var(--bg-base)] font-sans text-[var(--text-primary)] antialiased">
-      <header className="sticky top-0 z-50 flex h-[60px] items-center gap-3.5 border-b border-[var(--border-subtle)] bg-[rgba(10,16,32,0.82)] px-6 backdrop-blur-[14px]">
+      <header className="sticky top-0 z-50 flex flex-wrap items-center gap-2.5 border-b border-[var(--border-subtle)] bg-[rgba(10,16,32,0.82)] px-4 py-2.5 backdrop-blur-[14px] sm:h-[60px] sm:flex-nowrap sm:gap-3.5 sm:px-6 sm:py-0">
         <Link
           href="/"
           aria-label="Back to Mintonix"
@@ -116,7 +116,7 @@ export function BwfShell({
         </div>
         <div className="flex-1" />
 
-        <div className="relative w-[min(360px,40vw)]">
+        <div className="relative order-3 w-full min-w-0 sm:order-0 sm:w-[min(360px,40vw)] md:flex-none">
           <div className="flex h-9 items-center gap-2 rounded-[9px] border border-[var(--border)] bg-[var(--surface-1)] px-3">
             <Search className="h-[15px] w-[15px] shrink-0 text-[var(--text-faint)]" />
             <input
@@ -125,6 +125,8 @@ export function BwfShell({
               onFocus={() => setSearchFocused(true)}
               onBlur={() => setTimeout(() => setSearchFocused(false), 150)}
               placeholder="Search players, matches, tournaments…"
+              aria-label="Search BWF players, matches, and tournaments"
+              role="searchbox"
               className="min-w-0 flex-1 border-none bg-transparent text-[13px] text-[var(--text-strong)] outline-none placeholder:text-[var(--text-faint)]"
             />
             {query ? (
@@ -186,7 +188,7 @@ export function BwfShell({
           ) : null}
         </div>
 
-        <nav className="mx-tabs mx-tabs--pill" aria-label="BWF library">
+        <nav className="mx-tabs mx-tabs--pill order-4 w-full overflow-x-auto sm:order-0 sm:w-auto" aria-label="BWF library sections">
           {(
             [
               { value: "home", label: "Home" },
@@ -212,7 +214,7 @@ export function BwfShell({
         </nav>
       </header>
 
-      <div className="mx-auto max-w-[1320px] px-6 pb-0 pt-[26px]">
+      <div className="mx-auto max-w-[1320px] px-4 pb-0 pt-5 sm:px-6 sm:pt-[26px]">
         {children}
 
         <footer className="mt-14 border-t border-[var(--border-subtle)] pb-10 pt-[26px]">

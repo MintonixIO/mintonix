@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import { Suspense } from "react";
 import { BwfErrorState } from "@/components/bwf/error-state";
 import { MatchesView } from "@/components/bwf/matches-view";
@@ -5,6 +6,12 @@ import { getCatalogStats, queryMatches } from "@/lib/bwf/catalog";
 import { catalogUserError } from "@/lib/bwf/errors";
 import type { CatalogMatch, CatalogStats, Disc } from "@/lib/bwf/types";
 import { DISCS } from "@/lib/bwf/types";
+
+
+export const metadata: Metadata = {
+  title: "BWF matches",
+  description: "Browse and filter BWF matches from the Mintonix catalog.",
+};
 
 export const revalidate = 300;
 

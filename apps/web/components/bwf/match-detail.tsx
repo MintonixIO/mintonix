@@ -25,6 +25,7 @@ import { cn } from "@/lib/utils";
 export function MatchDetail({ m }: { m: CatalogMatch }) {
   const duration = formatDuration(m.durationSec);
   const youtube = parseYoutubeUrl(m.sourceUrl);
+  /** Only allowlisted YouTube URLs render; other sources are hidden. */
 
   const side = (
     names: string[],
@@ -208,7 +209,7 @@ export function MatchDetail({ m }: { m: CatalogMatch }) {
           </div>
           <div className="aspect-video w-full bg-black">
             <iframe
-              title="Match video"
+              title="Match video (YouTube when allowlisted)"
               src={`https://www.youtube-nocookie.com/embed/${youtube.id}`}
               className="h-full w-full border-0"
               allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"

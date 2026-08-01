@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import { BwfErrorState } from "@/components/bwf/error-state";
 import { PlayersView } from "@/components/bwf/players-view";
 import {
@@ -9,6 +10,12 @@ import type { Disc } from "@/lib/bwf/types";
 import { DISCS } from "@/lib/bwf/types";
 import type { BoardMetricKey } from "@/components/bwf/board-metrics";
 import { BOARD_METRICS } from "@/components/bwf/board-metrics";
+
+
+export const metadata: Metadata = {
+  title: "BWF players",
+  description: "Player directory and leaderboards from BWF catalog results.",
+};
 
 export const revalidate = 300;
 
