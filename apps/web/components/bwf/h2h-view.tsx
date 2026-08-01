@@ -23,7 +23,7 @@ export function H2hView({
   a,
   b,
 }: {
-  /** Slim options for the picker only. */
+  /** Slim seed options for the picker (not the full directory). */
   players: H2hPickerPlayer[];
   initialA: string;
   initialB: string;
@@ -36,9 +36,11 @@ export function H2hView({
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
-  // Short-lived optimistic ids so closed picker labels update immediately.
   const [pendingA, setPendingA] = useState<string | null>(null);
   const [pendingB, setPendingB] = useState<string | null>(null);
+  const [extraLabels, setExtraLabels] = useState<
+    Record<string, H2hPickerPlayer>
+  >({});
 
   useEffect(() => {
     setPendingA(null);
@@ -49,6 +51,29 @@ export function H2hView({
   const h2hB = pendingB ?? initialB;
   const pa = a;
   const pb = b;
+
+  const allPlayers = (() => {
+    const map = new Map<string, H2hPickerPlayer>();
+    for (const p of players) map.set(p.id, p);
+    for (const p of Object.values(extraLabels)) map.set(p.id, p);
+    if (pa) {
+      map.set(pa.id, {
+        id: pa.id,
+        name: pa.name,
+        matches: pa.matches,
+        disc: pa.disc,
+      });
+    }
+    if (pb) {
+      map.set(pb.id, {
+        id: pb.id,
+        name: pb.name,
+        matches: pb.matches,
+        disc: pb.disc,
+      });
+    }
+    return [...map.values()];
+  })();
 
   const syncUrl = (aid: string, bid: string) => {
     setPendingA(aid);
@@ -67,11 +92,10 @@ export function H2hView({
   }
 
   const n = meetings.length;
-  // Prefer optimistic picker label; stats still come from server props.
   const displayA =
-    players.find((p) => p.id === h2hA)?.name ?? pa.name;
+    allPlayers.find((p) => p.id === h2hA)?.name ?? pa.name;
   const displayB =
-    players.find((p) => p.id === h2hB)?.name ?? pb?.name ?? null;
+    allPlayers.find((p) => p.id === h2hB)?.name ?? pb?.name ?? null;
 
   return (
     <section
@@ -87,7 +111,8 @@ export function H2hView({
         </h1>
         <p className="mt-[7px] max-w-[60ch] text-[14.5px] leading-[1.55] text-[var(--text-secondary)]">
           Career meetings computed from the BWF match catalog — not simulated
-          records.
+          records. Search the full directory from the pickers (type 2+
+          characters).
         </p>
       </div>
 
@@ -98,17 +123,19 @@ export function H2hView({
             style={{ background: PA }}
           />
           <PlayerPicker
-            players={players}
+            players={allPlayers}
             selectedId={h2hA}
             accent="a"
+            remoteSearch
             disabled={isPending}
-            onSelect={(id) => {
+            onSelect={(player) => {
+              setExtraLabels((prev) => ({ ...prev, [player.id]: player }));
               let nextB = h2hB;
-              if (nextB === id) {
-                const opp = players.find((x) => x.id !== id);
+              if (nextB === player.id) {
+                const opp = allPlayers.find((x) => x.id !== player.id);
                 if (opp) nextB = opp.id;
               }
-              syncUrl(id, nextB);
+              syncUrl(player.id, nextB);
             }}
           />
         </div>
@@ -117,13 +144,17 @@ export function H2hView({
         </span>
         <div className="flex items-center gap-2.5">
           <PlayerPicker
-            players={players}
+            players={allPlayers}
             selectedId={h2hB}
             accent="b"
             excludeId={h2hA}
             placeholder="Select opponent"
+            remoteSearch
             disabled={isPending}
-            onSelect={(id) => syncUrl(h2hA, id)}
+            onSelect={(player) => {
+              setExtraLabels((prev) => ({ ...prev, [player.id]: player }));
+              syncUrl(h2hA, player.id);
+            }}
           />
           <span
             className="h-2.5 w-2.5 shrink-0 rounded-full"
@@ -139,9 +170,7 @@ export function H2hView({
               <Avatar
                 name={displayA}
                 src={
-                  h2hA === pa.id
-                    ? (pa.imageUrl ?? undefined)
-                    : undefined
+                  h2hA === pa.id ? (pa.imageUrl ?? undefined) : undefined
                 }
                 size={52}
                 className="mx-auto mb-2.5"

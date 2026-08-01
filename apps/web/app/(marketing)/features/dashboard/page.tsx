@@ -58,8 +58,8 @@ export default function FeatureDashboardPage() {
         title="Every match, in one place."
         body="Upload footage and it lands as a fully analyzed match. Watch what's processing, jump back into recent breakdowns, search the whole archive, and share any match with a link — without leaving the page."
         ctas={[
-          { href: "/auth", label: "Open your workspace" },
-          { href: "/dashboard", label: "See a live demo", variant: "outline" },
+          { href: "/bwf", label: "Open BWF catalog" },
+          { href: "/bwf/matches", label: "Browse matches", variant: "outline" },
         ]}
         glow="radial-gradient(100% 60% at 85% -10%, rgba(54,147,255,0.16), transparent 55%)"
         gridClassName="grid items-center gap-10 lg:grid-cols-[1fr_0.78fr] lg:gap-14"
@@ -296,7 +296,7 @@ export default function FeatureDashboardPage() {
       <FeatureCTA
         title="Your whole season, organized from day one."
         body="Spin up a workspace in seconds and upload your first match free."
-        ctas={[{ href: "/auth", label: "Create your workspace" }]}
+        ctas={[{ href: "/bwf", label: "Open BWF catalog" }]}
       />
     </div>
   );

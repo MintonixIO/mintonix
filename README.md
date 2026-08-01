@@ -45,6 +45,7 @@ Condensed reference; full detail in [ARCHITECTURE.md](ARCHITECTURE.md),
 [SUPABASE.md](SUPABASE.md), and
 [workers/vast/video-det/ARCHITECTURE.md](workers/vast/video-det/ARCHITECTURE.md).
 Code organization for agents/contributors: [AGENTS.md](AGENTS.md).
+Marketing + BWF ship checklist: [MARKETING_BWF_CHECKLIST.md](MARKETING_BWF_CHECKLIST.md).
 Review findings originated in [CODE_REVIEW_ISSUES.md](CODE_REVIEW_ISSUES.md).
 
 Status legend: ✅ built · 🚧 partially built · 📐 designed, not built.

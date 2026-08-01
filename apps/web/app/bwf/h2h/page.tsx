@@ -1,6 +1,10 @@
 import { BwfErrorState } from "@/components/bwf/error-state";
 import { H2hView } from "@/components/bwf/h2h-view";
-import { getDirectoryPlayers, getH2h } from "@/lib/bwf/catalog";
+import {
+  getDirectoryPlayers,
+  getH2h,
+  searchDirectoryPlayers,
+} from "@/lib/bwf/catalog";
 import { catalogUserError } from "@/lib/bwf/errors";
 import type {
   CatalogMatch,
@@ -10,7 +14,14 @@ import type {
 
 export const revalidate = 300;
 
-function toPicker(p: DirectoryPlayer): H2hPickerPlayer {
+const SEED_LIMIT = 80;
+
+function toPicker(p: {
+  id: string;
+  name: string;
+  matches: number;
+  disc: DirectoryPlayer["disc"];
+}): H2hPickerPlayer {
   return {
     id: p.id,
     name: p.name,
@@ -43,15 +54,32 @@ export default async function BwfH2hPage({
     if (directory.length === 0) {
       empty = true;
     } else {
-      picker = directory.map(toPicker);
-      const defaultA = directory[0].id;
+      // Slim seed: top players by match count (not the full directory).
+      const seed = await searchDirectoryPlayers("", SEED_LIMIT);
+      const byId = new Map(directory.map((p) => [p.id, p]));
+
+      const defaultA = seed[0]?.id ?? directory[0].id;
       const defaultB =
-        directory.find((p) => p.id !== defaultA)?.id ?? defaultA;
-      aId = sp.a && directory.some((p) => p.id === sp.a) ? sp.a : defaultA;
+        seed.find((p) => p.id !== defaultA)?.id ??
+        directory.find((p) => p.id !== defaultA)?.id ??
+        defaultA;
+
+      aId = sp.a && byId.has(sp.a) ? sp.a : defaultA;
       bId =
-        sp.b && directory.some((p) => p.id === sp.b) && sp.b !== aId
+        sp.b && byId.has(sp.b) && sp.b !== aId
           ? sp.b
           : directory.find((p) => p.id !== aId)?.id ?? defaultB;
+
+      const seedIds = new Set(seed.map((p) => p.id));
+      picker = seed.map(toPicker);
+      // Ensure selected pair is always present in the picker seed.
+      for (const id of [aId, bId]) {
+        if (!seedIds.has(id)) {
+          const p = byId.get(id);
+          if (p) picker.unshift(toPicker(p));
+        }
+      }
+
       h2h = await getH2h(aId, bId);
     }
   } catch (err) {

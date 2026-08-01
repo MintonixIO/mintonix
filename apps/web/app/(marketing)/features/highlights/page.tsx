@@ -113,10 +113,10 @@ export default function FeatureHighlightsPage() {
         title="The best of the match, without the editing."
         body="Set what counts as a highlight — a shot type, a speed, an outcome — and Mintonix pulls every matching rally into one reel. Trim, preview, and share it with a link."
         ctas={[
-          { href: "/auth", label: "Build a reel" },
+          { href: "/bwf", label: "Explore BWF catalog" },
           {
-            href: "/dashboard/highlights",
-            label: "See the reel library",
+            href: "/features/bwf",
+            label: "How BWF analysis works",
             variant: "outline",
           },
         ]}
@@ -340,7 +340,7 @@ export default function FeatureHighlightsPage() {
         layout="split"
         title="A reel your whole squad can watch."
         body="Share generates a link that respects your library permissions — players, coaches, anyone, no account needed. Revoke it any time."
-        ctas={[{ href: "/auth", label: "Build your first reel" }]}
+        ctas={[{ href: "/bwf", label: "Open BWF catalog" }]}
         glow="radial-gradient(120% 140% at 0% 0%, rgba(45,212,167,0.14), transparent 55%), var(--surface-1)"
       >
         <div className="rounded-[14px] border border-[var(--border)] bg-[var(--surface-2)] p-[18px]">

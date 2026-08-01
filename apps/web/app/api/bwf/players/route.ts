@@ -1,16 +1,12 @@
 import { NextResponse } from "next/server";
-import { searchCatalog } from "@/lib/bwf/catalog";
-import { BWF_SEARCH_LIMIT, BWF_SEARCH_MAX_Q } from "@/lib/bwf/types";
+import { searchDirectoryPlayers } from "@/lib/bwf/catalog";
+import { BWF_SEARCH_MAX_Q } from "@/lib/bwf/types";
 
 export const dynamic = "force-dynamic";
 
-/** Short private cache for identical queries; still force-dynamic for catalog freshness. */
-const SEARCH_CACHE_HEADERS = {
-  "Cache-Control": "private, max-age=30, stale-while-revalidate=60",
-};
-
 const WINDOW_MS = 60_000;
-/** Soft per-IP cap; cold catalog rebuilds are expensive. */
+const MAX_HITS = 40;
+/** Per-IP soft limit for player typeahead. */
 const MAX_PER_WINDOW = 60;
 
 type Bucket = { resetAt: number; count: number };
@@ -37,33 +33,35 @@ function rateLimit(key: string): boolean {
 export async function GET(request: Request) {
   if (!rateLimit(clientKey(request))) {
     return NextResponse.json(
-      { hits: [], error: "Too many requests" },
-      {
-        status: 429,
-        headers: { ...SEARCH_CACHE_HEADERS, "Retry-After": "60" },
-      },
+      { players: [], error: "Too many requests" },
+      { status: 429, headers: { "Retry-After": "60" } },
     );
   }
 
   const { searchParams } = new URL(request.url);
-  const raw = searchParams.get("q") ?? "";
-  const q = raw.trim().slice(0, BWF_SEARCH_MAX_Q);
-  if (!q) {
-    return NextResponse.json(
-      { hits: [] },
-      { headers: SEARCH_CACHE_HEADERS },
-    );
-  }
+  const q = (searchParams.get("q") ?? "").trim().slice(0, BWF_SEARCH_MAX_Q);
+  const limitRaw = Number(searchParams.get("limit") ?? MAX_HITS);
+  const limit = Number.isFinite(limitRaw)
+    ? Math.min(Math.max(limitRaw, 1), 80)
+    : MAX_HITS;
+
   try {
-    const hits = await searchCatalog(q, BWF_SEARCH_LIMIT);
+    const players = await searchDirectoryPlayers(q, limit);
     return NextResponse.json(
-      { hits },
-      { headers: SEARCH_CACHE_HEADERS },
+      { players },
+      {
+        headers: {
+          "Cache-Control": "private, max-age=30, stale-while-revalidate=60",
+        },
+      },
     );
   } catch (err) {
-    console.error("[api/bwf/search]", err instanceof Error ? err.message : err);
+    console.error(
+      "[api/bwf/players]",
+      err instanceof Error ? err.message : err,
+    );
     return NextResponse.json(
-      { hits: [], error: "Search temporarily unavailable" },
+      { players: [], error: "Search temporarily unavailable" },
       { status: 500 },
     );
   }

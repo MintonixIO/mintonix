@@ -120,7 +120,7 @@ export default function AboutPage() {
                 icon: MessageSquare,
                 t: "Support",
                 d: "In-app help for Pro seats",
-                href: "/dashboard/help-support",
+                href: "/about#contact",
               },
             ].map((c) => (
               <Link

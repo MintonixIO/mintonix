@@ -20,11 +20,11 @@ const spaceGrotesk = Space_Grotesk({
 
 export const metadata: Metadata = {
   title: {
-    default: "Mintonix — Badminton analysis engine",
+    default: "Mintonix — BWF match analysis",
     template: "%s · Mintonix",
   },
   description:
-    "Mintonix turns match footage into rallies, heatmaps, shot distributions, and head-to-head metrics for players and coaches.",
+    "Analyze BWF tournament matches — catalog results, player careers, head-to-head records, and match video.",
   icons: {
     icon: "/assets/logomark.png",
   },

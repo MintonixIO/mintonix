@@ -128,7 +128,7 @@ const COVERAGE = [
     label: "rallies broken down shot by shot across the library.",
   },
   { big: "2014", label: "earliest broadcast match in the archive." },
-  { big: "$0", label: "to explore — included with every free account." },
+  { big: "$0", label: "to explore — free, no account required." },
 ];
 
 export default function FeatureBwfPage() {
@@ -139,12 +139,12 @@ export default function FeatureBwfPage() {
         eyebrow="BWF match library"
         eyebrowClassName="bg-[rgba(245,180,60,0.16)] text-[#f5b43c]"
         titleClassName="max-w-[15ch]"
-        title="No footage? Start with the pros."
-        body="Every account opens with a full library of analyzed BWF singles matches — the same rallies, heatmaps, and shot data you'd get from your own footage, ready the moment you sign in."
+        title="BWF analysis, ready to browse."
+        body="Browse a full catalog of BWF tournament matches — real scores, players, head-to-head records, and match video when a source is available. Free to explore, no account required."
         ctas={[
           { href: "/bwf", label: "Explore the library" },
           {
-            href: "/dashboard/compare",
+            href: "/bwf/h2h",
             label: "Compare two players",
             variant: "outline",
           },
@@ -337,12 +337,12 @@ export default function FeatureBwfPage() {
       <FeatureCTA
         className="pt-[100px]"
         title="The whole tour, opened up."
-        body="Included with every free account. No footage required — start from a final tonight."
+        body="Open any match in the catalog. No upload and no sign-in required."
         ctas={[
           { href: "/bwf", label: "Open the BWF library" },
           {
-            href: "/auth",
-            label: "Create free account",
+            href: "/bwf/players",
+            label: "Player directory",
             variant: "outline",
           },
         ]}

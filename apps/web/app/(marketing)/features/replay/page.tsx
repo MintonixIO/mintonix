@@ -87,7 +87,7 @@ export default function FeatureReplayPage() {
         title="Filmed from one angle. Watch from any."
         body="Mintonix reconstructs the court and both players in 3D from a single camera. Once it's rebuilt, you fly the camera anywhere — baseline, overhead, the net, even a player's eyeline."
         ctas={[
-          { href: "/auth", label: "Replay a match" },
+          { href: "/bwf/matches", label: "Browse BWF matches" },
           {
             href: "/replay",
             label: "Try it on a BWF match",
@@ -151,7 +151,7 @@ export default function FeatureReplayPage() {
         title="Move the camera. The match stays put."
         body="Open any analyzed match and switch to Replay. Free camera included on every plan."
         ctas={[
-          { href: "/auth", label: "Start free" },
+          { href: "/bwf", label: "Open BWF catalog" },
           {
             href: "/replay",
             label: "Open a demo rally",

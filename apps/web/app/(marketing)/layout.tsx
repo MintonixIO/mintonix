@@ -20,6 +20,8 @@ export default function MarketingLayout({
         featured={marketingFeatured}
         mode="marketing"
         indicator="spotlight"
+        signInLabel={null}
+        ctaLabel={null}
       />
       <main className="flex-1">{children}</main>
       <Footer

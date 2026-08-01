@@ -74,12 +74,13 @@ export default function PricingPage() {
           <div className="mb-4 font-mono text-[11px] uppercase tracking-[0.14em] text-[var(--accent)]">
             Pricing
           </div>
-          <h1 className="mx-auto max-w-[18ch] font-display text-[clamp(34px,5vw,56px)] font-semibold leading-[1.06] tracking-[-0.03em] text-[var(--text-strong)] text-balance">
-            Start free. Pay only for what you analyze.
+          <h1 className="mx-auto max-w-[20ch] font-display text-[clamp(34px,5vw,56px)] font-semibold leading-[1.06] tracking-[-0.03em] text-[var(--text-strong)] text-balance">
+            BWF analysis is free to browse.
           </h1>
           <p className="mx-auto mt-5 max-w-[54ch] text-[17px] leading-[1.6] text-[var(--text-secondary)]">
-            Three plans, one engine. Begin on Starter, scale on Pro with
-            pay-as-you-go uploads, and bring your whole federation on Enterprise.
+            The public BWF catalog needs no account. Plans below describe
+            future private-analysis capacity — contact us if you need a team
+            or federation setup.
           </p>
         </div>
       </section>
@@ -112,9 +113,9 @@ export default function PricingPage() {
                   For players exploring the engine.
                 </div>
                 <div className="mt-auto pt-[18px]">
-                  <Link href="/auth" className="flex">
+                  <Link href="/bwf" className="flex">
                     <Button variant="outline" block>
-                      Get started
+                      Browse BWF free
                     </Button>
                   </Link>
                 </div>
@@ -141,9 +142,9 @@ export default function PricingPage() {
                   + pay-as-you-go uploads beyond your monthly allowance.
                 </div>
                 <div className="mt-auto pt-[18px]">
-                  <Link href="/auth" className="flex">
+                  <Link href="/about#contact" className="flex">
                     <Button variant="primary" block>
-                      Start free trial
+                      Contact us
                     </Button>
                   </Link>
                 </div>

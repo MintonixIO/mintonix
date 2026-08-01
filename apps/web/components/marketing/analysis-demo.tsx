@@ -1,4 +1,3 @@
-import Image from "next/image";
 import {
   ArrowLeft,
   ChevronDown,
@@ -63,14 +62,26 @@ export function AnalysisDemo({ className }: { className?: string }) {
       <div className="grid min-h-0 flex-1 grid-cols-[1.55fr_minmax(280px,0.9fr)]">
         {/* Video pane */}
         <div className="relative min-h-0 border-r border-[var(--border-subtle)] bg-[#070b16]">
-          <Image
-            src="/media/clip-frame.jpg"
-            alt="Match footage"
-            fill
-            className="object-cover object-center"
-            sizes="800px"
-            priority
-          />
+          {/* Empty media slot — drop /public/media/clip-frame.jpg later to restore still. */}
+          <div
+            className="absolute inset-0 flex flex-col items-center justify-center gap-2 px-6 text-center"
+            aria-hidden
+          >
+            <div
+              className="absolute inset-0 opacity-40"
+              style={{
+                backgroundImage:
+                  "radial-gradient(ellipse 70% 50% at 50% 40%, rgba(54,147,255,0.2), transparent 70%), linear-gradient(rgba(54,147,255,0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(54,147,255,0.04) 1px, transparent 1px)",
+                backgroundSize: "auto, 40px 40px, 40px 40px",
+              }}
+            />
+            <span className="relative font-mono text-[11px] uppercase tracking-[0.12em] text-[var(--text-faint)]">
+              Match video
+            </span>
+            <span className="relative max-w-[28ch] text-[13px] leading-snug text-[var(--text-muted)]">
+              Preview still coming soon — open a live BWF match for YouTube playback.
+            </span>
+          </div>
           <div className="absolute inset-0 bg-gradient-to-t from-[rgba(7,11,22,0.75)] via-transparent to-transparent" />
 
           {/* Scorebug */}

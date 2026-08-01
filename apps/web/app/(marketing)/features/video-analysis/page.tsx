@@ -84,7 +84,7 @@ export default function FeatureVideoAnalysisPage() {
         title="Every shot, measured."
         body="Upload raw footage and Mintonix watches it the way a coach does — splitting the match into rallies, naming every shot, mapping where players move, and clocking the shuttle. No tagging, no spreadsheets."
         ctas={[
-          { href: "/auth", label: "Analyze a match" },
+          { href: "/bwf/matches", label: "Open a BWF match" },
           { href: "/video-analysis", label: "See it live", variant: "outline" },
         ]}
         glow="radial-gradient(110% 60% at 15% -10%, rgba(54,147,255,0.16), transparent 55%)"
@@ -346,7 +346,7 @@ export default function FeatureVideoAnalysisPage() {
         title="Point a camera. Get the numbers."
         body="Your first match is free to analyze — no card, no setup. Or open a pro match from the BWF library and explore the analysis right now."
         ctas={[
-          { href: "/auth", label: "Analyze your first match" },
+          { href: "/bwf", label: "Explore the catalog" },
           {
             href: "/bwf",
             label: "Browse BWF matches",

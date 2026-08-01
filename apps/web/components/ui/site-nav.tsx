@@ -55,6 +55,19 @@ const ICONS = {
       <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-2.82 1.17V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 7.6 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 3.6 14H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 8.6a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 10 3.6V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 2.4 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 20.4 10H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z" />
     </svg>
   ),
+  menu: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 6h16" />
+      <path d="M4 12h16" />
+      <path d="M4 18h16" />
+    </svg>
+  ),
+  close: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M18 6 6 18" />
+      <path d="m6 6 12 12" />
+    </svg>
+  ),
   logout: (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
       <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
@@ -79,9 +92,11 @@ export interface SiteNavProps extends React.HTMLAttributes<HTMLElement> {
   active?: string;
   mode?: "marketing" | "app";
   indicator?: "spotlight" | "underline" | "dot";
-  signInLabel?: string;
+  /** Set null/undefined to hide marketing sign-in control. */
+  signInLabel?: string | null;
   signInHref?: string;
-  ctaLabel?: string;
+  /** Set null/undefined to hide primary marketing CTA. */
+  ctaLabel?: string | null;
   ctaHref?: string;
   user?: { name?: string; src?: string };
   menu?: NavMenuItem[];
@@ -101,10 +116,10 @@ export function SiteNav({
   active,
   mode = "marketing",
   indicator = "spotlight",
-  signInLabel = "Sign in",
-  signInHref = "/auth",
-  ctaLabel = "Start free",
-  ctaHref = "/auth",
+  signInLabel = null,
+  signInHref = "/bwf",
+  ctaLabel = null,
+  ctaHref = "/bwf",
   user,
   menu = [
     { label: "Account", href: "/dashboard/settings", icon: "user" },
@@ -126,6 +141,7 @@ export function SiteNav({
   const [hover, setHover] = React.useState<number | null>(null);
   const [scrolled, setScrolled] = React.useState(false);
   const [open, setOpen] = React.useState(false);
+  const [mobileOpen, setMobileOpen] = React.useState(false);
   const [ind, setInd] = React.useState({ left: 0, width: 0, on: false });
   const acctRef = React.useRef<HTMLDivElement>(null);
 
@@ -167,6 +183,25 @@ export function SiteNav({
     window.addEventListener("scroll", onS, { passive: true });
     return () => window.removeEventListener("scroll", onS);
   }, []);
+
+  React.useEffect(() => {
+    setMobileOpen(false);
+  }, [pathname]);
+
+  React.useEffect(() => {
+    if (!mobileOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMobileOpen(false);
+    };
+    document.addEventListener("keydown", onKey);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prev;
+    };
+  }, [mobileOpen]);
+
 
   React.useEffect(() => {
     if (!open) return;
@@ -310,18 +345,97 @@ export function SiteNav({
               ) : null}
             </div>
           </div>
-        ) : (
+        ) : signInLabel || ctaLabel ? (
           <div className="mx-nav__right">
-            <Link className="mx-nav__signin" href={signInHref}>
-              {signInLabel}
-            </Link>
-            <Link className="mx-nav__cta" href={ctaHref}>
-              {ctaLabel}
-              {ICONS.arrowRight}
-            </Link>
+            {signInLabel ? (
+              <Link className="mx-nav__signin" href={signInHref}>
+                {signInLabel}
+              </Link>
+            ) : null}
+            {ctaLabel ? (
+              <Link className="mx-nav__cta" href={ctaHref}>
+                {ctaLabel}
+                {ICONS.arrowRight}
+              </Link>
+            ) : null}
           </div>
-        )}
+        ) : null}
+
+        {mode === "marketing" ? (
+          <button
+            type="button"
+            className="mx-nav__menu-btn"
+            aria-label={mobileOpen ? "Close menu" : "Open menu"}
+            aria-expanded={mobileOpen}
+            aria-controls="mx-nav-mobile"
+            onClick={() => setMobileOpen((v) => !v)}
+          >
+            {mobileOpen ? ICONS.close : ICONS.menu}
+          </button>
+        ) : null}
       </nav>
+
+      {mode === "marketing" && mobileOpen ? (
+        <div
+          id="mx-nav-mobile"
+          className="mx-nav__drawer"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Site menu"
+        >
+          <div className="mx-nav__drawer-links">
+            {list.map((it) => (
+              <Link
+                key={it.href + it.label}
+                className={cn(
+                  "mx-nav__drawer-link",
+                  resolvedActive === it.label && "is-active",
+                )}
+                href={it.href || "#"}
+                onClick={() => setMobileOpen(false)}
+              >
+                {it.label}
+              </Link>
+            ))}
+            {featured ? (
+              <Link
+                className={cn(
+                  "mx-nav__drawer-link mx-nav__drawer-link--feat",
+                  featActive && "is-active",
+                )}
+                href={featured.href || "#"}
+                onClick={() => setMobileOpen(false)}
+              >
+                {ICONS[featured.icon || "trophy"] || ICONS.trophy}
+                {featured.label}
+              </Link>
+            ) : null}
+          </div>
+          {signInLabel || ctaLabel ? (
+            <div className="mx-nav__drawer-actions">
+              {signInLabel ? (
+                <Link
+                  className="mx-nav__drawer-signin"
+                  href={signInHref}
+                  onClick={() => setMobileOpen(false)}
+                >
+                  {signInLabel}
+                </Link>
+              ) : null}
+              {ctaLabel ? (
+                <Link
+                  className="mx-nav__drawer-cta"
+                  href={ctaHref}
+                  onClick={() => setMobileOpen(false)}
+                >
+                  {ctaLabel}
+                  {ICONS.arrowRight}
+                </Link>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
     </header>
   );
 }

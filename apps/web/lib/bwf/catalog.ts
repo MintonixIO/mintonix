@@ -282,6 +282,103 @@ export async function getStaticSearchIndex(): Promise<SearchHit[]> {
   return buildStaticSearchIndex(directoryPlayers, stats);
 }
 
+
+export async function listDirectoryPlayers(opts?: {
+  q?: string;
+  disc?: Disc | "all";
+  page?: number;
+  pageSize?: number;
+}): Promise<{
+  players: DirectoryPlayer[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+}> {
+  const pageSize = Math.min(Math.max(opts?.pageSize ?? 60, 1), 100);
+  const page = Math.max(opts?.page ?? 1, 1);
+  const q = (opts?.q ?? "").trim().toLowerCase();
+  const disc = opts?.disc && opts.disc !== "all" ? opts.disc : null;
+  const all = await getDirectoryPlayers();
+  const filtered = all.filter((p) => {
+    if (disc && p.disc !== disc && !p.discs.includes(disc)) return false;
+    if (q && !p.name.toLowerCase().includes(q)) return false;
+    return true;
+  });
+  const total = filtered.length;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const safePage = Math.min(page, totalPages);
+  const start = (safePage - 1) * pageSize;
+  return {
+    players: filtered.slice(start, start + pageSize),
+    total,
+    page: safePage,
+    pageSize,
+    totalPages,
+  };
+}
+
+/** Leaderboard slice computed server-side (avoids shipping full directory). */
+export async function listDirectoryBoard(opts?: {
+  q?: string;
+  disc?: Disc | "all";
+  metric?: "winRate" | "wins" | "matches" | "threeGames" | "withVideo";
+  limit?: number;
+}): Promise<{ players: DirectoryPlayer[]; total: number }> {
+  const q = (opts?.q ?? "").trim().toLowerCase();
+  const disc = opts?.disc && opts.disc !== "all" ? opts.disc : null;
+  const metric = opts?.metric ?? "winRate";
+  const limit = Math.min(Math.max(opts?.limit ?? 50, 1), 100);
+  const all = await getDirectoryPlayers();
+  let filtered = all.filter((p) => {
+    if (disc && p.disc !== disc && !p.discs.includes(disc)) return false;
+    if (q && !p.name.toLowerCase().includes(q)) return false;
+    return true;
+  });
+  if (metric === "winRate") {
+    filtered = filtered.filter((p) => p.wins + p.losses >= 3);
+  } else {
+    filtered = filtered.filter((p) => p.matches >= 1);
+  }
+  const get = (p: DirectoryPlayer) => {
+    switch (metric) {
+      case "wins":
+        return p.wins;
+      case "matches":
+        return p.matches;
+      case "threeGames":
+        return p.threeGames;
+      case "withVideo":
+        return p.withVideo;
+      default:
+        return p.winRate;
+    }
+  };
+  filtered = filtered.slice().sort((a, b) => get(b) - get(a) || b.wins - a.wins);
+  return { players: filtered.slice(0, limit), total: filtered.length };
+}
+
+/** Slim rows for H2H picker seed + remote typeahead. */
+export async function searchDirectoryPlayers(
+  q: string,
+  limit = 40,
+): Promise<
+  { id: string; name: string; matches: number; disc: DirectoryPlayer["disc"] }[]
+> {
+  const query = q.trim().toLowerCase().slice(0, 100);
+  const all = await getDirectoryPlayers();
+  const rows = (query
+    ? all.filter((p) => p.name.toLowerCase().includes(query))
+    : all.slice().sort((a, b) => b.matches - a.matches)
+  ).slice(0, Math.min(Math.max(limit, 1), 80));
+  return rows.map((p) => ({
+    id: p.id,
+    name: p.name,
+    matches: p.matches,
+    disc: p.disc,
+  }));
+}
+
 /** Home leaderboard rows — slim directory DTOs (no form/rivals payload). */
 export async function getTopPlayers(opts?: {
   disc?: Disc | "all";
