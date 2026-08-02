@@ -9,13 +9,17 @@ requests
 yt-dlp
 
 # valid_frames.py: court-visibility NCC detection (opencv/numpy) +
-# scoreboard-visibility OCR (paddleocr). CPU-only paddlepaddle -- OCR runs at
-# a ~7 min/85 min-match floor on CPU (measured in the sibling valid-frames
-# project); a GPU build would need a paddlepaddle-gpu wheel matched to this
-# image's CUDA runtime, which isn't wired up here.
+# scoreboard-visibility OCR (paddleocr). Prefer paddlepaddle-gpu so OCR uses
+# the rent GPU. Match host CUDA when installing (not plain PyPI):
+#   CUDA 13.0 / 5080:  paddlepaddle-gpu==3.3.1 -i …/packages/stable/cu130/
+#   CUDA 12.x:         paddlepaddle-gpu==3.3.1 -i …/packages/stable/cu126/
+# Image bake: Dockerfile tries cu130 then cu126 after requirements.txt.
+# OCR_DEVICE=auto|gpu|cpu  (auto → gpu:0 only after non-empty proof crop).
 opencv-python-headless
 numpy
 paddleocr
+# CPU wheel kept so `pip install -r requirements.txt` works without the
+# Paddle GPU index (CI / laptop). Dockerfile replaces this with GPU.
 paddlepaddle
 
 # Vast.ai PyWorker framework (worker.py). On real serverless instances vast's

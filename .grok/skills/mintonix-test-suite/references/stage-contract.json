@@ -1,0 +1,83 @@
+{
+  "description": "Canonical stage → B2 basenames for purge, dispatch, and ops. Live names first; legacy names retained for older buckets.",
+  "stage_order": ["normalize", "detect", "analyze"],
+  "outputs": {
+    "normalize": [
+      "normalized.mp4",
+      "thumbnail.jpg",
+      "frame_ranges.csv",
+      "valid.mp4",
+      "frame_manifest.csv",
+      "scores.csv"
+    ],
+    "detect": ["detections.json"],
+    "analyze": ["analysis.json"]
+  },
+  "primary": {
+    "normalize": "normalized.mp4",
+    "detect": "detections.json",
+    "analyze": "analysis.json"
+  },
+  "keep_on_regress": [
+    "original.mp4",
+    "original.mov",
+    "original.mkv",
+    "annotation.json"
+  ],
+  "callback_wire_status": {
+    "success": "Worker → jobs/callback success",
+    "failed": "Worker → jobs/callback failure",
+    "db_complete": "jobs.row status after successful settle"
+  },
+  "live_normalize": {
+    "both": ["normalized.mp4", "thumbnail.jpg"],
+    "bwf_extra": ["frame_ranges.csv"],
+    "youtube_archive": ["original.mkv"],
+    "legacy_or_deferred": ["valid.mp4", "frame_manifest.csv", "scores.csv"],
+    "notes": {
+      "normalized.mp4_bwf": "Valid-frames cut only (court ∧ scoreboard); not full broadcast",
+      "normalized.mp4_user": "Full video re-encode ≤1080p/30 H.264/AAC",
+      "valid.mp4": "Legacy; live primary cleaned asset is normalized.mp4",
+      "scores.csv": "Deferred / not implemented on live path"
+    }
+  },
+  "annotation": {
+    "file": "annotation.json",
+    "contains": [
+      "court.corners (TL→TR→BR→BL)",
+      "optional BWF scoreboard crops",
+      "labels[] click anchors + display_name (not full mask bitmaps)"
+    ],
+    "not_used_by_detect_for_reid_today": true
+  },
+  "lanes": {
+    "bwf": {
+      "prefix": "bwf/<match_id>/",
+      "matches_row": "Already from match-data catalog; harness enqueues only (upsert=false)",
+      "source": "matches.source_url (yt-dlp) or staged original.*"
+    },
+    "user": {
+      "prefix": "users/<uid>/<match_id>/",
+      "matches_row": "Created at matches-ingest confirm after original.mp4 upload",
+      "source": "original.mp4 via cdn-access"
+    }
+  },
+  "mvp": {
+    "terminal_stage": "detect",
+    "analyze_wired": false,
+    "bwf_normalized_is_valid_cut": true,
+    "detect_content": "detections.json contains pose and shuttle for every frame of normalized.mp4",
+    "reid_from_annotation": false,
+    "player_mask_presigned_by_jobs": false,
+    "workers": "normalize and detect on vast.ai serverless; analyze not wired",
+    "after_normalize_success": {
+      "jobs.stage": "detect",
+      "matches.status": "processing"
+    },
+    "after_detect_success": {
+      "jobs.status": "complete",
+      "jobs.stage": "detect",
+      "matches.status": "ready"
+    }
+  }
+}

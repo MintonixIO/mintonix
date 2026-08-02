@@ -324,17 +324,28 @@ def download(url: str, dest: str, connections: int | None = None) -> None:
     lock = threading.Lock()
 
     def fetch(start: int, end: int) -> None:
+        expected = end - start + 1
+        got = 0
         try:
             r = sess.get(url, headers={"Range": f"bytes={start}-{end}"},
                          stream=True, timeout=600)
-            if not (200 <= r.status_code < 300):
+            # Parallel parts must be true Range responses. A 200 full body
+            # written at an offset would corrupt the sparse pre-truncated file.
+            if r.status_code != 206:
                 raise _http_status_error(r.status_code, url, kind="download")
             with open(dest, "r+b") as f:
                 f.seek(start)
                 for ch in r.iter_content(chunk_size=8 * 1024 * 1024):
+                    n = len(ch)
+                    got += n
+                    if got > expected:
+                        raise RuntimeError(
+                            f"range fetch overshot expected={expected} got>={got} "
+                            f"({sanitize_error(url)})"
+                        )
                     f.write(ch)
                     with lock:
-                        done[0] += len(ch)
+                        done[0] += n
                         now = time.time()
                         if now - last_emit[0] >= DOWNLOAD_PROGRESS_INTERVAL_SEC:
                             last_emit[0] = now
@@ -342,15 +353,38 @@ def download(url: str, dest: str, connections: int | None = None) -> None:
                             sp = (done[0] / el / 1024 / 1024) if el else 0
                             log.info("download: %.1f MB (%.1f%%) @ %.1f MB/s",
                                      done[0] / 1024 / 1024, done[0] / total * 100, sp)
+            if got != expected:
+                raise RuntimeError(
+                    f"range fetch undershot expected={expected} got={got} "
+                    f"({sanitize_error(url)})"
+                )
         except requests.RequestException as e:
             raise RuntimeError(
                 f"download range failed: {type(e).__name__}: {sanitize_error(e)}"
             ) from None
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=connections) as ex:
-        futs = [ex.submit(fetch, s, e) for s, e in chunks]
-        for fu in concurrent.futures.as_completed(futs):
-            fu.result()  # re-raise the first failure
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=connections) as ex:
+            futs = [ex.submit(fetch, s, e) for s, e in chunks]
+            for fu in concurrent.futures.as_completed(futs):
+                fu.result()  # re-raise the first failure
+    except Exception:
+        try:
+            os.unlink(dest)
+        except OSError:
+            pass
+        raise
+
+    final_size = os.path.getsize(dest)
+    if final_size != total:
+        try:
+            os.unlink(dest)
+        except OSError:
+            pass
+        raise RuntimeError(
+            f"download size mismatch: expected={total} got={final_size} "
+            f"({sanitize_error(url)})"
+        )
 
     elapsed = time.time() - t0
     speed = (total / elapsed / 1024 / 1024) if elapsed else 0

@@ -1,4 +1,4 @@
--- Match-centric pipeline schema (canonical: SUPABASE.md).
+-- Match-centric pipeline schema (canonical: supabase/README.md).
 --
 -- One product table `matches` (catalog + primary video identity + coarse
 -- status) and one `jobs` table (pipeline run; stage advances in place).

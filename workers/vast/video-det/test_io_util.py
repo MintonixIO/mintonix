@@ -148,6 +148,58 @@ class TestFileIO(unittest.TestCase):
             self.assertNotIn("SECRET", str(ctx.exception))
             self.assertFalse(dest.exists())
 
+    def test_multi_range_download_undershoot_unlinks_partial(self) -> None:
+        """Short range body leaves holes; must abort and delete dest."""
+        import io_util
+
+        total = 200
+
+        class FakeProbe:
+            status_code = 206
+            headers = {"Content-Range": f"bytes 0-0/{total}"}
+
+        class StreamResp:
+            status_code = 206
+            request = MagicMock()
+            headers: dict = {}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def iter_bytes(self, n):
+                yield b"x" * 10  # undershoot vs expected ~100
+
+        class FakeClient:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def get(self, url, headers=None):
+                return FakeProbe()
+
+            def stream(self, method, url, headers=None):
+                return StreamResp()
+
+        with tempfile.TemporaryDirectory() as td:
+            dest = Path(td) / "partial.bin"
+            with patch.object(io_util, "_httpx", return_value=MagicMock()):
+                with patch.object(io_util, "_http_client", return_value=FakeClient()):
+                    with patch.object(io_util, "_MIN_RANGE_BYTES", 1):
+                        with self.assertRaises(RuntimeError) as ctx:
+                            download(
+                                "https://cdn.example/v.mp4",
+                                dest,
+                                connections=2,
+                                max_bytes=10_000,
+                            )
+            self.assertIn("undershot", str(ctx.exception).lower())
+            self.assertFalse(dest.exists())
+
     def test_multi_range_download_overshoot_unlinks_partial(self) -> None:
         """Range body larger than expected span aborts and deletes dest."""
         import io_util

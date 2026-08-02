@@ -18,11 +18,12 @@ if _SCRIPTS not in sys.path:
 import ops_stage as s  # noqa: E402
 
 
-# Golden fixture — keep in sync with SUPABASE.md + ops/stage_outputs.ts.
+# Golden fixture — keep in sync with supabase/README.md + ops/stage_outputs.ts.
 GOLDEN_STAGE_OUTPUTS = {
     "normalize": (
         "normalized.mp4",
         "thumbnail.jpg",
+        "frame_ranges.csv",
         "valid.mp4",
         "frame_manifest.csv",
         "scores.csv",
@@ -52,6 +53,7 @@ class StageOutputsTests(unittest.TestCase):
             [
                 "normalized.mp4",
                 "thumbnail.jpg",
+                "frame_ranges.csv",
                 "valid.mp4",
                 "frame_manifest.csv",
                 "scores.csv",

@@ -10,8 +10,8 @@ import server as srv
 
 
 class TestCallbackAllowlist(unittest.TestCase):
-    """Allow/deny matrix for callback_url policy (stock path-suffix default,
-    explicit prefix, ALLOW_UNSAFE_CALLBACK escape hatch)."""
+    """Prefix-required allowlist (fail-closed without CALLBACK_URL_PREFIX /
+    SUPABASE_URL). ALLOW_UNSAFE_CALLBACK is the only host-open escape hatch."""
 
     def _env(self, **kwargs):
         base = {
@@ -22,32 +22,12 @@ class TestCallbackAllowlist(unittest.TestCase):
         base.update(kwargs)
         return mock.patch.dict(os.environ, base, clear=False)
 
-    def test_stock_path_suffix_allow_deny(self):
-        """No prefix env: https + path ends with /functions/v1/jobs/callback."""
-        good = "https://proj.supabase.co/functions/v1/jobs/callback"
-        with_query = "https://other.example/functions/v1/jobs/callback?x=1"
+    def test_fail_closed_without_prefix(self):
+        good_path = "https://proj.supabase.co/functions/v1/jobs/callback"
         with self._env():
-            self.assertTrue(srv._callback_url_allowed(good))
-            self.assertTrue(srv._callback_url_allowed(with_query))
-            # any https host is ok if the path matches (stock multi-project)
-            self.assertTrue(srv._callback_url_allowed(
+            self.assertFalse(srv._callback_url_allowed(good_path))
+            self.assertFalse(srv._callback_url_allowed(
                 "https://evil.example/functions/v1/jobs/callback"
-            ))
-            # wrong path / scheme / host tricks
-            self.assertFalse(srv._callback_url_allowed(
-                "https://evil.example/cb"
-            ))
-            self.assertFalse(srv._callback_url_allowed(
-                "https://evil.example/functions/v1/jobs/callback/extra"
-            ))
-            self.assertFalse(srv._callback_url_allowed(
-                "https://evil.example/functions/v1/jobs/callbackevil"
-            ))
-            self.assertFalse(srv._callback_url_allowed(
-                "http://proj.supabase.co/functions/v1/jobs/callback"
-            ))
-            self.assertFalse(srv._callback_url_allowed(
-                "file:///functions/v1/jobs/callback"
             ))
             # empty / None always ok (no callback channel)
             self.assertTrue(srv._callback_url_allowed(""))
@@ -63,10 +43,14 @@ class TestCallbackAllowlist(unittest.TestCase):
             self.assertFalse(
                 srv._callback_url_allowed("https://evil.example/cb")
             )
-            # prefix mode is strict: correct path on other host is denied
             self.assertFalse(
                 srv._callback_url_allowed(
                     "https://other.supabase.co/functions/v1/jobs/callback"
+                )
+            )
+            self.assertFalse(
+                srv._callback_url_allowed(
+                    "https://proj.supabase.co/functions/v1/jobs/callback/extra"
                 )
             )
 

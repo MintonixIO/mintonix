@@ -47,6 +47,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Any
 
+import ssl_certs  # noqa: F401  — fix empty macOS python.org CA store before HTTPS
 import ops_stage as _ops_stage
 from ops_stage import (
     KEEP_ON_REGRESS,
@@ -2558,17 +2559,26 @@ def screen_ingest(app: App) -> None:
     lane = menu_select(
         app, "Ingest video",
         [
-            ("YouTube / BWF", "System lane — worker downloads from YouTube."),
+            ("YouTube / BWF", "Catalog match already exists — annotate + enqueue only."),
             ("Local file (user upload)", "Upload lane — test user + cdn-access."),
-            ("YouTube + local scrub file", "BWF lane, annotate from a local copy."),
+            ("BWF + local scrub file", "Catalog BWF; annotate from a local copy."),
         ],
         subtitle=f"Opens OpenCV annotator  ·  {app.env.label}",
     )
 
-    url = file_path = tournament = None
+    url = file_path = match_id = None
     if lane in (0, 2):
-        url = text_input(app, "YouTube URL", "Paste YouTube URL")
-        tournament = text_input(app, "Tournament", "Label (e.g. 2025 Worlds-MS-Final)")
+        # BWF catalog already has the match — resolve by id (preferred) or URL.
+        match_id = text_input(
+            app, "Catalog match id (optional)",
+            "BWF sha256 id — leave blank to resolve by YouTube URL",
+        ).strip() or None
+        url = text_input(
+            app, "YouTube URL" + ("" if match_id else " (required)"),
+            "Catalog source_url / scrub stream",
+        ).strip() or None
+        if not match_id and not url:
+            raise RuntimeError("BWF lane needs catalog --match-id or YouTube --url")
     if lane in (1, 2):
         file_path = text_input(app, "Local file", "Path to video file")
         if not os.path.isfile(file_path):
@@ -2584,13 +2594,14 @@ def screen_ingest(app: App) -> None:
         raise RuntimeError(f"annotate_and_ingest.py not found at {script}")
 
     # Enqueue only — never pass --dispatch; pg_cron drains the queue.
+    # BWF path: annotate upload + matches-ingest enqueue (upsert=false); no catalog rewrite.
     cmd = [sys.executable, script]
+    if match_id:
+        cmd += ["--match-id", match_id]
     if url:
         cmd += ["--url", url]
     if file_path:
         cmd += ["--file", file_path]
-    if tournament:
-        cmd += ["--tournament", tournament]
     if lane != 1:
         cmd += ["--queue", "jobs_bulk"]
     if dry:

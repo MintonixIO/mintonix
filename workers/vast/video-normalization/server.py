@@ -69,6 +69,7 @@ on_load) — keep that line emitted on stdout.
 
 import logging
 import os
+import time
 from urllib.parse import urlparse
 
 import uvicorn
@@ -103,13 +104,13 @@ def _callback_prefix() -> str:
 
 
 def _callback_url_allowed(url: str | None) -> bool:
-    """Allow callback_url under a tight allowlist.
+    """Allow callback_url under a tight allowlist (Bearer token exfil risk).
 
     Priority:
       1. ALLOW_UNSAFE_CALLBACK=1 — any URL (local/dev only).
-      2. CALLBACK_URL_PREFIX or SUPABASE_URL set — must match that prefix.
-      3. Prefix empty (stock image) — https only, path ends with
-         /functions/v1/jobs/callback (rejects arbitrary evil hosts/paths).
+      2. CALLBACK_URL_PREFIX or SUPABASE_URL — URL must start with that prefix
+         and path must end with /functions/v1/jobs/callback.
+      3. Prefix empty — **fail closed** (path-suffix-only was host-open).
     """
     if not url:
         return True
@@ -118,17 +119,18 @@ def _callback_url_allowed(url: str | None) -> bool:
     ):
         return True
     prefix = _callback_prefix()
-    if prefix:
-        return url.startswith(prefix + "/") or url == prefix
-    # Stock deploy: no prefix env. Allow only the jobs edge callback path.
+    if not prefix:
+        return False
     try:
         parsed = urlparse(url)
     except Exception:  # noqa: BLE001 — reject unparseable URLs
         return False
-    if parsed.scheme != "https":
+    if parsed.scheme not in ("https", "http"):
         return False
     path = parsed.path or ""
-    return path.endswith(_DEFAULT_CALLBACK_PATH_SUFFIX)
+    if not path.endswith(_DEFAULT_CALLBACK_PATH_SUFFIX):
+        return False
+    return url.startswith(prefix + "/") or url.startswith(prefix + "?") or url == prefix
 
 
 @app.get("/health")
@@ -152,6 +154,9 @@ async def normalize_sync(request: Request) -> JSONResponse:
     output_upload = body.get("output_upload")  # multipart spec (dict) or None
     thumbnail_upload_url = body.get("thumbnail_upload_url")  # presigned PUT or None
     valid_frames_config = body.get("valid_frames_config")
+    # Preferred production path: raw annotation.json + roster; worker maps.
+    annotation = body.get("annotation")
+    roster = body.get("roster") if isinstance(body.get("roster"), dict) else None
     manifest_upload_url = body.get("manifest_upload_url")
     original_upload_url = body.get("original_upload_url")  # archive PUT (legacy / local)
     original_upload = body.get("original_upload")  # archive multipart (production youtube)
@@ -167,13 +172,57 @@ async def normalize_sync(request: Request) -> JSONResponse:
              "error": "input_url and one of output_upload_url / output_upload are required"},
             status_code=422,
         )
+    # Early request fingerprint (before validation work) so cold-start logs show
+    # whether the job was accepted and which path it takes.
+    log.info(
+        "normalize(request): request_id=%s bwf=%s annotation=%s multipart=%s "
+        "thumb=%s manifest=%s archive=%s callback=%s youtube=%s "
+        "callback_prefix_set=%s ncc_fps=%s ocr_device=%s ocr_workers=%s",
+        request_id,
+        valid_frames_config is not None or annotation is not None,
+        annotation is not None,
+        bool(output_upload),
+        bool(thumbnail_upload_url),
+        bool(manifest_upload_url),
+        bool(original_upload or original_upload_url),
+        bool(callback_url),
+        bool(input_url and ("youtube.com" in str(input_url) or "youtu.be" in str(input_url))),
+        bool(_callback_prefix()),
+        os.environ.get("NCC_FPS", ""),
+        os.environ.get("OCR_DEVICE", "auto"),
+        os.environ.get("OCR_WORKERS", ""),
+    )
+
     if callback_url and not _callback_url_allowed(callback_url):
+        log.warning(
+            "normalize(reject): request_id=%s callback_url not allowed "
+            "(prefix_set=%s)",
+            request_id, bool(_callback_prefix()),
+        )
         return JSONResponse(
             {"request_id": request_id,
-             "error": ("callback_url not allowed (must match CALLBACK_URL_PREFIX "
-                       "/ SUPABASE_URL, or https …/functions/v1/jobs/callback)")},
+             "error": ("callback_url not allowed (set CALLBACK_URL_PREFIX or "
+                       "SUPABASE_URL; URL must match that prefix and end with "
+                       "/functions/v1/jobs/callback)")},
             status_code=422,
         )
+    if annotation is not None and valid_frames_config is None:
+        from annotation_map import annotation_to_valid_frames_config
+        valid_frames_config = annotation_to_valid_frames_config(
+            annotation if isinstance(annotation, dict) else {},
+            roster=roster,
+        )
+        if valid_frames_config is None:
+            return JSONResponse(
+                {
+                    "request_id": request_id,
+                    "error": (
+                        "annotation unusable (need court.corners + player "
+                        "names/labels or roster)"
+                    ),
+                },
+                status_code=422,
+            )
     if valid_frames_config is not None:
         # Primary cleaned asset is output_upload(_url). Manifest (ranges CSV) required.
         err = normalize.validate_valid_frames_request(
@@ -193,6 +242,8 @@ async def normalize_sync(request: Request) -> JSONResponse:
     # dispatcher hung up an hour ago.
     def run_and_report() -> dict:
         progress: dict = {}
+        t0 = time.time()
+        log.info("normalize(run,start): request_id=%s", request_id)
         try:
             result = normalize.normalize_job(
                 input_url, output_upload_url, output_upload,
@@ -201,12 +252,22 @@ async def normalize_sync(request: Request) -> JSONResponse:
                 original_upload=original_upload, progress=progress,
             )
         except Exception as e:
+            log.exception(
+                "normalize(run,failed): request_id=%s elapsed=%.1fs",
+                request_id, time.time() - t0,
+            )
             if callback_url:
                 normalize.post_callback(callback_url, callback_token, {
                     "request_id": request_id, "status": "failed",
                     "error": normalize.sanitize_error(e), **progress,
                 })
             raise
+        log.info(
+            "normalize(run,ok): request_id=%s elapsed=%.1fs stage_timings=%s",
+            request_id,
+            time.time() - t0,
+            result.get("stage_timings"),
+        )
         if callback_url:
             normalize.post_callback(callback_url, callback_token, {
                 "request_id": request_id, "status": "success", **result,

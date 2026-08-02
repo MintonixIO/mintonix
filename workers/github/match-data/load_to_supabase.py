@@ -2,7 +2,7 @@
 """
 Load BWF scraped JSON into Supabase `matches` (match-centric pipeline schema).
 
-Canonical schema: repo root SUPABASE.md + migration
+Canonical schema: supabase/README.md + migration
 `20260712000000_init_match_pipeline.sql`.
 
 - One row per finished match on `matches` (no nations / players / match_players).
@@ -14,6 +14,9 @@ Canonical schema: repo root SUPABASE.md + migration
   is healthy; degraded mappings never wipe existing URLs.
 - Catalog upsert only. Does NOT call matches-ingest / enqueue GPU jobs
   (ARCHITECTURE.md: metadata load vs pipeline enqueue are separate).
+- After upsert, purges re-keyed orphans: BWF rows that share this load's
+  (tournament, roster) under a different id (match_key scheme drift).
+  One-shot full-catalog collapse: ``--purge-duplicates-only``.
 
 Usage:
     SUPABASE_URL=https://yourproject.supabase.co \\
@@ -21,12 +24,13 @@ Usage:
     python3 load_to_supabase.py --json-file bwf_2026_results.json \\
         --videos-file video_matches.json
 
+    python3 load_to_supabase.py --purge-duplicates-only
+
 The service role key bypasses RLS — never expose it to the frontend.
 """
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import re
@@ -35,6 +39,8 @@ import time
 from datetime import date
 
 import requests
+
+from match_key import bwf_match_id, match_key_from_scraped
 
 SUPABASE_URL = ""
 SUPABASE_KEY = ""
@@ -72,15 +78,6 @@ MATCH_UPSERT_COLS = (
     "g3_t1", "g3_t2",
     "source_url",
 )
-
-
-def bwf_match_id(match_key: str) -> str:
-    """Content-addressed PK: full sha256 hex of the stable scraper key."""
-    return hashlib.sha256(match_key.encode("utf-8")).hexdigest()
-
-
-def make_match_key(season, tournament, discipline, section, rnd, match_idx) -> str:
-    return f"{season}|{tournament}|{discipline}|{section}|{rnd}|{match_idx}"
 
 
 def youtube_url(video_id: str | None) -> str | None:
@@ -196,6 +193,119 @@ def delete_matches(ids, batch_size=100):
     return removed
 
 
+def roster_key(row: dict) -> tuple[str, ...]:
+    """Order-independent player identity for a flat matches row."""
+    return tuple(
+        sorted(
+            n
+            for n in (
+                row.get("team1_player1"),
+                row.get("team1_player2"),
+                row.get("team2_player1"),
+                row.get("team2_player2"),
+            )
+            if n
+        )
+    )
+
+
+def _has_pipeline_progress(row: dict) -> bool:
+    """True if the row looks past pure catalog metadata."""
+    if row.get("status") and row["status"] != "pending":
+        return True
+    return any(
+        row.get(k) is not None
+        for k in ("duration_sec", "width", "height", "fps")
+    )
+
+
+def prefer_catalog_row(a: dict, b: dict) -> dict:
+    """Pick the survivor when two BWF rows are the same logical match.
+
+    Priority: pipeline progress → source_url → newest created_at → larger id.
+    """
+    ap, bp = _has_pipeline_progress(a), _has_pipeline_progress(b)
+    if ap != bp:
+        return a if ap else b
+    au, bu = bool(a.get("source_url")), bool(b.get("source_url"))
+    if au != bu:
+        return a if au else b
+    ac, bc = a.get("created_at") or "", b.get("created_at") or ""
+    if ac != bc:
+        return a if ac > bc else b
+    return a if (a.get("id") or "") >= (b.get("id") or "") else b
+
+
+def find_rekeyed_orphan_ids(match_rows: list[dict]) -> list[str]:
+    """IDs of BWF rows that match this load's (tournament, roster) under an old id.
+
+    Content-addressed ``matches.id`` changes when match_key construction changes
+    (e.g. section full-path → leaf). Upsert only inserts the new hash; the old
+    row remains. Scope the search to tournament labels present in this load so
+    other seasons are untouched.
+    """
+    if not match_rows:
+        return []
+    keep_ids = {r["id"] for r in match_rows}
+    by_tour: dict[str, set[tuple[str, ...]]] = {}
+    for r in match_rows:
+        tour = r.get("tournament")
+        rk = roster_key(r)
+        if not tour or not rk:
+            continue
+        by_tour.setdefault(tour, set()).add(rk)
+
+    orphan_ids: list[str] = []
+    for tour, rosters in by_tour.items():
+        db_rows = select(
+            "matches",
+            "id,tournament,team1_player1,team1_player2,team2_player1,team2_player2,"
+            "source_url,status,duration_sec,width,height,fps,created_at",
+            "id",
+            params={"owner_id": "is.null", "tournament": f"eq.{tour}"},
+        )
+        for db in db_rows:
+            if db["id"] in keep_ids:
+                continue
+            if roster_key(db) in rosters:
+                orphan_ids.append(db["id"])
+    return orphan_ids
+
+
+def find_global_duplicate_orphan_ids() -> list[str]:
+    """Scan all BWF rows and return ids to drop so each (tournament, roster) is unique.
+
+    Used for one-shot cleanup after a match_key scheme change. Keeps the preferred
+    row per cluster (see prefer_catalog_row).
+    """
+    db_rows = select(
+        "matches",
+        "id,tournament,team1_player1,team1_player2,team2_player1,team2_player2,"
+        "source_url,status,duration_sec,width,height,fps,created_at",
+        "created_at",
+        params={"owner_id": "is.null"},
+    )
+    clusters: dict[tuple, list[dict]] = {}
+    for r in db_rows:
+        tour = r.get("tournament")
+        rk = roster_key(r)
+        if not tour or not rk:
+            continue
+        clusters.setdefault((tour, rk), []).append(r)
+
+    orphan_ids: list[str] = []
+    for group in clusters.values():
+        if len(group) < 2:
+            continue
+        keep = group[0]
+        for other in group[1:]:
+            keep = prefer_catalog_row(keep, other)
+        for r in group:
+            if r["id"] != keep["id"]:
+                orphan_ids.append(r["id"])
+    return orphan_ids
+
+
 def player_name(p):
     """Canonical name: wiki page title when present, else display."""
     return (p.get("wiki_name") or p.get("display_name") or "").strip()
@@ -241,11 +351,13 @@ def to_iso_date(raw, season):
 def games_to_columns(games):
     """Map the scraped games list to flat g{n}_t{side} score columns.
 
-    Returns (cols, (w1, w2)) where w1/w2 are games won per side (for winner
-    fallback when the markup didn't bold a team).
+    Returns (cols, (w1, w2, n1, n2)) where:
+      w1/w2 — games won from per-game is_winner bold flags
+      n1/n2 — games won from numeric score comparison
     """
     cols = {f"g{n}_t{s}": None for n in (1, 2, 3) for s in (1, 2)}
     w1 = w2 = 0
+    n1 = n2 = 0
     for g in games:
         n = g.get("game")
         if n not in (1, 2, 3):
@@ -258,7 +370,42 @@ def games_to_columns(games):
             w1 += 1
         if (g.get("score2") or {}).get("is_winner"):
             w2 += 1
-    return cols, (w1, w2)
+        if s1 is not None and s2 is not None:
+            try:
+                a, b = int(s1), int(s2)
+            except (TypeError, ValueError):
+                continue
+            if a > b:
+                n1 += 1
+            elif b > a:
+                n2 += 1
+    return cols, (w1, w2, n1, n2)
+
+
+def resolve_winner(match: dict, score_cols: dict, w1: int, w2: int, n1: int, n2: int):
+    """Determine winner without relying solely on wiki bold markup.
+
+    Order: team bold → per-game bold counts → games_won field → numeric sets.
+    """
+    if match.get("team1", {}).get("is_winner"):
+        return 1
+    if match.get("team2", {}).get("is_winner"):
+        return 2
+    if w1 != w2:
+        return 1 if w1 > w2 else 2
+    gw = match.get("games_won")
+    if isinstance(gw, (list, tuple)) and len(gw) == 2:
+        try:
+            a, b = int(gw[0]), int(gw[1])
+            if a != b:
+                return 1 if a > b else 2
+        except (TypeError, ValueError):
+            pass
+    if n1 != n2:
+        return 1 if n1 > n2 else 2
+    # Last resort: any non-null score columns imply in-progress, not finished.
+    _ = score_cols
+    return None
 
 
 def main():
@@ -281,6 +428,19 @@ def main():
         action="store_true",
         help="Report the diff vs the current DB and write nothing",
     )
+    parser.add_argument(
+        "--purge-duplicates",
+        action="store_true",
+        help="One-shot: collapse BWF rows that share (tournament, roster) under "
+        "different ids (re-keyed orphans). Can run without --json-file load by "
+        "passing --purge-duplicates alone (uses empty load path when combined "
+        "with --skip-load).",
+    )
+    parser.add_argument(
+        "--purge-duplicates-only",
+        action="store_true",
+        help="Only run global duplicate collapse; do not load a scrape file",
+    )
     args = parser.parse_args()
 
     _configure_client()
@@ -290,6 +450,24 @@ def main():
     act = "Would upsert" if DRY_RUN else "Upserting"
     if DRY_RUN:
         print("DRY RUN — no writes will be made.\n")
+
+    if args.purge_duplicates_only:
+        print("Scanning BWF catalog for (tournament, roster) duplicate ids...")
+        orphan_ids = find_global_duplicate_orphan_ids()
+        print(f"  Found {len(orphan_ids)} orphan id(s) to remove")
+        if orphan_ids:
+            for i in orphan_ids[:12]:
+                print(f"      - {i[:20]}…")
+            if len(orphan_ids) > 12:
+                print(f"      … and {len(orphan_ids) - 12} more")
+            removed = delete_matches(orphan_ids)
+            print(
+                f"  {'Would purge' if DRY_RUN else 'Purged'} "
+                f"{removed} re-keyed duplicate match(es)"
+            )
+        else:
+            print("  Catalog already unique on (tournament, roster)")
+        return
 
     here = os.path.dirname(os.path.abspath(__file__))
     resolve = lambda p: p if os.path.isabs(p) else os.path.join(here, p)
@@ -318,22 +496,12 @@ def main():
         for m in t["matches"]:
             discipline = m["discipline"]
             rnd = m["round"]
-            match_idx = m.get("match_idx", 0)
-            # section_path distinguishes matches in split draws where match_idx
-            # restarts within each section (Top half / Section 1, …).
-            section = "/".join(m.get("section_path") or [])
-            match_key = make_match_key(
-                season, tournament, discipline, section, rnd, match_idx
+            score_cols, (w1, w2, n1, n2) = games_to_columns(m.get("games", []))
+            # Prefer scraper-emitted match_key; recompute with leaf section if absent.
+            match_key = m.get("match_key") or match_key_from_scraped(
+                season, tournament, m
             )
-
-            score_cols, (w1, w2) = games_to_columns(m.get("games", []))
-            winner = (
-                1
-                if m["team1"].get("is_winner")
-                else (2 if m["team2"].get("is_winner") else None)
-            )
-            if winner is None and w1 != w2:
-                winner = 1 if w1 > w2 else 2
+            winner = resolve_winner(m, score_cols, w1, w2, n1, n2)
 
             # Persist finished matches only (same policy as the old loader).
             if winner is None:
@@ -374,30 +542,47 @@ def main():
         )
     match_rows = deduped
 
-    # Video / source_url guard: never wipe existing URLs on a degraded mapping.
+    # Video / source_url guard: scope to *this load's* ids, not global BWF count.
+    # Comparing a single-season file to all-time URL counts freezes updates after
+    # year rollover / multi-season history.
     apply_videos = False
     matched_now = (
         sum(1 for r in match_rows if r["_match_key"] in videos) if videos else 0
     )
     if videos:
-        existing_urls = count_rows(
-            "matches",
-            {
-                # BWF only (owner_id null). Approximate via source_url present
-                # and owner_id null — PostgREST filter.
-                "owner_id": "is.null",
-                "source_url": "not.is.null",
-            },
-        )
-        if matched_now == 0 and existing_urls:
+        load_ids = [r["id"] for r in match_rows]
+        existing_in_load = 0
+        if load_ids:
+            # PostgREST: count rows among this load that already have source_url.
+            # Chunk id list to stay under URL length limits.
+            chunk = 50
+            for i in range(0, len(load_ids), chunk):
+                part = load_ids[i : i + chunk]
+                inlist = "(" + ",".join(f'"{x}"' for x in part) + ")"
+                existing_in_load += count_rows(
+                    "matches",
+                    {
+                        "owner_id": "is.null",
+                        "source_url": "not.is.null",
+                        "id": f"in.{inlist}",
+                    },
+                )
+        if matched_now == 0 and existing_in_load:
             print(
-                f"  WARNING: video mapping covers 0 matches but DB has "
-                f"{existing_urls} BWF source_url rows; skipping source_url update"
+                f"  ERROR: video mapping covers 0 matches in this load but "
+                f"{existing_in_load} of these rows already have source_url; "
+                f"skipping source_url update"
             )
-        elif existing_urls and matched_now < existing_urls * 0.5:
+            if not DRY_RUN:
+                # Non-zero so CI surfaces frozen video maps (catalog upsert still runs).
+                print(
+                    "  (continuing catalog upsert without source_url; "
+                    "fix the video map)"
+                )
+        elif existing_in_load and matched_now < existing_in_load * 0.5:
             print(
-                f"  WARNING: source_url coverage would drop "
-                f"{existing_urls}→{matched_now} (>50%); skipping source_url update"
+                f"  ERROR: source_url coverage within this load would drop "
+                f"{existing_in_load}→{matched_now} (>50%); skipping source_url update"
             )
         else:
             apply_videos = True
@@ -426,6 +611,42 @@ def main():
     if source_url_rows:
         print(f"{act} {len(source_url_rows)} source_url values...")
         upsert("matches", source_url_rows, on_conflict="id")
+
+    # Re-key orphan purge: match_key scheme changes (section full-path → leaf,
+    # roster-stable match_idx, …) mint new sha256 ids while old rows remain.
+    # Drop BWF rows that share this load's (tournament, roster) under another id.
+    rekey_orphan_ids = find_rekeyed_orphan_ids(write_rows)
+    if rekey_orphan_ids:
+        if DRY_RUN:
+            print(
+                f"  [dry-run] would purge {len(rekey_orphan_ids)} "
+                "re-keyed duplicate match(es)"
+            )
+            for i in rekey_orphan_ids[:10]:
+                print(f"      - {i[:20]}…")
+        else:
+            purged_rekey = delete_matches(rekey_orphan_ids)
+            if purged_rekey:
+                print(
+                    f"  Purged {purged_rekey} re-keyed duplicate match(es) "
+                    "(same tournament + roster, old id)"
+                )
+    if args.purge_duplicates:
+        # Full catalog scan in addition to load-scoped rekey purge (covers
+        # seasons not in this file that still carry historical double-ids).
+        extra = [
+            i for i in find_global_duplicate_orphan_ids()
+            if i not in set(rekey_orphan_ids)
+        ]
+        if extra:
+            if DRY_RUN:
+                print(
+                    f"  [dry-run] would purge {len(extra)} additional "
+                    "global catalog duplicate(s)"
+                )
+            else:
+                n = delete_matches(extra)
+                print(f"  Purged {n} additional global catalog duplicate(s)")
 
     # Finished-only purge: keys the scrape sees as cleanly unfinished, if a
     # leftover row with that id still exists (legacy placeholders). Jobs cascade.

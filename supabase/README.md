@@ -1,8 +1,10 @@
-# Supabase schema
+# Supabase (schema, RPCs, edge functions)
 
 Canonical data model for Mintonix match catalog + video processing.
-Complements `ARCHITECTURE.md` (system topology, trust model, workers).
-Where the two disagree on table shape, **this file wins** for Postgres.
+Lives next to `migrations/` and `functions/`. Complements root
+[`ARCHITECTURE.md`](../ARCHITECTURE.md) (system topology, trust model,
+workers). Where the two disagree on table shape, **this file wins** for
+Postgres.
 
 Status: **implemented** — squashed init
 `supabase/migrations/20260712000000_init_match_pipeline.sql` (tables + core
@@ -177,24 +179,18 @@ BWF “owner” are awkward). Determinism belongs on `matches.id`, not job ids.
 
 Content-addressed so re-scrapes hit the same row and the same B2 prefix.
 
-Hash a **stable identity payload**, not scores (scores get corrected on
-Wikipedia and must not mint a new id):
+**Production loader** (`workers/github/match-data/match_key.py`):
 
 ```
-canonical = join with fixed separators, NFC, trimmed, case-folded names:
-  tournament
-  match_date          # ISO date or empty if unknown
-  team1_player1, team1_player2   # empty string if null; sort the two slots
-  team2_player1, team2_player2   # same
-  source_url or youtube video id if known and stable
+match_key = "{season}|{tournament}|{discipline}|{section}|{round}|{match_idx}"
+id        = hex(sha256(utf-8 match_key))   # full 64 hex
 ```
 
-```
-id = hex(sha256(canonical))   # or first 32 hex chars if you accept truncation risk;
-                              # prefer full hash or UUIDv5 from a fixed namespace
-```
+- `section` = **leaf** of the wiki section path (not the full breadcrumb)
+- `match_idx` = roster-stable `r{sha1[:10]}` or positional `p{n}` for byes
+- Scores / `source_url` are **not** in the hash
 
-**Do not** put game scores in the hash.
+See `workers/github/match-data/schema.md`.
 
 ### Match id (user)
 
@@ -500,7 +496,9 @@ through edge functions as `service_role`.
 caches one initPlan evaluation per statement instead of calling per row.
 
 **Product choice:** `owner_id IS NULL` readable by any signed-in user makes BWF
-catalog public to accounts. Tighten to service-only until launch if needed.
+catalog public to accounts. **BWF media delivery** is public via `cdn-access`
+`op: "delivery"` on `bwf/…` (no auth; short-lived CDN JWT). User media stays
+namespace-scoped.
 
 pgmq and RPCs: `EXECUTE` only for `service_role` (security definer + fixed
 `search_path = public` as required for pgmq schema access).
@@ -610,16 +608,19 @@ for MVP.
 | `purge` | Default false — stage with enqueue=false, LIST+DELETE stage+later basenames, then enqueue if requested |
 
 MVP notes: **normalize → detect** are wired in `jobs` STAGES. For system/BWF
-(`owner_id` null), dispatch loads `annotation.json` (presign GET) into a
-**thin** `valid_frames_config` (court corners + player names; scoreboard crops
-only if stored — no jobs-side geometry invention) and presigns
-`frame_ranges.csv`. The worker defaults missing scoreboard geometry after
-probe via `apply_valid_frames_defaults` and writes the cleaned cut to
-`normalized.mp4`. Detect always GETs `normalized.mp4`. Analyze is not wired
-yet (detect is terminal → match `ready`). Optional
-`VAST_DETECT_ENDPOINT_NAME` for the video-det vast endpoint (falls back to
-`VAST_ENDPOINT_NAME`). User confirm does not HEAD-check B2 before enqueue
-(empty keys fail at normalize).
+(`owner_id` null), dispatch loads raw `annotation.json` + roster into the
+envelope and presigns `frame_ranges.csv`. The **worker** maps annotation →
+`valid_frames_config` (`annotation_map.py`), defaults missing scoreboard
+geometry after probe, and writes the cleaned cut to `normalized.mp4`. Detect
+always GETs `normalized.mp4`. Analyze is not wired yet (detect is terminal →
+match `ready`; ops enqueue of `analyze` terminal-fails). Optional
+`VAST_NORMALIZE_ENDPOINT_NAME` / `VAST_DETECT_ENDPOINT_NAME` for the
+video-normalization and video-det vast endpoints (detect falls back to the
+normalize name if unset; legacy `VAST_ENDPOINT_NAME` still aliases normalize).
+User confirm does not HEAD-check B2 before enqueue
+(empty keys fail at normalize). Worker callback wire status is
+`success`|`failed` (see [`ARCHITECTURE.md`](../ARCHITECTURE.md) § One job
+contract); DB stores `complete`|`failed`.
 
 ---
 

@@ -1,6 +1,6 @@
 """Map annotation.json → valid_frames_config and validate simplified shapes.
 
-annotation.json (SUPABASE.md / annotate_and_ingest.py):
+annotation.json (supabase/README.md / annotate_and_ingest.py):
   {
     "court": {
       "corners": [[x,y]×4],                 // required for valid-frames
@@ -16,10 +16,10 @@ valid_frames_config (worker thin shape from jobs / annotation_to_valid_frames_co
   + optional scoreboard_crop, score_sub_crop, row_split_y as stored
   (+ optional ncc_on/off, ocr_conf_min, min_valid_run)
 
-Ownership: mappers (jobs annotationToValidFramesConfig + this module's
-annotation_to_valid_frames_config) are pure rename/pass-through. Geometry
-defaults (top-left quadrant, full-band sub-crop, row_split_y = h/2) are
-filled only by apply_valid_frames_defaults after probe — worker is sole
+Ownership: this module is the sole annotation → valid_frames_config mapper
+(jobs passes raw annotation.json). Geometry defaults (top-left quadrant,
+tight scoreboard OCR sub-crop ~450×220, row_split_y = sub.h/2) are filled
+only by apply_valid_frames_defaults after probe — worker is sole
 defaulting/validation authority for valid_frames geometry.
 
 Field renames:
@@ -97,12 +97,13 @@ def annotation_to_valid_frames_config(
     *,
     roster: dict | None = None,
 ) -> dict | None:
-    """Pure rename/pass-through mapper (local/CLI/tests; jobs has the TS twin).
+    """Sole annotation → valid_frames_config mapper (production + CLI/tests).
 
-    Requires court.corners (4 points) + non-empty player names (labels or
-    roster). Passes scoreboard_crop / score_sub_crop / row_split_y only if
-    present — does **not** invent geometry. Missing scoreboard fields are
-    filled later by apply_valid_frames_defaults after probe.
+    jobs edge passes raw ``annotation.json`` + roster; this function owns the
+    mapping. Requires court.corners (4 points) + non-empty player names
+    (labels or roster). Passes scoreboard_crop / score_sub_crop / row_split_y
+    only if present — does **not** invent geometry. Missing scoreboard fields
+    are filled later by apply_valid_frames_defaults after probe.
     Returns None when annotation is unusable.
     """
     if not isinstance(annotation, dict):
@@ -136,14 +137,23 @@ def annotation_to_valid_frames_config(
     return cfg
 
 
+# Default OCR window inside scoreboard_crop when annotation omits score_sub_crop.
+# Measured: full 960×540 band is slow; tight top-left ~450×220 holds BWF names+scores
+# (e.g. CHEN Y.F. / MIYAZAKI) and is the recommended production crop.
+DEFAULT_SCORE_SUB_W = 450
+DEFAULT_SCORE_SUB_H = 220
+
+
 def apply_valid_frames_defaults(config: dict, width: int, height: int) -> dict:
     """Sole geometry defaulting authority. Fill optional fields after probe.
 
     Missing scoreboard_crop → top-left quadrant of the frame. score_sub_crop is
     **relative to the band JPEG** (0,0 origin inside scoreboard_crop), not
-    absolute frame coordinates. Missing sub-crop defaults to the full band
-    `{0,0,crop.w,crop.h}`. When annotation set sub equal to the absolute
-    scoreboard_crop (annotate BWF convention), normalize to relative.
+    absolute frame coordinates. Missing sub-crop defaults to a tight top-left
+    window (min(450, band.w) × min(220, band.h)) — full-band OCR is much slower
+    with no presence-check benefit on typical BWF graphics. When annotation set
+    sub equal to the absolute scoreboard_crop (annotate BWF convention), normalize
+    to relative full band (explicit full-band request).
     Missing/non-finite row_split_y → sub_crop.h / 2.
     """
     out = dict(config)
@@ -155,11 +165,16 @@ def apply_valid_frames_defaults(config: dict, width: int, height: int) -> dict:
 
     sub = _as_crop(out.get("score_sub_crop"))
     if sub is None:
-        # Full band OCR window in band-relative coordinates.
-        sub = {"x": 0, "y": 0, "w": crop["w"], "h": crop["h"]}
+        # Tight top-left OCR window (band-relative).
+        sub = {
+            "x": 0,
+            "y": 0,
+            "w": max(1, min(DEFAULT_SCORE_SUB_W, crop["w"])),
+            "h": max(1, min(DEFAULT_SCORE_SUB_H, crop["h"])),
+        }
     elif (sub["x"] == crop["x"] and sub["y"] == crop["y"]
           and sub["w"] == crop["w"] and sub["h"] == crop["h"]):
-        # Absolute-equal-to-crop → full-band relative form.
+        # Absolute-equal-to-crop → full-band relative form (explicit).
         sub = {"x": 0, "y": 0, "w": crop["w"], "h": crop["h"]}
     else:
         # Clamp relative sub-crop into the band.

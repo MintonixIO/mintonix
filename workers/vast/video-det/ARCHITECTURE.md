@@ -244,6 +244,7 @@ workers/vast/video-det/
 |---|---|
 | B2 credentials | Never on worker; presigned URLs only |
 | Worker identity | `callback_token` JWT (aud=`jobs-callback`), bound to job/stage/attempt |
+| Callback URL | Must match `CALLBACK_URL_PREFIX` or `SUPABASE_URL` + path `/functions/v1/jobs/callback` (fail-closed if prefix unset; `ALLOW_UNSAFE_CALLBACK=1` for local only) |
 | Service role key | Never passed to the worker |
 | Replay | Callback marks job terminal / CAS on attempt+stage |
 
@@ -274,7 +275,7 @@ workers/vast/video-det/
   set `ALLOW_MISSING_MODELS=1` if the model server process is started without
   weights.
 - Env for jobs function: `VAST_DETECT_ENDPOINT_NAME` (optional fallback to
-  `VAST_ENDPOINT_NAME`).
+  `VAST_NORMALIZE_ENDPOINT_NAME`, then legacy `VAST_ENDPOINT_NAME`).
 - Download parallelism: `DL_CONNECTIONS` (default 8) for range-capable GETs.
 - Upload streams from disk (no full-file `read_bytes` into RAM). Exception
   text for callbacks/API is redacted (presigned query strings stripped).

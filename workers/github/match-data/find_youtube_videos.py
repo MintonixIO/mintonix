@@ -263,8 +263,10 @@ def build_match_index(results_paths):
             tournament = t.get("title") or t.get("page")
             bucket = by_tournament.setdefault(tournament, [])
             for m in t["matches"]:
-                section = "/".join(m.get("section_path") or [])
-                match_key = f"{season}|{tournament}|{m['discipline']}|{section}|{m['round']}|{m.get('match_idx', 0)}"
+                from match_key import match_key_from_scraped
+                match_key = m.get("match_key") or match_key_from_scraped(
+                    season, tournament, m
+                )
                 names = lambda team: [
                     (p.get("wiki_name") or p.get("display_name") or "").strip()
                     for p in m[team]["players"] if (p.get("wiki_name") or p.get("display_name"))

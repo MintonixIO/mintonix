@@ -1,10 +1,24 @@
-# video-normalization (vast.ai PyWorker)
+# video-normalization (vast.ai — normalize stage)
 
-Normalizes arbitrary source video to a consistent delivery spec:
-**≤1920×1080, ≤30 fps, H.264 / yuv420p, AAC audio** — GPU-only
-(NVDEC decode → `scale_cuda` → `h264_nvenc`). There is no CPU encode path: a
-job that lands on a host without a usable GPU fails fast and the queue retries
-it on a healthy one (remux-copy of already-conformant sources needs no GPU).
+GPU worker for pipeline stage **`normalize`**: download source (presigned or
+YouTube), produce **≤1920×1080, ≤30 fps, H.264 / yuv420p, AAC**, thumbnail, and
+optional BWF valid-frames cut + `frame_ranges.csv`. Callback Supabase
+`jobs/callback`.
+
+Workers hold **no** B2 or Supabase service credentials — only presigned URLs
+and a single-use `callback_token`.
+
+| | |
+|---|---|
+| **Stage** | `normalize` (first GPU stage; advances to `detect`) |
+| **In** | original / YouTube URL; BWF: raw `annotation` → worker maps VF config |
+| **Out** | `normalized.mp4`, `thumbnail.jpg`; BWF: `frame_ranges.csv`; YT: `original.*` |
+| **HTTP** | `POST /normalize/sync` |
+| **Dispatcher** | `supabase/functions/jobs` → `STAGES.normalize` |
+
+Encode path is **GPU-only** (NVDEC → `scale_cuda` → `h264_nvenc`). A job on a
+host without a usable GPU fails fast and the queue retries (remux-copy of
+already-conformant sources needs no GPU).
 
 Deployed on **vast.ai serverless** using the
 [PyWorker](https://github.com/vast-ai/pyworker) model.
@@ -134,9 +148,14 @@ manifest. `scores.csv` / score-timeline is **not implemented** (deferred).
   always emits CFR via `fps=`.
 - **Not best-effort** (unlike the thumbnail): extraction failure fails the job.
 - **Detect decode** uses NVDEC when a GPU is present (CPU scale to detection
-  size after hw decode). **OCR** runs on CPU (`paddleocr`); overlapped with
-  band decode; worker count defaults from host cores (`OCR_WORKERS`, cap 8).
-  Models are best-effort baked at Docker build; non-BWF jobs never import paddle.
+  size after hw decode). **OCR** (`paddleocr`) uses GPU when
+  `paddlepaddle-gpu` is installed **and** a one-shot proof crop returns
+  non-empty det/rec (`OCR_DEVICE=auto|gpu|cpu`; fail closed to CPU on empty
+  det — required on sm_120 / wrong CUDA wheel). Worker count defaults to **1**
+  on GPU (~19 bands/s measured on 5080+cu130), or 2–4 on CPU. Default
+  scoreboard OCR window is a tight top-left ~450×220 inside the band (not full
+  960×540). Models are best-effort baked at Docker build; non-BWF jobs never
+  import paddle.
 
 `input_url` is downloaded (HTTP GET, or `file://` for local runs). Downloads use
 parallel HTTP byte-ranges (`DL_CONNECTIONS`, default 8) when the server supports
@@ -232,13 +251,17 @@ engine on many cards. Concurrency and segment-parallel knobs:
 | `SEGMENT_PARALLEL_THRESHOLD_SEC` | `600` | Auto keyframe-split → concurrent NVENC → concat above this duration |
 | `SEGMENT_PARALLEL_N` | `4` | Segment count when parallel path engages |
 | `UPLOAD_ATTEMPTS` | `5` | Single PUT / multipart part retries after encode |
-| `OCR_WORKERS` | `max(2, min(8, cores//4))` | Parallel PaddleOCR threads (override to pin) |
+| `OCR_WORKERS` | `1` (GPU) / `max(2, min(4, cores//4))` (CPU) | Parallel PaddleOCR workers (GPU: use 1) |
+| `OCR_DEVICE` | `auto` | `auto`/`gpu` → GPU only after non-empty proof crop; else CPU. Force `cpu` |
+| `OCR_DET_LIMIT_SIDE_LEN` | `960` | Paddle text-det resize long side (default 64 is too small for bands) |
+| `OCR_DET_MODEL` / `OCR_REC_MODEL` | (paddle default) | Optional; e.g. mobile det/rec for CPU |
+| `NCC_FPS` | `5` | Court NCC sample rate (Hz); `0`/`src` = every source frame |
 | `DL_CONNECTIONS` / `UL_CONNECTIONS` | `8` | Parallel B2 range download / multipart upload |
 | `DL_MIN_PARALLEL_BYTES` | `16 MiB` | Min object size before range-parallel download |
-| `CALLBACK_URL_PREFIX` / `SUPABASE_URL` | (optional) | When set, `callback_url` must match this prefix. When unset (stock image), only `https://…/functions/v1/jobs/callback` is allowed |
+| `CALLBACK_URL_PREFIX` / `SUPABASE_URL` | **required in prod** | `callback_url` must match this prefix and end with `/functions/v1/jobs/callback`. **Fail-closed** if unset (no host-open path-suffix). |
 | `ALLOW_FILE_URLS` | `0` | Set `1` for arbitrary `file://` (local tests/CLI). Production leave off — stock PyWorker benchmark paths (`file:///app/sample.mov` or `BENCHMARK_INPUT_URL`, and `file:///tmp/benchmark_*.mp4`) are path-allowlisted without this flag |
 | `ALLOWED_HTTP_HOSTS` | (empty) | Optional comma-separated host allowlist for download/upload (single PUT and multipart part/complete/abort) |
-| `ALLOW_UNSAFE_CALLBACK` | `0` | Dev-only: allow any `callback_url` (bypasses prefix and path-suffix checks) |
+| `ALLOW_UNSAFE_CALLBACK` | `0` | Dev-only: allow any `callback_url` |
 
 **NVENC concurrency:** product of `MAX_INFLIGHT × SEGMENT_PARALLEL_N` concurrent
 encodes can oversubscribe NVENC. Keep `MAX_INFLIGHT=1` when using segment-
@@ -254,3 +277,11 @@ no audio.
 
 Full benchmarks (4090 vs 5080, segment-parallel ~1.9×, the “85 s floor”) are in
 [`FINDINGS.md`](./FINDINGS.md).
+
+## See also
+
+- [FINDINGS.md](FINDINGS.md) — encode / VF notes
+- [../video-det/README.md](../video-det/README.md) — next stage (`detect`)
+- [../../cloudflare/cdn/README.md](../../cloudflare/cdn/README.md) — B2 `/presign`
+- [../../../ARCHITECTURE.md](../../../ARCHITECTURE.md) — job contract / stages
+- [../../../supabase/README.md](../../../supabase/README.md) — jobs / annotation layout

@@ -82,9 +82,10 @@ supabase secrets set --project-ref <dev-ref> \
 # ...repeat with the prod ref + prod values.
 ```
 
-The compute pathway (`normalize-video` / `normalize-callback`) additionally needs
-`JOB_TOKEN_SECRET`, `CALLBACK_URL`, `VAST_ENDPOINT_URL`, `VAST_API_KEY` — see
-`supabase/functions/normalize-video/README.md`.
+The compute pathway (`jobs` dispatch/callback) additionally needs
+`JOB_TOKEN_SECRET`, `VAST_NORMALIZE_ENDPOINT_NAME`,
+`VAST_DETECT_ENDPOINT_NAME`, `VAST_API_KEY` — see
+`supabase/functions/jobs/index.ts` and `supabase/README.md`.
 
 (`SUPABASE_URL` / `SUPABASE_ANON_KEY` are injected by the platform.)
 

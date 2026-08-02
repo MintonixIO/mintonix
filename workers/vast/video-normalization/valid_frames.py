@@ -40,7 +40,8 @@ import numpy as np
 
 log = logging.getLogger("video-normalization.valid_frames")
 
-LOG_INTERVAL_SEC = 30.0
+# Heartbeat while decode+OCR run (serverless operators need frequent signals).
+LOG_INTERVAL_SEC = float(os.environ.get("VALID_FRAMES_LOG_INTERVAL_SEC", "15"))
 
 # Court NCC detector geometry (matches fast_detector.py's downscale factor;
 # not user-configurable since it's an internal detection resolution, not the
@@ -54,20 +55,242 @@ DEFAULT_NCC_ON = 0.80
 DEFAULT_NCC_OFF = 0.70
 DEFAULT_OCR_CONF_MIN = 0.6
 DEFAULT_MIN_VALID_RUN = 5  # frames
+# Court NCC sample rate (detection fps). Full-timeline every-frame NCC on long
+# broadcasts was ~16 wall-fps and multi-hour; sample at 5 Hz and expand to
+# source frame indices. Override with NCC_FPS (0 or "src" = every source frame).
+DEFAULT_NCC_FPS = 5.0
 
-# OCR worker threads. Default scales with host cores (cap 8): PaddleOCR is
-# partly GIL-bound but multi-worker still overlaps I/O + native ops on fat
-# rented hosts (e.g. 48-core 5080 boxes). Override with OCR_WORKERS.
-def _default_ocr_workers() -> int:
+# OCR worker threads. CPU: multi-worker helps on fat hosts (cap 4–8). GPU: one
+# engine only — measured peak ~19 bands/s @ 1 worker on RTX 5080; multi-worker
+# regresses under VRAM contention. Override with OCR_WORKERS.
+# OCR_DEVICE=gpu|cpu|auto (default auto): auto uses GPU only after a non-empty
+# proof crop (never claim GPU without n_dt/rec_texts > 0).
+#
+# Det resize: PaddleOCR 3 defaults to limit_side_len=64/min which shrinks
+# scoreboard bands too hard and kills detection. Use a sane max-side limit.
+OCR_DET_LIMIT_SIDE_LEN = int(os.environ.get("OCR_DET_LIMIT_SIDE_LEN", "960"))
+OCR_DET_LIMIT_TYPE = (os.environ.get("OCR_DET_LIMIT_TYPE") or "max").strip() or "max"
+# Empty → PaddleOCR default models (PP-OCRv5/v6 series depending on paddleocr).
+# CPU hosts often prefer mobile for latency; set explicitly if needed:
+#   OCR_DET_MODEL=PP-OCRv5_mobile_det OCR_REC_MODEL=en_PP-OCRv5_mobile_rec
+OCR_DET_MODEL = (os.environ.get("OCR_DET_MODEL") or "").strip()
+OCR_REC_MODEL = (os.environ.get("OCR_REC_MODEL") or "").strip()
+
+# Avoid mid-job model-source CDN checks when models are already cached/baked.
+os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
+
+_ocr_device_lock = threading.Lock()
+_ocr_device_resolved: str | None = None
+
+
+def _paddle_cuda_available() -> bool:
+    try:
+        import paddle
+        return bool(paddle.device.is_compiled_with_cuda() and paddle.device.cuda.device_count() > 0)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _make_scoreboard_proof_bgr(w: int = 450, h: int = 220) -> np.ndarray:
+    """Synthetic tight scoreboard-like crop for GPU proof (not a product sample)."""
+    img = np.zeros((h, w, 3), dtype=np.uint8)
+    img[:] = (20, 20, 20)
+    # High-contrast white text where real BWF bands put names/scores.
+    cv2.putText(img, "MIYAZAKI", (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 2)
+    cv2.putText(img, "5", (360, 70), cv2.FONT_HERSHEY_SIMPLEX, 1.4, (255, 255, 255), 2)
+    cv2.putText(img, "CHEN Y.F.", (20, 160), cv2.FONT_HERSHEY_SIMPLEX, 1.1, (255, 255, 255), 2)
+    cv2.putText(img, "8", (360, 160), cv2.FONT_HERSHEY_SIMPLEX, 1.4, (255, 255, 255), 2)
+    return img
+
+
+def _paddle_ocr_kwargs(device: str) -> dict:
+    """Common PaddleOCR constructor kwargs for this worker."""
+    kw: dict = {
+        "lang": "en",
+        "use_doc_orientation_classify": False,
+        "use_doc_unwarping": False,
+        "use_textline_orientation": False,
+        "enable_mkldnn": False,
+        "device": device,
+        "text_det_limit_side_len": OCR_DET_LIMIT_SIDE_LEN,
+        "text_det_limit_type": OCR_DET_LIMIT_TYPE,
+    }
+    if OCR_DET_MODEL:
+        kw["text_detection_model_name"] = OCR_DET_MODEL
+    if OCR_REC_MODEL:
+        kw["text_recognition_model_name"] = OCR_REC_MODEL
+    return kw
+
+
+def _ocr_result_nonempty(result) -> bool:
+    """True if a PaddleOCR predict/ocr result has at least one det/rec item."""
+    if result is None:
+        return False
+    # PaddleOCR 3.x predict → list of dict-like results
+    if isinstance(result, list):
+        if not result:
+            return False
+        result = result[0]
+    if isinstance(result, dict):
+        texts = result.get("rec_texts") or []
+        polys = result.get("rec_polys") or result.get("dt_polys") or []
+        return bool(len(texts) > 0 or len(polys) > 0)
+    return False
+
+
+def _prove_gpu_ocr(device: str = "gpu:0") -> bool:
+    """Mandatory GPU gate: non-empty det/rec on a proof crop before using GPU.
+
+    Hard rule: never claim GPU OCR works without n_dt / rec_texts > 0.
+    Wrong CUDA index or sm_120 + bad wheel → empty det while models load in VRAM.
+    """
+    try:
+        import paddle
+        from paddleocr import PaddleOCR
+        try:
+            paddle.set_device(device)
+        except Exception:  # noqa: BLE001
+            pass
+        ocr = PaddleOCR(**_paddle_ocr_kwargs(device))
+        img = _make_scoreboard_proof_bgr()
+        try:
+            out = ocr.predict(img)
+        except Exception:  # noqa: BLE001
+            # Older API fallback
+            out = ocr.ocr(img)
+        ok = _ocr_result_nonempty(out)
+        if not ok:
+            log.warning(
+                "valid_frames(ocr): GPU proof EMPTY det/rec on %s — fail closed to CPU",
+                device,
+            )
+        else:
+            log.info("valid_frames(ocr): GPU proof OK on %s (non-empty det/rec)", device)
+        return ok
+    except Exception as e:  # noqa: BLE001
+        log.warning("valid_frames(ocr): GPU proof failed (%s) — using CPU", e)
+        return False
+
+
+def _resolve_ocr_device() -> str:
+    """Resolve OCR_DEVICE once per process: auto|gpu|cpu (+ optional gpu:N).
+
+    auto → GPU only if paddle CUDA is available AND proof crop is non-empty.
+    gpu  → still proof; fall back to CPU on empty det (product correctness).
+    cpu  → always CPU.
+    """
+    global _ocr_device_resolved
+    with _ocr_device_lock:
+        if _ocr_device_resolved is not None:
+            return _ocr_device_resolved
+
+        env = (os.environ.get("OCR_DEVICE") or "auto").strip().lower()
+        if env in ("cpu", "cpu:0"):
+            _ocr_device_resolved = "cpu"
+            return _ocr_device_resolved
+
+        want_gpu = env in ("", "auto", "gpu", "gpu:0", "cuda", "cuda:0")
+        device = "gpu:0"
+        if env not in ("", "auto", "gpu", "gpu:0", "cuda", "cuda:0", "cpu", "cpu:0"):
+            # Pass through e.g. gpu:1
+            device = env
+            want_gpu = device.startswith("gpu") or device.startswith("cuda")
+
+        if not want_gpu:
+            _ocr_device_resolved = "cpu"
+            return _ocr_device_resolved
+
+        if not _paddle_cuda_available():
+            log.info("valid_frames(ocr): paddle CUDA unavailable → cpu")
+            _ocr_device_resolved = "cpu"
+            return _ocr_device_resolved
+
+        if _prove_gpu_ocr(device if device.startswith("gpu") else "gpu:0"):
+            _ocr_device_resolved = device if device.startswith("gpu") else "gpu:0"
+        else:
+            _ocr_device_resolved = "cpu"
+        return _ocr_device_resolved
+
+
+def _ocr_device() -> str:
+    """PaddleOCR device string: 'gpu:0' or 'cpu' (cached after proof)."""
+    return _resolve_ocr_device()
+
+
+def _default_ocr_workers(device: str | None = None) -> int:
     env = os.environ.get("OCR_WORKERS")
     if env is not None and env.strip() != "":
         return max(1, int(env))
+    dev = device if device is not None else _ocr_device()
+    # GPU: single instance is peak throughput (~19 bands/s on 5080).
+    if dev.startswith("gpu"):
+        return 1
     cores = os.cpu_count() or 4
-    # ~1 worker per 4 cores, floor 2, ceil 8.
-    return max(2, min(8, cores // 4))
+    # CPU best around 2–4 workers (measured); soft-cap 4 for scoreboard OCR.
+    return max(2, min(4, cores // 4))
 
 
-OCR_WORKERS = _default_ocr_workers()
+def _ocr_workers() -> int:
+    """Current OCR worker count (env override or device-aware default)."""
+    return _default_ocr_workers()
+
+
+# Back-compat module attribute: env override if set, else conservative 1.
+# detect_valid_ranges uses _default_ocr_workers(resolved_device) instead.
+_env_workers = os.environ.get("OCR_WORKERS")
+OCR_WORKERS = (
+    max(1, int(_env_workers))
+    if _env_workers is not None and str(_env_workers).strip() != ""
+    else 1
+)
+
+
+def _ncc_fps_from_env(src_fps: float) -> float:
+    """Detection sample rate for court NCC; always ≤ source fps."""
+    env = (os.environ.get("NCC_FPS") or "").strip().lower()
+    if env in ("", "default"):
+        rate = DEFAULT_NCC_FPS
+    elif env in ("0", "src", "source", "full"):
+        return float(src_fps)
+    else:
+        rate = float(env)
+    if rate <= 0:
+        return float(src_fps)
+    return min(float(src_fps), rate)
+
+
+def expand_samples_to_source_frames(
+    samples: np.ndarray | list,
+    *,
+    n_src: int,
+    src_fps: float,
+    sample_fps: float,
+) -> np.ndarray:
+    """Map per-sample NCC/court decisions onto a full source-frame boolean mask.
+
+    Sample i covers source frames near i * (src_fps / sample_fps). Edges clamp
+    to [0, n_src). When sample_fps >= src_fps, samples are treated as 1:1 with
+    a length of min(len(samples), n_src).
+    """
+    samples = np.asarray(samples, dtype=bool)
+    n_src = int(n_src)
+    out = np.zeros(n_src, dtype=bool)
+    if n_src <= 0 or len(samples) == 0:
+        return out
+    if sample_fps >= src_fps - 1e-6:
+        n = min(len(samples), n_src)
+        out[:n] = samples[:n]
+        return out
+    step = float(src_fps) / float(sample_fps)
+    for i, val in enumerate(samples):
+        if not val:
+            continue
+        f0 = int(round(i * step))
+        f1 = int(round((i + 1) * step))
+        f0 = max(0, min(f0, n_src))
+        f1 = max(f0 + 1, min(f1, n_src))
+        out[f0:f1] = True
+    return out
 
 _DIGIT_TOKEN = re.compile(r"^[\d ]+$")
 _DIGIT_RE = re.compile(r"\d{1,2}")
@@ -97,12 +320,49 @@ def _pipe_frames(cmd):
             proc.wait()
 
 
-def _hwaccel_prefix() -> list[str]:
-    """Use NVDEC when a GPU is present so detect doesn't burn CPU on 4K decode.
+def _probe_video_codec(video_path: str) -> str | None:
+    """Best-effort codec_name for the primary video stream (e.g. h264, av1)."""
+    try:
+        from ffmpeg_ops import probe
+        info = probe(video_path)
+        codec = (info.get("codec") or info.get("codec_name") or "").strip().lower()
+        return codec or None
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        out = subprocess.check_output(
+            [
+                "ffprobe", "-v", "error", "-select_streams", "v:0",
+                "-show_entries", "stream=codec_name", "-of",
+                "default=noprint_wrappers=1:nokey=1", video_path,
+            ],
+            text=True, timeout=30,
+        ).strip().lower()
+        return out or None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+# Codecs with reliable NVDEC on rent GPUs. AV1+CUDA often fails on stock
+# host ffmpeg ("Missing Sequence Header" / assert) — use software for those.
+_NVDEC_CODECS = frozenset({"h264", "avc", "hevc", "h265", "mpeg2video", "mpeg4", "vp9"})
+
+
+def _hwaccel_prefix(video_path: str | None = None) -> list[str]:
+    """Use NVDEC when a GPU is present and the codec is supported.
 
     Output stays system memory (software scale/crop after hw decode). Safe on
-    CPU-only hosts (empty prefix).
+    CPU-only hosts (empty prefix). AV1 and unknown codecs force software so
+    detect does not hard-fail mid-stream.
     """
+    if video_path:
+        codec = _probe_video_codec(video_path)
+        if codec and codec not in _NVDEC_CODECS:
+            log.info(
+                "valid_frames(decode): software decode for codec=%s (no reliable NVDEC)",
+                codec,
+            )
+            return []
     try:
         from ffmpeg_ops import use_gpu
         if use_gpu():
@@ -113,23 +373,36 @@ def _hwaccel_prefix() -> list[str]:
 
 
 def _iter_keyframes(video_path):
-    """Decode only I-frames (fast, coarse) for reference bootstrapping."""
+    """Decode only I-frames (fast, coarse) for reference bootstrapping.
+
+    Uses software decode: ``-skip_frame nokey`` + CUDA hwaccel trips assert
+    failures on some builds/codecs (observed with AV1 + 5080 host ffmpeg).
+    Keyframe-only SW decode is cheap relative to the full detect pass.
+    """
     yield from _pipe_frames([
-        "ffmpeg", "-v", "error", *_hwaccel_prefix(),
+        "ffmpeg", "-v", "error",
         "-skip_frame", "nokey", "-i", video_path,
         "-vf", f"scale={SW}:{SH}", "-vsync", "0",
         "-pix_fmt", "bgr24", "-f", "rawvideo", "pipe:1",
     ])
 
 
-def _decode_fanout(video_path, crop, band_dir):
-    """Single full decode fanned out to both detectors: yields the SWxSH NCC
-    frames from stdout while the same ffmpeg writes 1fps scoreboard-band JPEGs
-    into band_dir. Prefers NVDEC when available (CPU scale after hw decode)."""
+def _decode_fanout(video_path, crop, band_dir, *, ncc_fps: float | None = None):
+    """Single decode fanned out to both detectors: yields SWxSH NCC frames from
+    stdout while the same ffmpeg writes 1fps scoreboard-band JPEGs into
+    band_dir. Prefers NVDEC when available (CPU scale after hw decode).
+
+    When ``ncc_fps`` is set and below source rate, the NCC branch uses
+    ``fps=ncc_fps`` so we do not rawvideo-pipe every source frame into Python.
+    """
     pattern = os.path.join(band_dir, "band_%06d.jpg")
+    if ncc_fps is not None and ncc_fps > 0:
+        ncc_vf = f"fps={ncc_fps:.6g},scale={SW}:{SH}"
+    else:
+        ncc_vf = f"scale={SW}:{SH}"
     yield from _pipe_frames([
-        "ffmpeg", "-v", "error", *_hwaccel_prefix(), "-i", video_path,
-        "-map", "0:v:0", "-vf", f"scale={SW}:{SH}",
+        "ffmpeg", "-v", "error", *_hwaccel_prefix(video_path), "-i", video_path,
+        "-map", "0:v:0", "-vf", ncc_vf,
         "-pix_fmt", "bgr24", "-f", "rawvideo", "pipe:1",
         "-map", "0:v:0",
         "-vf", f"fps=1,crop={crop['w']}:{crop['h']}:{crop['x']}:{crop['y']}",
@@ -234,7 +507,7 @@ def _read_scoreboard_frame(ocr, path, sub_crop, row_split_y, name_re, conf_min):
 
 
 def _ocr_consumer_loop(band_q: queue.Queue, results: dict, sub_crop, row_split_y,
-                       name_re, conf_min, stop_token):
+                       name_re, conf_min, stop_token, device: str | None = None):
     """Consume band JPEG paths; write results[idx] = bool.
 
     Incomplete JPEGs are retried **in place** (sleep + re-read) so retries never
@@ -243,13 +516,42 @@ def _ocr_consumer_loop(band_q: queue.Queue, results: dict, sub_crop, row_split_y
     from paddleocr import PaddleOCR
     # enable_mkldnn=False: paddle 3.x OneDNN path crashes on predict with
     # ConvertPirAttribute2RuntimeAttribute (ArrayAttribute<DoubleAttribute>).
-    ocr = PaddleOCR(
-        lang="en",
-        use_doc_orientation_classify=False,
-        use_doc_unwarping=False,
-        use_textline_orientation=False,
-        enable_mkldnn=False,
+    # device: gpu:0 only after proof (see _resolve_ocr_device); else cpu.
+    device = device or _ocr_device()
+    log.info(
+        "valid_frames(ocr worker): device=%s det=%s rec=%s det_limit=%s/%s",
+        device,
+        OCR_DET_MODEL or "(default)",
+        OCR_REC_MODEL or "(default)",
+        OCR_DET_LIMIT_SIDE_LEN,
+        OCR_DET_LIMIT_TYPE,
     )
+    try:
+        import paddle
+        if device.startswith("gpu"):
+            paddle.set_device(device)
+    except Exception:  # noqa: BLE001
+        pass
+    ocr = PaddleOCR(**_paddle_ocr_kwargs(device))
+    # First GPU predict can take a while (CUDA/kernel compile); warm with a
+    # text-like crop so we also re-check non-empty output.
+    if device.startswith("gpu"):
+        try:
+            warm = _make_scoreboard_proof_bgr()
+            t_w = time.time()
+            try:
+                out = ocr.predict(warm)
+            except Exception:  # noqa: BLE001
+                out = ocr.ocr(warm)
+            if not _ocr_result_nonempty(out):
+                log.warning(
+                    "valid_frames(ocr warm): empty det on %s after proof — "
+                    "continuing but results may be wrong",
+                    device,
+                )
+            log.info("valid_frames(ocr warm): %.1fs on %s", time.time() - t_w, device)
+        except Exception as e:  # noqa: BLE001
+            log.warning("valid_frames(ocr warm): %s", e)
     while True:
         item = band_q.get()
         if item is stop_token:
@@ -328,6 +630,11 @@ def detect_valid_ranges(video_path, config, fps, width, height):
 
     Raises if no valid ranges are found (almost certainly a bad config).
     """
+    src_fps = float(fps)
+    ncc_fps = float(config.get("ncc_fps") or _ncc_fps_from_env(src_fps))
+    ncc_fps = min(ncc_fps, src_fps) if ncc_fps > 0 else src_fps
+    use_ncc_subsample = ncc_fps < src_fps - 1e-6
+
     mask, area = _green_mask(config["court_corners"], width, height)
     t0 = time.time()
     ref = _build_court_reference(video_path, mask, area)
@@ -341,18 +648,29 @@ def detect_valid_ranges(video_path, config, fps, width, height):
     sub_crop = config["score_sub_crop"]
     row_split_y = config["row_split_y"]
 
+    # Expected source frame count for expanding subsampled NCC → full timeline.
+    # Prefer duration*fps when available from probe path; fall back to sample count.
+    n_src_hint = config.get("source_frame_count")
+    if n_src_hint is not None:
+        n_src_hint = int(n_src_hint)
+
+    # Resolve device before spawning workers (GPU proof is process-global).
+    ocr_device = _resolve_ocr_device()
+    n_ocr_threads = max(1, _default_ocr_workers(ocr_device))
+
     with tempfile.TemporaryDirectory() as band_dir:
         # Producer-consumer: as band_*.jpg files appear, OCR them while NCC
-        # continues consuming the rawvideo pipe.
-        band_q: queue.Queue = queue.Queue(maxsize=64)
+        # continues consuming the rawvideo pipe. Queue depth 64 is enough for
+        # decode overlap with a single fast GPU OCR worker (~19 bands/s).
+        q_max = 64 if ocr_device.startswith("gpu") else 256
+        band_q: queue.Queue = queue.Queue(maxsize=q_max)
         ocr_results: dict[int, bool] = {}
         stop = object()
-        n_ocr_threads = max(1, OCR_WORKERS)
         consumers = [
             threading.Thread(
                 target=_ocr_consumer_loop,
                 args=(band_q, ocr_results, sub_crop, row_split_y,
-                      name_re, conf_min, stop),
+                      name_re, conf_min, stop, ocr_device),
                 daemon=True,
             )
             for _ in range(n_ocr_threads)
@@ -411,18 +729,73 @@ def detect_valid_ranges(video_path, config, fps, width, height):
         t0 = time.time()
         last_log = t0
         ncc = []
+        # Expected sample counts for % / ETA (best-effort).
+        n_src_expect = n_src_hint
+        if n_src_expect is None and src_fps > 0:
+            # Unknown duration — leave None.
+            n_src_expect = None
+        ncc_expect = None
+        if n_src_expect and src_fps > 0:
+            if use_ncc_subsample:
+                ncc_expect = max(1, int(round(n_src_expect * (ncc_fps / src_fps))))
+            else:
+                ncc_expect = int(n_src_expect)
+        ocr_expect = None
+        if n_src_expect and src_fps > 0:
+            ocr_expect = max(1, int(round(n_src_expect / src_fps)))  # 1 Hz bands
+
+        log.info(
+            "valid_frames(detect): src_fps=%.3f ncc_fps=%.3f subsample=%s "
+            "ocr_workers=%d ocr_device=%s ncc_expect=%s ocr_expect=%s "
+            "log_interval=%.0fs",
+            src_fps, ncc_fps, use_ncc_subsample, n_ocr_threads, ocr_device,
+            ncc_expect, ocr_expect, LOG_INTERVAL_SEC,
+        )
         try:
-            for frame in _decode_fanout(video_path, config["scoreboard_crop"], band_dir):
+            for frame in _decode_fanout(
+                video_path,
+                config["scoreboard_crop"],
+                band_dir,
+                ncc_fps=ncc_fps if use_ncc_subsample else None,
+            ):
                 ncc.append(float((_normalize(_gray_small(frame)) * ref).sum()))
-                # Poll for new band JPEGs every ~30 frames to overlap OCR.
-                if len(ncc) % 30 == 0:
+                # Poll more often when subsampled (fewer NCC frames per second).
+                poll_every = 5 if use_ncc_subsample else 30
+                if len(ncc) % poll_every == 0:
                     poll_new_bands(final=False)
                 now = time.time()
                 if now - last_log >= LOG_INTERVAL_SEC:
                     last_log = now
-                    log.info("valid_frames(decode): %d frames @ %.0f fps (ocr queued %d)",
-                             len(ncc), len(ncc) / (now - t0), next_band_idx)
+                    rate = len(ncc) / max(now - t0, 1e-6)
+                    pct = ""
+                    eta = ""
+                    if ncc_expect and ncc_expect > 0:
+                        frac = min(1.0, len(ncc) / ncc_expect)
+                        pct = f" {100.0 * frac:.0f}%"
+                        remain = max(0.0, (ncc_expect - len(ncc)) / max(rate, 1e-6))
+                        eta = f" eta_decode~{remain:.0f}s"
+                    ocr_done = sum(1 for i in range(next_band_idx) if i in ocr_results)
+                    log.info(
+                        "valid_frames(decode): %d/%s ncc_samples @ %.1f samp/s%s%s "
+                        "(ocr enqueued=%d done=%d qsize~%d ocr_expect=%s)",
+                        len(ncc),
+                        ncc_expect if ncc_expect is not None else "?",
+                        rate,
+                        pct,
+                        eta,
+                        next_band_idx,
+                        ocr_done,
+                        band_q.qsize(),
+                        ocr_expect if ocr_expect is not None else "?",
+                    )
             poll_new_bands(final=True)  # final flush — all bands complete
+            log.info(
+                "valid_frames(decode,eof): ncc_samples=%d elapsed=%.1fs "
+                "ocr_enqueued=%d ocr_done=%d qsize~%d",
+                len(ncc), time.time() - t0, next_band_idx,
+                sum(1 for i in range(next_band_idx) if i in ocr_results),
+                band_q.qsize(),
+            )
         finally:
             for _ in consumers:
                 try:
@@ -432,9 +805,25 @@ def detect_valid_ranges(video_path, config, fps, width, height):
                         "valid_frames: could not deliver OCR stop token "
                         "(queue full — OCR stalled)"
                     ) from e
+            # Drain OCR workers with heartbeats so long tails are visible.
+            join_deadline = time.time() + OCR_ITEM_TIMEOUT_SEC * 2
             hung = []
             for t in consumers:
-                t.join(timeout=OCR_ITEM_TIMEOUT_SEC * 2)
+                while t.is_alive():
+                    remain = join_deadline - time.time()
+                    if remain <= 0:
+                        break
+                    t.join(timeout=min(15.0, remain))
+                    if t.is_alive():
+                        ocr_done = sum(
+                            1 for i in range(next_band_idx) if i in ocr_results
+                        )
+                        log.info(
+                            "valid_frames(ocr_drain): waiting workers "
+                            "ocr_done=%d/%d qsize~%d total_sec=%.1f",
+                            ocr_done, next_band_idx, band_q.qsize(),
+                            time.time() - t0,
+                        )
                 if t.is_alive():
                     hung.append(t.name or "ocr-consumer")
             if hung:
@@ -442,11 +831,15 @@ def detect_valid_ranges(video_path, config, fps, width, height):
                     f"valid_frames: OCR consumer(s) hung after join timeout: {hung}"
                 )
 
-        court = _hysteresis(np.array(ncc, np.float32),
-                            config.get("ncc_on", DEFAULT_NCC_ON),
-                            config.get("ncc_off", DEFAULT_NCC_OFF))
-        log.info("valid_frames(court): %d frames in %.1fs, %d visible",
-                 len(court), time.time() - t0, int(court.sum()))
+        court_samples = _hysteresis(
+            np.array(ncc, np.float32),
+            config.get("ncc_on", DEFAULT_NCC_ON),
+            config.get("ncc_off", DEFAULT_NCC_OFF),
+        )
+        log.info(
+            "valid_frames(court): %d samples in %.1fs, %d visible (ncc_fps=%.2f)",
+            len(court_samples), time.time() - t0, int(court_samples.sum()), ncc_fps,
+        )
 
         # Fail-closed: every enqueued band index must have a result.
         n_seconds = next_band_idx
@@ -457,18 +850,38 @@ def detect_valid_ranges(video_path, config, fps, width, height):
                 f"index(es) (e.g. {missing[:5]}); refusing partial scoreboard mask"
             )
         svis = [bool(ocr_results[i]) for i in range(n_seconds)]
-        log.info("valid_frames(scoreboard): %d seconds, %d visible (overlapped OCR)",
-                 n_seconds, sum(svis))
+        log.info(
+            "valid_frames(scoreboard): %d seconds, %d visible (overlapped OCR) "
+            "detect_wall=%.1fs",
+            n_seconds, sum(svis), time.time() - t0,
+        )
+
+    # Expand court samples to source frame grid when subsampled.
+    if use_ncc_subsample:
+        n_src = n_src_hint
+        if n_src is None:
+            # Prefer OCR timeline (1 sample/sec) * src_fps as duration proxy.
+            n_src = max(
+                int(round(len(court_samples) * (src_fps / ncc_fps))),
+                int(round(n_seconds * src_fps)),
+                len(court_samples),
+            )
+        court = expand_samples_to_source_frames(
+            court_samples, n_src=n_src, src_fps=src_fps, sample_fps=ncc_fps,
+        )
+    else:
+        court = np.asarray(court_samples, dtype=bool)
+        n_src = len(court)
 
     ranges = compute_valid_ranges(
-        court, svis, fps, config.get("min_valid_run", DEFAULT_MIN_VALID_RUN),
+        court, svis, src_fps, config.get("min_valid_run", DEFAULT_MIN_VALID_RUN),
     )
     if not ranges:
         raise RuntimeError(
             "valid_frames: no valid frame ranges found -- check court_corners "
             "and scoreboard_crop/score_sub_crop against this video"
         )
-    return ranges, len(court)
+    return ranges, n_src
 
 
 def output_frame_count_for_range(n_src: int, src_fps: float, out_fps: float) -> int:

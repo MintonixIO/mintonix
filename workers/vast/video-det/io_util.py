@@ -278,7 +278,13 @@ def download(
             with client.stream(
                 "GET", url, headers={"Range": f"bytes={start}-{end}"}
             ) as r:
-                _check_response_status(r, url, httpx)
+                # Parallel parts must be true Range (206) responses.
+                if r.status_code != 206:
+                    _check_response_status(r, url, httpx)
+                    raise RuntimeError(
+                        f"range fetch expected 206 got {r.status_code} "
+                        f"({_redact(url)})"
+                    )
                 with dest.open("r+b") as f:
                     f.seek(start)
                     for ch in r.iter_bytes(8 * 1024 * 1024):
@@ -297,12 +303,22 @@ def download(
                                     f"({_redact(url)})"
                                 )
                         f.write(ch)
+        if got != expected:
+            raise RuntimeError(
+                f"range fetch undershot expected={expected} got={got} "
+                f"({_redact(url)})"
+            )
 
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=len(chunks)) as ex:
             futs = [ex.submit(fetch, s, e) for s, e in chunks]
             for fu in concurrent.futures.as_completed(futs):
                 fu.result()
+        if dest.stat().st_size != total:
+            raise RuntimeError(
+                f"download size mismatch: expected={total} "
+                f"got={dest.stat().st_size} ({_redact(url)})"
+            )
     except Exception as e:  # noqa: BLE001
         dest.unlink(missing_ok=True)
         raise RuntimeError(

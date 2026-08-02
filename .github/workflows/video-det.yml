@@ -39,4 +39,4 @@ jobs:
         bash -c "ln -s /usr/local/cuda/lib64/stubs/libcuda.so
         /usr/local/lib/libcuda.so.1 && ldconfig &&
         python3 -c 'import server, worker, detect' &&
-        python3 -m unittest test_contract -v"
+        python3 -m unittest discover -p 'test_*.py' -v"
