@@ -48,30 +48,29 @@ WORKDIR /app
 COPY requirements.txt .
 RUN python3 -m pip install --no-cache-dir -r requirements.txt
 
-# Replace CPU paddle with GPU wheel (cu126). Runtime driver on vast 5080 hosts
-# is 570–595 / CUDA 12.8–13.x; cu126 wheels load against the host driver.
-# Non-fatal if the index is unreachable at build — image still has CPU paddle
-# and OCR_DEVICE=auto falls back to cpu.
+# Replace CPU paddle with GPU wheel. Prefer cu130 (works on CUDA 13.0 + RTX 5080
+# sm_120 with non-empty det — measured ~19 bands/s). Fall back to cu126 for
+# older CUDA 12.x hosts. Wrong index can install but return empty det — runtime
+# OCR_DEVICE=auto always proof-crops before using GPU (see valid_frames.py).
+# Non-fatal if both indexes fail — image keeps CPU paddle.
 RUN python3 -m pip uninstall -y paddlepaddle paddlepaddle-gpu 2>/dev/null || true \
-    && python3 -m pip install --no-cache-dir "paddlepaddle-gpu==3.3.1" \
-       -i https://www.paddlepaddle.org.cn/packages/stable/cu126/ \
+    && ( python3 -m pip install --no-cache-dir "paddlepaddle-gpu==3.3.1" \
+           -i https://www.paddlepaddle.org.cn/packages/stable/cu130/ \
+         || python3 -m pip install --no-cache-dir "paddlepaddle-gpu==3.3.1" \
+           -i https://www.paddlepaddle.org.cn/packages/stable/cu126/ \
+         || echo "WARN: paddlepaddle-gpu install failed; OCR stays on CPU" ) \
     && python3 -m pip install --no-cache-dir --upgrade "nvidia-nccl-cu12>=2.26" \
-    || echo "WARN: paddlepaddle-gpu install failed; OCR stays on CPU"
-# NCCL: paddle pins 2.25.1 which lacks symbols torch 2.12+cu130 needs
-# (ncclCommResume). Bump after paddle so modelscope→torch import still works.
+         2>/dev/null || true
+# NCCL: paddle may pin an older nvidia-nccl that lacks symbols torch needs
+# (ncclCommResume) if modelscope→torch is imported. Bump is best-effort.
 # PaddleOCR models: best-effort bake so BWF OCR does not hit the CDN mid-job.
-# Non-fatal — BWF valid-frames is optional; a CDN blip at build must not block
-# the non-BWF normalize path. Models download on first BWF job if bake fails.
-# valid_frames/paddle is imported lazily only when valid_frames_config is set.
-# Prefer GPU device when the GPU wheel is present; fall back to CPU bake.
+# Bake on CPU (no GPU at docker build). Runtime uses device=gpu:0 after proof.
+ENV PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True
 RUN python3 -c "\
 from paddleocr import PaddleOCR; \
-import paddle; \
-dev = 'cpu'; \
 PaddleOCR(lang='en', use_doc_orientation_classify=False, \
-use_doc_unwarping=False, use_textline_orientation=False, device=dev, \
-text_detection_model_name='PP-OCRv5_mobile_det', \
-text_recognition_model_name='en_PP-OCRv5_mobile_rec', \
+use_doc_unwarping=False, use_textline_orientation=False, \
+enable_mkldnn=False, device='cpu', \
 text_det_limit_side_len=960, text_det_limit_type='max')" \
     || echo "WARN: PaddleOCR model bake skipped (BWF OCR will download on first use)"
 

@@ -59,19 +59,27 @@ DEFAULT_MIN_VALID_RUN = 5  # frames
 # source frame indices. Override with NCC_FPS (0 or "src" = every source frame).
 DEFAULT_NCC_FPS = 5.0
 
-# OCR worker threads. CPU: multi-worker helps on fat hosts (cap 8). GPU: one
-# (or two) engines only — N full PP-OCR models thrash a single VRAM pool.
-# Override with OCR_WORKERS. OCR_DEVICE=gpu|cpu|auto (default auto).
+# OCR worker threads. CPU: multi-worker helps on fat hosts (cap 4–8). GPU: one
+# engine only — measured peak ~19 bands/s @ 1 worker on RTX 5080; multi-worker
+# regresses under VRAM contention. Override with OCR_WORKERS.
+# OCR_DEVICE=gpu|cpu|auto (default auto): auto uses GPU only after a non-empty
+# proof crop (never claim GPU without n_dt/rec_texts > 0).
 #
 # Det resize: PaddleOCR 3 defaults to limit_side_len=64/min which shrinks
 # scoreboard bands too hard and kills detection. Use a sane max-side limit.
 OCR_DET_LIMIT_SIDE_LEN = int(os.environ.get("OCR_DET_LIMIT_SIDE_LEN", "960"))
 OCR_DET_LIMIT_TYPE = (os.environ.get("OCR_DET_LIMIT_TYPE") or "max").strip() or "max"
-# Mobile det/rec is ~2–10× faster than server det on CPU for scoreboard bands
-# (measured ~0.9 img/s vs ~0.1 img/s on full 960×540). Override to server
-# models if needed: OCR_DET_MODEL=PP-OCRv5_server_det etc.
-OCR_DET_MODEL = (os.environ.get("OCR_DET_MODEL") or "PP-OCRv5_mobile_det").strip()
-OCR_REC_MODEL = (os.environ.get("OCR_REC_MODEL") or "en_PP-OCRv5_mobile_rec").strip()
+# Empty → PaddleOCR default models (PP-OCRv5/v6 series depending on paddleocr).
+# CPU hosts often prefer mobile for latency; set explicitly if needed:
+#   OCR_DET_MODEL=PP-OCRv5_mobile_det OCR_REC_MODEL=en_PP-OCRv5_mobile_rec
+OCR_DET_MODEL = (os.environ.get("OCR_DET_MODEL") or "").strip()
+OCR_REC_MODEL = (os.environ.get("OCR_REC_MODEL") or "").strip()
+
+# Avoid mid-job model-source CDN checks when models are already cached/baked.
+os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
+
+_ocr_device_lock = threading.Lock()
+_ocr_device_resolved: str | None = None
 
 
 def _paddle_cuda_available() -> bool:
@@ -82,67 +90,158 @@ def _paddle_cuda_available() -> bool:
         return False
 
 
-def _gpu_compute_capability() -> tuple[int, int] | None:
-    """Return (major, minor) for CUDA device 0, or None."""
-    try:
-        import torch
-        if torch.cuda.is_available():
-            return tuple(torch.cuda.get_device_capability(0))  # type: ignore[return-value]
-    except Exception:  # noqa: BLE001
-        pass
+def _make_scoreboard_proof_bgr(w: int = 450, h: int = 220) -> np.ndarray:
+    """Synthetic tight scoreboard-like crop for GPU proof (not a product sample)."""
+    img = np.zeros((h, w, 3), dtype=np.uint8)
+    img[:] = (20, 20, 20)
+    # High-contrast white text where real BWF bands put names/scores.
+    cv2.putText(img, "MIYAZAKI", (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 2)
+    cv2.putText(img, "5", (360, 70), cv2.FONT_HERSHEY_SIMPLEX, 1.4, (255, 255, 255), 2)
+    cv2.putText(img, "CHEN Y.F.", (20, 160), cv2.FONT_HERSHEY_SIMPLEX, 1.1, (255, 255, 255), 2)
+    cv2.putText(img, "8", (360, 160), cv2.FONT_HERSHEY_SIMPLEX, 1.4, (255, 255, 255), 2)
+    return img
+
+
+def _paddle_ocr_kwargs(device: str) -> dict:
+    """Common PaddleOCR constructor kwargs for this worker."""
+    kw: dict = {
+        "lang": "en",
+        "use_doc_orientation_classify": False,
+        "use_doc_unwarping": False,
+        "use_textline_orientation": False,
+        "enable_mkldnn": False,
+        "device": device,
+        "text_det_limit_side_len": OCR_DET_LIMIT_SIDE_LEN,
+        "text_det_limit_type": OCR_DET_LIMIT_TYPE,
+    }
+    if OCR_DET_MODEL:
+        kw["text_detection_model_name"] = OCR_DET_MODEL
+    if OCR_REC_MODEL:
+        kw["text_recognition_model_name"] = OCR_REC_MODEL
+    return kw
+
+
+def _ocr_result_nonempty(result) -> bool:
+    """True if a PaddleOCR predict/ocr result has at least one det/rec item."""
+    if result is None:
+        return False
+    # PaddleOCR 3.x predict → list of dict-like results
+    if isinstance(result, list):
+        if not result:
+            return False
+        result = result[0]
+    if isinstance(result, dict):
+        texts = result.get("rec_texts") or []
+        polys = result.get("rec_polys") or result.get("dt_polys") or []
+        return bool(len(texts) > 0 or len(polys) > 0)
+    return False
+
+
+def _prove_gpu_ocr(device: str = "gpu:0") -> bool:
+    """Mandatory GPU gate: non-empty det/rec on a proof crop before using GPU.
+
+    Hard rule: never claim GPU OCR works without n_dt / rec_texts > 0.
+    Wrong CUDA index or sm_120 + bad wheel → empty det while models load in VRAM.
+    """
     try:
         import paddle
-        # paddle 3.x: get_device_capability may live under cuda
-        cap = paddle.device.cuda.get_device_capability(0)
-        if isinstance(cap, (list, tuple)) and len(cap) >= 2:
-            return int(cap[0]), int(cap[1])
-    except Exception:  # noqa: BLE001
-        pass
-    return None
+        from paddleocr import PaddleOCR
+        try:
+            paddle.set_device(device)
+        except Exception:  # noqa: BLE001
+            pass
+        ocr = PaddleOCR(**_paddle_ocr_kwargs(device))
+        img = _make_scoreboard_proof_bgr()
+        try:
+            out = ocr.predict(img)
+        except Exception:  # noqa: BLE001
+            # Older API fallback
+            out = ocr.ocr(img)
+        ok = _ocr_result_nonempty(out)
+        if not ok:
+            log.warning(
+                "valid_frames(ocr): GPU proof EMPTY det/rec on %s — fail closed to CPU",
+                device,
+            )
+        else:
+            log.info("valid_frames(ocr): GPU proof OK on %s (non-empty det/rec)", device)
+        return ok
+    except Exception as e:  # noqa: BLE001
+        log.warning("valid_frames(ocr): GPU proof failed (%s) — using CPU", e)
+        return False
+
+
+def _resolve_ocr_device() -> str:
+    """Resolve OCR_DEVICE once per process: auto|gpu|cpu (+ optional gpu:N).
+
+    auto → GPU only if paddle CUDA is available AND proof crop is non-empty.
+    gpu  → still proof; fall back to CPU on empty det (product correctness).
+    cpu  → always CPU.
+    """
+    global _ocr_device_resolved
+    with _ocr_device_lock:
+        if _ocr_device_resolved is not None:
+            return _ocr_device_resolved
+
+        env = (os.environ.get("OCR_DEVICE") or "auto").strip().lower()
+        if env in ("cpu", "cpu:0"):
+            _ocr_device_resolved = "cpu"
+            return _ocr_device_resolved
+
+        want_gpu = env in ("", "auto", "gpu", "gpu:0", "cuda", "cuda:0")
+        device = "gpu:0"
+        if env not in ("", "auto", "gpu", "gpu:0", "cuda", "cuda:0", "cpu", "cpu:0"):
+            # Pass through e.g. gpu:1
+            device = env
+            want_gpu = device.startswith("gpu") or device.startswith("cuda")
+
+        if not want_gpu:
+            _ocr_device_resolved = "cpu"
+            return _ocr_device_resolved
+
+        if not _paddle_cuda_available():
+            log.info("valid_frames(ocr): paddle CUDA unavailable → cpu")
+            _ocr_device_resolved = "cpu"
+            return _ocr_device_resolved
+
+        if _prove_gpu_ocr(device if device.startswith("gpu") else "gpu:0"):
+            _ocr_device_resolved = device if device.startswith("gpu") else "gpu:0"
+        else:
+            _ocr_device_resolved = "cpu"
+        return _ocr_device_resolved
 
 
 def _ocr_device() -> str:
-    """PaddleOCR device string: 'gpu:0' or 'cpu'.
-
-    auto prefers GPU when paddle CUDA works, but defaults to CPU on Blackwell
-    (sm_120 / RTX 50-series): measured empty det boxes with paddlepaddle-gpu
-    3.3.1 on RTX 5080 while the same models on CPU are correct. Force with
-    OCR_DEVICE=gpu if a future wheel fixes this.
-    """
-    env = (os.environ.get("OCR_DEVICE") or "auto").strip().lower()
-    if env in ("cpu", "cpu:0"):
-        return "cpu"
-    if env in ("gpu", "gpu:0", "cuda", "cuda:0"):
-        return "gpu:0"
-    if env not in ("", "auto"):
-        # Pass through e.g. gpu:1 if set explicitly.
-        return env
-    if not _paddle_cuda_available():
-        return "cpu"
-    cap = _gpu_compute_capability()
-    if cap is not None and cap[0] >= 12:
-        log.info(
-            "valid_frames(ocr): auto→cpu (GPU sm_%d%d; paddle-gpu OCR det "
-            "known-empty on Blackwell — set OCR_DEVICE=gpu to force)",
-            cap[0], cap[1],
-        )
-        return "cpu"
-    return "gpu:0"
+    """PaddleOCR device string: 'gpu:0' or 'cpu' (cached after proof)."""
+    return _resolve_ocr_device()
 
 
-def _default_ocr_workers() -> int:
+def _default_ocr_workers(device: str | None = None) -> int:
     env = os.environ.get("OCR_WORKERS")
     if env is not None and env.strip() != "":
         return max(1, int(env))
-    # Prefer fewer workers when GPU OCR is available.
-    if _ocr_device().startswith("gpu"):
+    dev = device if device is not None else _ocr_device()
+    # GPU: single instance is peak throughput (~19 bands/s on 5080).
+    if dev.startswith("gpu"):
         return 1
     cores = os.cpu_count() or 4
-    # ~1 worker per 4 cores, floor 2, ceil 8.
-    return max(2, min(8, cores // 4))
+    # CPU best around 2–4 workers (measured); soft-cap 4 for scoreboard OCR.
+    return max(2, min(4, cores // 4))
 
 
-OCR_WORKERS = _default_ocr_workers()
+def _ocr_workers() -> int:
+    """Current OCR worker count (env override or device-aware default)."""
+    return _default_ocr_workers()
+
+
+# Back-compat module attribute: env override if set, else conservative 1.
+# detect_valid_ranges uses _default_ocr_workers(resolved_device) instead.
+_env_workers = os.environ.get("OCR_WORKERS")
+OCR_WORKERS = (
+    max(1, int(_env_workers))
+    if _env_workers is not None and str(_env_workers).strip() != ""
+    else 1
+)
 
 
 def _ncc_fps_from_env(src_fps: float) -> float:
@@ -220,12 +319,49 @@ def _pipe_frames(cmd):
             proc.wait()
 
 
-def _hwaccel_prefix() -> list[str]:
-    """Use NVDEC when a GPU is present so detect doesn't burn CPU on 4K decode.
+def _probe_video_codec(video_path: str) -> str | None:
+    """Best-effort codec_name for the primary video stream (e.g. h264, av1)."""
+    try:
+        from ffmpeg_ops import probe
+        info = probe(video_path)
+        codec = (info.get("codec") or info.get("codec_name") or "").strip().lower()
+        return codec or None
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        out = subprocess.check_output(
+            [
+                "ffprobe", "-v", "error", "-select_streams", "v:0",
+                "-show_entries", "stream=codec_name", "-of",
+                "default=noprint_wrappers=1:nokey=1", video_path,
+            ],
+            text=True, timeout=30,
+        ).strip().lower()
+        return out or None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+# Codecs with reliable NVDEC on rent GPUs. AV1+CUDA often fails on stock
+# host ffmpeg ("Missing Sequence Header" / assert) — use software for those.
+_NVDEC_CODECS = frozenset({"h264", "avc", "hevc", "h265", "mpeg2video", "mpeg4", "vp9"})
+
+
+def _hwaccel_prefix(video_path: str | None = None) -> list[str]:
+    """Use NVDEC when a GPU is present and the codec is supported.
 
     Output stays system memory (software scale/crop after hw decode). Safe on
-    CPU-only hosts (empty prefix).
+    CPU-only hosts (empty prefix). AV1 and unknown codecs force software so
+    detect does not hard-fail mid-stream.
     """
+    if video_path:
+        codec = _probe_video_codec(video_path)
+        if codec and codec not in _NVDEC_CODECS:
+            log.info(
+                "valid_frames(decode): software decode for codec=%s (no reliable NVDEC)",
+                codec,
+            )
+            return []
     try:
         from ffmpeg_ops import use_gpu
         if use_gpu():
@@ -264,7 +400,7 @@ def _decode_fanout(video_path, crop, band_dir, *, ncc_fps: float | None = None):
     else:
         ncc_vf = f"scale={SW}:{SH}"
     yield from _pipe_frames([
-        "ffmpeg", "-v", "error", *_hwaccel_prefix(), "-i", video_path,
+        "ffmpeg", "-v", "error", *_hwaccel_prefix(video_path), "-i", video_path,
         "-map", "0:v:0", "-vf", ncc_vf,
         "-pix_fmt", "bgr24", "-f", "rawvideo", "pipe:1",
         "-map", "0:v:0",
@@ -370,7 +506,7 @@ def _read_scoreboard_frame(ocr, path, sub_crop, row_split_y, name_re, conf_min):
 
 
 def _ocr_consumer_loop(band_q: queue.Queue, results: dict, sub_crop, row_split_y,
-                       name_re, conf_min, stop_token):
+                       name_re, conf_min, stop_token, device: str | None = None):
     """Consume band JPEG paths; write results[idx] = bool.
 
     Incomplete JPEGs are retried **in place** (sleep + re-read) so retries never
@@ -379,47 +515,42 @@ def _ocr_consumer_loop(band_q: queue.Queue, results: dict, sub_crop, row_split_y
     from paddleocr import PaddleOCR
     # enable_mkldnn=False: paddle 3.x OneDNN path crashes on predict with
     # ConvertPirAttribute2RuntimeAttribute (ArrayAttribute<DoubleAttribute>).
-    # device: gpu:0 when paddlepaddle-gpu is installed; else cpu.
-    device = _ocr_device()
+    # device: gpu:0 only after proof (see _resolve_ocr_device); else cpu.
+    device = device or _ocr_device()
     log.info(
         "valid_frames(ocr worker): device=%s det=%s rec=%s det_limit=%s/%s",
-        device, OCR_DET_MODEL, OCR_REC_MODEL,
-        OCR_DET_LIMIT_SIDE_LEN, OCR_DET_LIMIT_TYPE,
+        device,
+        OCR_DET_MODEL or "(default)",
+        OCR_REC_MODEL or "(default)",
+        OCR_DET_LIMIT_SIDE_LEN,
+        OCR_DET_LIMIT_TYPE,
     )
-    ocr = PaddleOCR(
-        lang="en",
-        use_doc_orientation_classify=False,
-        use_doc_unwarping=False,
-        use_textline_orientation=False,
-        enable_mkldnn=False,
-        device=device,
-        text_detection_model_name=OCR_DET_MODEL,
-        text_recognition_model_name=OCR_REC_MODEL,
-        text_det_limit_side_len=OCR_DET_LIMIT_SIDE_LEN,
-        text_det_limit_type=OCR_DET_LIMIT_TYPE,
-    )
-    # First GPU predict can take minutes (CUDA/kernel compile on new arches);
-    # warm once so the queue does not stall on item 0.
+    try:
+        import paddle
+        if device.startswith("gpu"):
+            paddle.set_device(device)
+    except Exception:  # noqa: BLE001
+        pass
+    ocr = PaddleOCR(**_paddle_ocr_kwargs(device))
+    # First GPU predict can take a while (CUDA/kernel compile); warm with a
+    # text-like crop so we also re-check non-empty output.
     if device.startswith("gpu"):
         try:
-            warm = np.zeros((64, 256, 3), dtype=np.uint8)
-            warm_path = os.path.join(tempfile.gettempdir(), f"ocr_warm_{os.getpid()}.jpg")
-            cv2.imwrite(warm_path, warm)
+            warm = _make_scoreboard_proof_bgr()
             t_w = time.time()
             try:
-                ocr.predict(warm_path)
+                out = ocr.predict(warm)
             except Exception:  # noqa: BLE001
-                try:
-                    ocr.ocr(warm_path)
-                except Exception as e:  # noqa: BLE001
-                    log.warning("valid_frames(ocr warm): %s", e)
+                out = ocr.ocr(warm)
+            if not _ocr_result_nonempty(out):
+                log.warning(
+                    "valid_frames(ocr warm): empty det on %s after proof — "
+                    "continuing but results may be wrong",
+                    device,
+                )
             log.info("valid_frames(ocr warm): %.1fs on %s", time.time() - t_w, device)
-            try:
-                os.unlink(warm_path)
-            except OSError:
-                pass
         except Exception as e:  # noqa: BLE001
-            log.warning("valid_frames(ocr warm setup): %s", e)
+            log.warning("valid_frames(ocr warm): %s", e)
     while True:
         item = band_q.get()
         if item is stop_token:
@@ -522,18 +653,23 @@ def detect_valid_ranges(video_path, config, fps, width, height):
     if n_src_hint is not None:
         n_src_hint = int(n_src_hint)
 
+    # Resolve device before spawning workers (GPU proof is process-global).
+    ocr_device = _resolve_ocr_device()
+    n_ocr_threads = max(1, _default_ocr_workers(ocr_device))
+
     with tempfile.TemporaryDirectory() as band_dir:
         # Producer-consumer: as band_*.jpg files appear, OCR them while NCC
-        # continues consuming the rawvideo pipe.
-        band_q: queue.Queue = queue.Queue(maxsize=256)
+        # continues consuming the rawvideo pipe. Queue depth 64 is enough for
+        # decode overlap with a single fast GPU OCR worker (~19 bands/s).
+        q_max = 64 if ocr_device.startswith("gpu") else 256
+        band_q: queue.Queue = queue.Queue(maxsize=q_max)
         ocr_results: dict[int, bool] = {}
         stop = object()
-        n_ocr_threads = max(1, OCR_WORKERS)
         consumers = [
             threading.Thread(
                 target=_ocr_consumer_loop,
                 args=(band_q, ocr_results, sub_crop, row_split_y,
-                      name_re, conf_min, stop),
+                      name_re, conf_min, stop, ocr_device),
                 daemon=True,
             )
             for _ in range(n_ocr_threads)
@@ -595,7 +731,7 @@ def detect_valid_ranges(video_path, config, fps, width, height):
         log.info(
             "valid_frames(detect): src_fps=%.3f ncc_fps=%.3f subsample=%s "
             "ocr_workers=%d ocr_device=%s",
-            src_fps, ncc_fps, use_ncc_subsample, n_ocr_threads, _ocr_device(),
+            src_fps, ncc_fps, use_ncc_subsample, n_ocr_threads, ocr_device,
         )
         try:
             for frame in _decode_fanout(

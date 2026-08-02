@@ -176,10 +176,10 @@ class TestValidateValidFramesRequest(unittest.TestCase):
         filled = h.apply_valid_frames_defaults(simple, 1920, 1080)
         self.assertEqual(filled["scoreboard_crop"],
                          {"x": 0, "y": 0, "w": 960, "h": 540})
-        # score_sub_crop is band-relative full band {0,0,w,h}
+        # score_sub_crop defaults to tight top-left OCR window (not full band)
         self.assertEqual(filled["score_sub_crop"],
-                         {"x": 0, "y": 0, "w": 960, "h": 540})
-        self.assertEqual(filled["row_split_y"], 270.0)
+                         {"x": 0, "y": 0, "w": 450, "h": 220})
+        self.assertEqual(filled["row_split_y"], 110.0)
 
     def test_apply_defaults_sub_crop_band_relative_not_absolute(self):
         # Non-origin scoreboard: missing sub → full band at 0,0 inside band
@@ -316,6 +316,44 @@ class TestCropClamp(unittest.TestCase):
         err = h.validate_valid_frames_request(cfg, True, True)
         self.assertIsNotNone(err)
         self.assertIn("scoreboard_crop", err)
+
+
+class TestOcrDeviceHelpers(unittest.TestCase):
+    def test_proof_image_shape(self):
+        img = vf._make_scoreboard_proof_bgr()
+        self.assertEqual(img.shape, (220, 450, 3))
+
+    def test_ocr_result_nonempty(self):
+        self.assertFalse(vf._ocr_result_nonempty(None))
+        self.assertFalse(vf._ocr_result_nonempty([]))
+        self.assertFalse(vf._ocr_result_nonempty([{"rec_texts": [], "dt_polys": []}]))
+        self.assertTrue(vf._ocr_result_nonempty(
+            [{"rec_texts": ["MIYAZAKI"], "rec_polys": [[[0, 0], [1, 0], [1, 1], [0, 1]]]}]
+        ))
+        self.assertTrue(vf._ocr_result_nonempty(
+            {"rec_texts": [], "dt_polys": [[[0, 0], [1, 0], [1, 1], [0, 1]]]}
+        ))
+
+    def test_default_ocr_workers_gpu_vs_cpu(self):
+        self.assertEqual(vf._default_ocr_workers("gpu:0"), 1)
+        # CPU without env: 2–4
+        n = vf._default_ocr_workers("cpu")
+        self.assertGreaterEqual(n, 2)
+        self.assertLessEqual(n, 4)
+
+    def test_resolve_ocr_device_cpu_forced(self):
+        old = os.environ.get("OCR_DEVICE")
+        # Reset process cache
+        vf._ocr_device_resolved = None
+        try:
+            os.environ["OCR_DEVICE"] = "cpu"
+            self.assertEqual(vf._resolve_ocr_device(), "cpu")
+        finally:
+            vf._ocr_device_resolved = None
+            if old is None:
+                os.environ.pop("OCR_DEVICE", None)
+            else:
+                os.environ["OCR_DEVICE"] = old
 
 
 if __name__ == "__main__":

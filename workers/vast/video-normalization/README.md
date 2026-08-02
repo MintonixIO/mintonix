@@ -149,9 +149,13 @@ manifest. `scores.csv` / score-timeline is **not implemented** (deferred).
 - **Not best-effort** (unlike the thumbnail): extraction failure fails the job.
 - **Detect decode** uses NVDEC when a GPU is present (CPU scale to detection
   size after hw decode). **OCR** (`paddleocr`) uses GPU when
-  `paddlepaddle-gpu` is installed (`OCR_DEVICE=auto|gpu|cpu`); otherwise CPU.
-  Worker count defaults to 1 on GPU, or from host cores on CPU (`OCR_WORKERS`).
-  Models are best-effort baked at Docker build; non-BWF jobs never import paddle.
+  `paddlepaddle-gpu` is installed **and** a one-shot proof crop returns
+  non-empty det/rec (`OCR_DEVICE=auto|gpu|cpu`; fail closed to CPU on empty
+  det — required on sm_120 / wrong CUDA wheel). Worker count defaults to **1**
+  on GPU (~19 bands/s measured on 5080+cu130), or 2–4 on CPU. Default
+  scoreboard OCR window is a tight top-left ~450×220 inside the band (not full
+  960×540). Models are best-effort baked at Docker build; non-BWF jobs never
+  import paddle.
 
 `input_url` is downloaded (HTTP GET, or `file://` for local runs). Downloads use
 parallel HTTP byte-ranges (`DL_CONNECTIONS`, default 8) when the server supports
@@ -247,9 +251,10 @@ engine on many cards. Concurrency and segment-parallel knobs:
 | `SEGMENT_PARALLEL_THRESHOLD_SEC` | `600` | Auto keyframe-split → concurrent NVENC → concat above this duration |
 | `SEGMENT_PARALLEL_N` | `4` | Segment count when parallel path engages |
 | `UPLOAD_ATTEMPTS` | `5` | Single PUT / multipart part retries after encode |
-| `OCR_WORKERS` | `1` (GPU) / `max(2, min(8, cores//4))` (CPU) | Parallel PaddleOCR workers |
-| `OCR_DEVICE` | `auto` | `auto` → GPU if paddle CUDA and not Blackwell sm_120; else CPU. Force `gpu`/`cpu` |
+| `OCR_WORKERS` | `1` (GPU) / `max(2, min(4, cores//4))` (CPU) | Parallel PaddleOCR workers (GPU: use 1) |
+| `OCR_DEVICE` | `auto` | `auto`/`gpu` → GPU only after non-empty proof crop; else CPU. Force `cpu` |
 | `OCR_DET_LIMIT_SIDE_LEN` | `960` | Paddle text-det resize long side (default 64 is too small for bands) |
+| `OCR_DET_MODEL` / `OCR_REC_MODEL` | (paddle default) | Optional; e.g. mobile det/rec for CPU |
 | `NCC_FPS` | `5` | Court NCC sample rate (Hz); `0`/`src` = every source frame |
 | `DL_CONNECTIONS` / `UL_CONNECTIONS` | `8` | Parallel B2 range download / multipart upload |
 | `DL_MIN_PARALLEL_BYTES` | `16 MiB` | Min object size before range-parallel download |
