@@ -69,6 +69,7 @@ on_load) — keep that line emitted on stdout.
 
 import logging
 import os
+import time
 from urllib.parse import urlparse
 
 import uvicorn
@@ -171,7 +172,33 @@ async def normalize_sync(request: Request) -> JSONResponse:
              "error": "input_url and one of output_upload_url / output_upload are required"},
             status_code=422,
         )
+    # Early request fingerprint (before validation work) so cold-start logs show
+    # whether the job was accepted and which path it takes.
+    log.info(
+        "normalize(request): request_id=%s bwf=%s annotation=%s multipart=%s "
+        "thumb=%s manifest=%s archive=%s callback=%s youtube=%s "
+        "callback_prefix_set=%s ncc_fps=%s ocr_device=%s ocr_workers=%s",
+        request_id,
+        valid_frames_config is not None or annotation is not None,
+        annotation is not None,
+        bool(output_upload),
+        bool(thumbnail_upload_url),
+        bool(manifest_upload_url),
+        bool(original_upload or original_upload_url),
+        bool(callback_url),
+        bool(input_url and ("youtube.com" in str(input_url) or "youtu.be" in str(input_url))),
+        bool(_callback_prefix()),
+        os.environ.get("NCC_FPS", ""),
+        os.environ.get("OCR_DEVICE", "auto"),
+        os.environ.get("OCR_WORKERS", ""),
+    )
+
     if callback_url and not _callback_url_allowed(callback_url):
+        log.warning(
+            "normalize(reject): request_id=%s callback_url not allowed "
+            "(prefix_set=%s)",
+            request_id, bool(_callback_prefix()),
+        )
         return JSONResponse(
             {"request_id": request_id,
              "error": ("callback_url not allowed (set CALLBACK_URL_PREFIX or "
@@ -215,6 +242,8 @@ async def normalize_sync(request: Request) -> JSONResponse:
     # dispatcher hung up an hour ago.
     def run_and_report() -> dict:
         progress: dict = {}
+        t0 = time.time()
+        log.info("normalize(run,start): request_id=%s", request_id)
         try:
             result = normalize.normalize_job(
                 input_url, output_upload_url, output_upload,
@@ -223,12 +252,22 @@ async def normalize_sync(request: Request) -> JSONResponse:
                 original_upload=original_upload, progress=progress,
             )
         except Exception as e:
+            log.exception(
+                "normalize(run,failed): request_id=%s elapsed=%.1fs",
+                request_id, time.time() - t0,
+            )
             if callback_url:
                 normalize.post_callback(callback_url, callback_token, {
                     "request_id": request_id, "status": "failed",
                     "error": normalize.sanitize_error(e), **progress,
                 })
             raise
+        log.info(
+            "normalize(run,ok): request_id=%s elapsed=%.1fs stage_timings=%s",
+            request_id,
+            time.time() - t0,
+            result.get("stage_timings"),
+        )
         if callback_url:
             normalize.post_callback(callback_url, callback_token, {
                 "request_id": request_id, "status": "success", **result,

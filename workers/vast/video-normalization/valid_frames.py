@@ -40,7 +40,8 @@ import numpy as np
 
 log = logging.getLogger("video-normalization.valid_frames")
 
-LOG_INTERVAL_SEC = 30.0
+# Heartbeat while decode+OCR run (serverless operators need frequent signals).
+LOG_INTERVAL_SEC = float(os.environ.get("VALID_FRAMES_LOG_INTERVAL_SEC", "15"))
 
 # Court NCC detector geometry (matches fast_detector.py's downscale factor;
 # not user-configurable since it's an internal detection resolution, not the
@@ -728,10 +729,27 @@ def detect_valid_ranges(video_path, config, fps, width, height):
         t0 = time.time()
         last_log = t0
         ncc = []
+        # Expected sample counts for % / ETA (best-effort).
+        n_src_expect = n_src_hint
+        if n_src_expect is None and src_fps > 0:
+            # Unknown duration — leave None.
+            n_src_expect = None
+        ncc_expect = None
+        if n_src_expect and src_fps > 0:
+            if use_ncc_subsample:
+                ncc_expect = max(1, int(round(n_src_expect * (ncc_fps / src_fps))))
+            else:
+                ncc_expect = int(n_src_expect)
+        ocr_expect = None
+        if n_src_expect and src_fps > 0:
+            ocr_expect = max(1, int(round(n_src_expect / src_fps)))  # 1 Hz bands
+
         log.info(
             "valid_frames(detect): src_fps=%.3f ncc_fps=%.3f subsample=%s "
-            "ocr_workers=%d ocr_device=%s",
+            "ocr_workers=%d ocr_device=%s ncc_expect=%s ocr_expect=%s "
+            "log_interval=%.0fs",
             src_fps, ncc_fps, use_ncc_subsample, n_ocr_threads, ocr_device,
+            ncc_expect, ocr_expect, LOG_INTERVAL_SEC,
         )
         try:
             for frame in _decode_fanout(
@@ -748,15 +766,36 @@ def detect_valid_ranges(video_path, config, fps, width, height):
                 now = time.time()
                 if now - last_log >= LOG_INTERVAL_SEC:
                     last_log = now
+                    rate = len(ncc) / max(now - t0, 1e-6)
+                    pct = ""
+                    eta = ""
+                    if ncc_expect and ncc_expect > 0:
+                        frac = min(1.0, len(ncc) / ncc_expect)
+                        pct = f" {100.0 * frac:.0f}%"
+                        remain = max(0.0, (ncc_expect - len(ncc)) / max(rate, 1e-6))
+                        eta = f" eta_decode~{remain:.0f}s"
+                    ocr_done = sum(1 for i in range(next_band_idx) if i in ocr_results)
                     log.info(
-                        "valid_frames(decode): %d ncc_samples @ %.0f samp/s "
-                        "(ocr bands enqueued %d, qsize~%d)",
+                        "valid_frames(decode): %d/%s ncc_samples @ %.1f samp/s%s%s "
+                        "(ocr enqueued=%d done=%d qsize~%d ocr_expect=%s)",
                         len(ncc),
-                        len(ncc) / max(now - t0, 1e-6),
+                        ncc_expect if ncc_expect is not None else "?",
+                        rate,
+                        pct,
+                        eta,
                         next_band_idx,
+                        ocr_done,
                         band_q.qsize(),
+                        ocr_expect if ocr_expect is not None else "?",
                     )
             poll_new_bands(final=True)  # final flush — all bands complete
+            log.info(
+                "valid_frames(decode,eof): ncc_samples=%d elapsed=%.1fs "
+                "ocr_enqueued=%d ocr_done=%d qsize~%d",
+                len(ncc), time.time() - t0, next_band_idx,
+                sum(1 for i in range(next_band_idx) if i in ocr_results),
+                band_q.qsize(),
+            )
         finally:
             for _ in consumers:
                 try:
@@ -766,9 +805,25 @@ def detect_valid_ranges(video_path, config, fps, width, height):
                         "valid_frames: could not deliver OCR stop token "
                         "(queue full — OCR stalled)"
                     ) from e
+            # Drain OCR workers with heartbeats so long tails are visible.
+            join_deadline = time.time() + OCR_ITEM_TIMEOUT_SEC * 2
             hung = []
             for t in consumers:
-                t.join(timeout=OCR_ITEM_TIMEOUT_SEC * 2)
+                while t.is_alive():
+                    remain = join_deadline - time.time()
+                    if remain <= 0:
+                        break
+                    t.join(timeout=min(15.0, remain))
+                    if t.is_alive():
+                        ocr_done = sum(
+                            1 for i in range(next_band_idx) if i in ocr_results
+                        )
+                        log.info(
+                            "valid_frames(ocr_drain): waiting workers "
+                            "ocr_done=%d/%d qsize~%d total_sec=%.1f",
+                            ocr_done, next_band_idx, band_q.qsize(),
+                            time.time() - t0,
+                        )
                 if t.is_alive():
                     hung.append(t.name or "ocr-consumer")
             if hung:
@@ -795,8 +850,11 @@ def detect_valid_ranges(video_path, config, fps, width, height):
                 f"index(es) (e.g. {missing[:5]}); refusing partial scoreboard mask"
             )
         svis = [bool(ocr_results[i]) for i in range(n_seconds)]
-        log.info("valid_frames(scoreboard): %d seconds, %d visible (overlapped OCR)",
-                 n_seconds, sum(svis))
+        log.info(
+            "valid_frames(scoreboard): %d seconds, %d visible (overlapped OCR) "
+            "detect_wall=%.1fs",
+            n_seconds, sum(svis), time.time() - t0,
+        )
 
     # Expand court samples to source frame grid when subsampled.
     if use_ncc_subsample:

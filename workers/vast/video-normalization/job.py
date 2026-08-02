@@ -54,6 +54,59 @@ from io_util import (
 log = logging.getLogger("video-normalization")
 
 
+class StageTimer:
+    """Wall-clock stage timer for job progress logs and result.stage_timings.
+
+    Log lines use a stable ``job(stage=NAME): …`` prefix so serverless
+    operators / PyWorker on_info can grep progress without parsing free text.
+    """
+
+    def __init__(self) -> None:
+        self.t0 = time.time()
+        self._mark = self.t0
+        self.timings: dict[str, float] = {}
+
+    def elapsed(self) -> float:
+        return time.time() - self.t0
+
+    def begin(self, name: str, **extra) -> None:
+        """Mark stage start (does not close the previous stage)."""
+        self._mark = time.time()
+        extras = " ".join(f"{k}={v}" for k, v in extra.items())
+        log.info(
+            "job(stage=%s,start): t+%.1fs%s",
+            name,
+            self.elapsed(),
+            f" {extras}" if extras else "",
+        )
+
+    def end(self, name: str, **extra) -> float:
+        """Close stage ``name``; return stage duration seconds."""
+        dt = time.time() - self._mark
+        self.timings[name] = round(dt, 2)
+        extras = " ".join(f"{k}={v}" for k, v in extra.items())
+        log.info(
+            "job(stage=%s,done): stage_sec=%.1f total_sec=%.1f%s",
+            name,
+            dt,
+            self.elapsed(),
+            f" {extras}" if extras else "",
+        )
+        self._mark = time.time()
+        return dt
+
+    def heartbeat(self, name: str, **extra) -> None:
+        """In-stage progress line (does not end the stage)."""
+        extras = " ".join(f"{k}={v}" for k, v in extra.items())
+        log.info(
+            "job(stage=%s,progress): stage_sec=%.1f total_sec=%.1f%s",
+            name,
+            time.time() - self._mark,
+            self.elapsed(),
+            f" {extras}" if extras else "",
+        )
+
+
 def _put_object(
     local_path: str,
     *,
@@ -69,6 +122,21 @@ def _put_object(
         upload(local_path, url)
         return
     raise RuntimeError(f"{label}: no destination (multipart or url)")
+
+
+def _env_debug_snapshot() -> dict:
+    """Non-secret runtime knobs useful when diagnosing slow BWF jobs."""
+    keys = (
+        "NCC_FPS", "OCR_DEVICE", "OCR_WORKERS", "OCR_DET_MODEL", "OCR_REC_MODEL",
+        "MAX_INFLIGHT", "SEGMENT_PARALLEL_N", "SEGMENT_PARALLEL_THRESHOLD_SEC",
+        "DL_CONNECTIONS", "UL_CONNECTIONS", "PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK",
+    )
+    out = {k: os.environ.get(k, "") for k in keys}
+    # Presence-only for secrets/prefixes (never values).
+    out["CALLBACK_URL_PREFIX_set"] = bool(
+        (os.environ.get("CALLBACK_URL_PREFIX") or os.environ.get("SUPABASE_URL") or "").strip()
+    )
+    return out
 
 
 def normalize_job(input_url: str, output_upload_url: str | None = None,
@@ -107,23 +175,48 @@ def normalize_job(input_url: str, output_upload_url: str | None = None,
         _redact(output_upload["complete_url"]) if output_upload
         else _redact(output_upload_url or "")
     )
-    log.info("job(start): input=%s output=%s bwf=%s multipart=%s",
-             _redact(input_url), out_redacted, bwf_path, bool(output_upload))
+    stages = StageTimer()
+    log.info(
+        "job(start): input=%s output=%s bwf=%s multipart=%s youtube=%s "
+        "thumb=%s manifest=%s archive=%s env=%s",
+        _redact(input_url),
+        out_redacted,
+        bwf_path,
+        bool(output_upload),
+        is_youtube_url(input_url),
+        bool(thumbnail_upload_url),
+        bool(manifest_upload_url),
+        bool(original_upload or original_upload_url),
+        json.dumps(_env_debug_snapshot(), sort_keys=True),
+    )
 
-    t_start = time.time()
     with tempfile.TemporaryDirectory() as tmp:
         dst = os.path.join(tmp, "normalized.mp4")
 
+        stages.begin("download", kind="youtube" if is_youtube_url(input_url) else "http")
         if is_youtube_url(input_url):
             src = download_youtube(input_url, tmp)
         else:
             src = os.path.join(tmp, "source")
             download(input_url, src)
+        src_bytes = os.path.getsize(src)
+        stages.end("download", bytes=src_bytes, mb=round(src_bytes / 1024 / 1024, 1))
 
+        stages.begin("probe")
         src_info = probe(src)
+        stages.end(
+            "probe",
+            codec=src_info.get("codec"),
+            wh=f"{src_info.get('width')}x{src_info.get('height')}",
+            fps=src_info.get("fps"),
+            duration=round(float(src_info.get("duration") or 0), 1),
+            gpu=use_gpu(),
+            vfr=is_vfr(src_info),
+        )
         log.info("probe(source): %s gpu=%s", json.dumps(src_info), use_gpu())
 
         if original_upload or original_upload_url:
+            stages.begin("archive_original", bytes=src_bytes)
             _put_object(
                 src,
                 multipart=original_upload,
@@ -132,8 +225,9 @@ def normalize_job(input_url: str, output_upload_url: str | None = None,
             )
             if progress is not None:
                 progress["original_archived"] = True
+            stages.end("archive_original", bytes=src_bytes)
             log.info("upload(original): archived pristine source (%d bytes)",
-                     os.path.getsize(src))
+                     src_bytes)
 
         # force_cfr only when source is VFR — not merely because valid_frames
         # is requested. BWF VFR uses a same-resolution CFR mezzanine first.
@@ -145,43 +239,61 @@ def normalize_job(input_url: str, output_upload_url: str | None = None,
             # BWF always encodes (cleaned ranges); force_cfr for CFR delivery.
             require_gpu_for_transcode(src_info, force_cfr=True)
             dst_info, vf_meta = _bwf_detect_and_encode(
-                src, dst, src_info, valid_frames_config, tmp,
+                src, dst, src_info, valid_frames_config, tmp, stages=stages,
             )
         else:
             force_cfr = is_vfr(src_info)
             require_gpu_for_transcode(src_info, force_cfr=force_cfr)
+            stages.begin("full_normalize", force_cfr=force_cfr)
             dst_info = _full_normalize(src, dst, src_info, force_cfr=force_cfr)
+            stages.end(
+                "full_normalize",
+                out_bytes=os.path.getsize(dst),
+                duration=round(float(dst_info.get("duration") or 0), 1),
+            )
             vf_meta = None
 
         # Primary upload: cleaned/normalized.mp4 (multipart in production).
+        stages.begin(
+            "upload_primary",
+            bytes=os.path.getsize(dst),
+            multipart=bool(output_upload),
+        )
         _put_object(
             dst,
             multipart=output_upload,
             url=output_upload_url,
             label="primary output",
         )
+        stages.end("upload_primary", bytes=os.path.getsize(dst))
 
         if bwf_path and manifest_upload_url and vf_meta:
+            stages.begin("upload_manifest", bytes=vf_meta.get("manifest_file_size"))
             upload(vf_meta["manifest_path"], manifest_upload_url)
+            stages.end("upload_manifest")
 
         result: dict = {**dst_info, "source": src_info}
         if thumbnail_upload_url:
             try:
+                stages.begin("thumbnail")
                 thumb = os.path.join(tmp, "thumbnail.jpg")
                 thumb_info = extract_thumbnail(dst, thumb, dst_info["duration"])
                 upload(thumb, thumbnail_upload_url)
                 result["thumbnail"] = thumb_info
+                stages.end("thumbnail", **{k: thumb_info.get(k) for k in ("width", "height", "file_size") if k in thumb_info})
             except Exception as e:  # noqa: BLE001 — thumbnail is non-fatal
                 detail = sanitize_error(getattr(e, "stderr", None) or e)
                 log.warning("thumbnail(failed): %s", detail)
                 result["thumbnail"] = None
                 result["thumbnail_error"] = detail
+                stages.end("thumbnail", failed=True)
 
         if vf_meta:
             result["valid_frames"] = {
                 **{k: vf_meta[k] for k in (
                     "source_frame_count", "valid_frame_count", "num_ranges",
                     "manifest_file_size", "src_fps", "out_fps",
+                    "detect_sec", "encode_sec",
                 ) if k in vf_meta},
                 "width": dst_info.get("width"),
                 "height": dst_info.get("height"),
@@ -191,9 +303,14 @@ def normalize_job(input_url: str, output_upload_url: str | None = None,
                 "primary_asset": "normalized.mp4",
             }
 
-        elapsed = round(time.time() - t_start, 1)
-        log.info("job(done): elapsed=%ss", elapsed)
+        elapsed = round(stages.elapsed(), 1)
         result["elapsed_sec"] = elapsed
+        result["stage_timings"] = dict(stages.timings)
+        log.info(
+            "job(done): elapsed=%ss stages=%s",
+            elapsed,
+            json.dumps(stages.timings, sort_keys=True),
+        )
         return result
 
 
@@ -229,6 +346,7 @@ def _bwf_detect_and_encode(
     src_info: dict,
     valid_frames_config: dict,
     tmp: str,
+    stages: StageTimer | None = None,
 ) -> tuple[dict, dict]:
     """Detect keep-ranges on source, NVDEC encode of kept ranges → dst.
 
@@ -239,12 +357,15 @@ def _bwf_detect_and_encode(
     import valid_frames  # deferred: cv2/numpy/paddle only when BWF path runs
     from ffmpeg_ops import build_cfr_mezzanine_cmd
 
+    stages = stages or StageTimer()
+
     if is_vfr(src_info):
         log.info(
             "BWF VFR: building same-resolution CFR mezzanine before detect "
             "(r=%s avg=%s)",
             src_info.get("r_frame_rate"), src_info.get("avg_frame_rate"),
         )
+        stages.begin("vfr_mezzanine")
         mez = os.path.join(tmp, "cfr_mezzanine.mp4")
         run_ffmpeg(
             build_cfr_mezzanine_cmd(src, mez, src_info),
@@ -252,6 +373,11 @@ def _bwf_detect_and_encode(
         )
         src = mez
         src_info = probe(mez)
+        stages.end(
+            "vfr_mezzanine",
+            bytes=os.path.getsize(mez),
+            duration=round(float(src_info.get("duration") or 0), 1),
+        )
         log.info("probe(cfr_mezzanine): %s", json.dumps(src_info))
 
     cfg = apply_valid_frames_defaults(
@@ -266,10 +392,34 @@ def _bwf_detect_and_encode(
             "source_frame_count": int(round(float(src_info["duration"]) * det_fps)),
         }
 
+    crop = cfg.get("scoreboard_crop") or {}
+    sub = cfg.get("score_sub_crop") or {}
+    log.info(
+        "job(stage=valid_frames_detect,config): duration=%.1fs fps=%.3f n_src=%s "
+        "scoreboard=%sx%s@%s,%s sub=%sx%s@%s,%s row_split=%s names=%d ncc_on=%s "
+        "ncc_off=%s",
+        float(src_info.get("duration") or 0),
+        det_fps,
+        cfg.get("source_frame_count"),
+        crop.get("w"), crop.get("h"), crop.get("x"), crop.get("y"),
+        sub.get("w"), sub.get("h"), sub.get("x"), sub.get("y"),
+        cfg.get("row_split_y"),
+        len(cfg.get("player_names") or []),
+        cfg.get("ncc_on"),
+        cfg.get("ncc_off"),
+    )
+
+    stages.begin(
+        "valid_frames_detect",
+        duration_sec=round(float(src_info.get("duration") or 0), 1),
+        n_src=cfg.get("source_frame_count"),
+    )
+    t_detect = time.time()
     ranges, total_frames = valid_frames.detect_valid_ranges(
         src, cfg, fps=det_fps,
         width=src_info["width"], height=src_info["height"],
     )
+    detect_sec = round(time.time() - t_detect, 2)
     # Manifest: old_* = source/mezzanine frames; new_* = cleaned after fps cap.
     range_manifest = valid_frames.build_range_manifest(
         ranges, src_fps=det_fps, out_fps=out_fps,
@@ -282,17 +432,40 @@ def _bwf_detect_and_encode(
     valid_frames.write_range_manifest_csv(range_manifest, manifest_path)
 
     kept_dur = valid_frames.kept_duration_sec(ranges, det_fps)
+    stages.end(
+        "valid_frames_detect",
+        detect_sec=detect_sec,
+        ranges=len(ranges),
+        kept_src=kept_src,
+        kept_out=kept_out,
+        kept_sec=round(kept_dur, 1),
+        total_frames=total_frames,
+    )
     log.info(
         "encoder: BWF ranges→normalized (%d ranges, %d src frames → %d out @ "
         "%.3ffps, %.1fs keep) NVDEC+h264_nvenc scale_cuda=%s",
         len(ranges), kept_src, kept_out, out_fps, kept_dur, has_scale_cuda(),
     )
 
+    stages.begin(
+        "encode_ranges",
+        ranges=len(ranges),
+        kept_sec=round(kept_dur, 1),
+        scale_cuda=has_scale_cuda(),
+    )
+    t_enc = time.time()
     encode_frame_ranges_nvdec(
         src, dst, dict(src_info), ranges, det_fps,
         force_cfr=True, strip_audio=True,
     )
+    encode_sec = round(time.time() - t_enc, 2)
     dst_info = probe(dst)
+    stages.end(
+        "encode_ranges",
+        encode_sec=encode_sec,
+        out_bytes=os.path.getsize(dst),
+        out_duration=round(float(dst_info.get("duration") or 0), 1),
+    )
 
     log.info("probe(output/bwf-cleaned): %s", json.dumps(dst_info))
 
@@ -305,5 +478,7 @@ def _bwf_detect_and_encode(
         "ranges": ranges,
         "src_fps": det_fps,
         "out_fps": out_fps,
+        "detect_sec": detect_sec,
+        "encode_sec": encode_sec,
     }
     return dst_info, meta

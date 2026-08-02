@@ -14,6 +14,7 @@ import os
 import random
 import subprocess
 import tempfile
+import threading
 import time
 
 log = logging.getLogger("video-normalization")
@@ -626,9 +627,11 @@ def encode_time_windows(
         )
         return
 
+    total_keep = sum(max(0.0, b - a) for a, b in windows)
     log.info(
-        "encode_time_windows: %d windows NVDEC parallel (workers=%d, accurate=%s)",
-        len(windows), min(len(windows), n), accurate_seek,
+        "encode_time_windows: %d windows keep_sec=%.1f NVDEC parallel "
+        "(workers=%d, accurate=%s)",
+        len(windows), total_keep, min(len(windows), n), accurate_seek,
     )
     with tempfile.TemporaryDirectory() as tmp:
         seg_paths: list[str] = []
@@ -646,11 +649,23 @@ def encode_time_windows(
                 sp,
             ))
 
+        done = {"n": 0}
+        lock = threading.Lock()
+        t_enc0 = time.time()
+
         def _run(item: tuple[list[str], float, str]) -> None:
             cmd, dur, path = item
             run_ffmpeg(cmd, dur)
             if not os.path.isfile(path) or os.path.getsize(path) < 32:
                 raise RuntimeError(f"encode_time_windows: empty/missing {path}")
+            with lock:
+                done["n"] += 1
+                n_done = done["n"]
+            log.info(
+                "encode_time_windows(progress): %d/%d windows done "
+                "elapsed=%.1fs last_seg_sec=%.1f",
+                n_done, len(work), time.time() - t_enc0, dur,
+            )
 
         workers = min(len(work), n)
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
@@ -658,7 +673,15 @@ def encode_time_windows(
         for sp in seg_paths:
             if not os.path.isfile(sp) or os.path.getsize(sp) < 32:
                 raise RuntimeError(f"encode_time_windows: refusing concat; bad {sp}")
+        log.info(
+            "encode_time_windows(concat): %d segments after %.1fs encode",
+            len(seg_paths), time.time() - t_enc0,
+        )
         concat_segments(seg_paths, output_path)
+        log.info(
+            "encode_time_windows(done): %d windows total_sec=%.1f",
+            len(work), time.time() - t_enc0,
+        )
 
 
 def frame_ranges_to_windows(

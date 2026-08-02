@@ -54,7 +54,26 @@ MODEL_ERROR_LOG_MSGS = [
     "Traceback (most recent call last):",
     "ERROR:    Application startup failed.",
 ]
-MODEL_INFO_LOG_MSGS = ['"download(start)', "ffmpeg(command)"]
+# Patterns the PyWorker treats as progress (surfaced in instance logs / UI).
+# Keep prefixes stable with job.py / valid_frames.py / server.py log lines.
+MODEL_INFO_LOG_MSGS = [
+    "download(start",
+    "ffmpeg(command)",
+    "job(start)",
+    "job(stage=",
+    "job(done)",
+    "valid_frames(detect)",
+    "valid_frames(decode)",
+    "valid_frames(ocr",
+    "valid_frames(court)",
+    "valid_frames(scoreboard)",
+    "normalize(request)",
+    "normalize(run,",
+    "encoder:",
+    "upload(start",
+    "upload(done",
+    "probe(source)",
+]
 
 # One 4K60 normalization saturates a single GPU's NVDEC decode engine (see
 # FINDINGS.md: the workload is decode-bound). Default max in-flight is 1; set
