@@ -38,14 +38,14 @@ export function AuthShell({
           className="pointer-events-none absolute inset-0 opacity-90"
           style={{
             background:
-              "radial-gradient(120% 60% at 30% -5%, rgba(54,147,255,0.20), transparent 60%)",
+              "radial-gradient(120% 60% at 30% -5%, rgba(255,255,255,0.06), transparent 60%)",
           }}
         />
         <div
           className="pointer-events-none absolute inset-0 opacity-45"
           style={{
             backgroundImage:
-              "linear-gradient(rgba(54,147,255,0.05) 1px, transparent 1px), linear-gradient(90deg, rgba(54,147,255,0.05) 1px, transparent 1px)",
+              "linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.04) 1px, transparent 1px)",
             backgroundSize: "56px 56px",
             maskImage:
               "radial-gradient(80% 70% at 30% 10%, #000 20%, transparent 80%)",

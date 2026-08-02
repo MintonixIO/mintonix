@@ -98,7 +98,7 @@
   .mx-btn--block { display: flex; width: 100%; }
 
   /* primary */
-  .mx-btn--primary { background: var(--brand); color: var(--text-on-blue); box-shadow: 0 1px 0 rgba(255,255,255,0.10) inset, 0 4px 12px rgba(54,147,255,0.16); }
+  .mx-btn--primary { background: var(--brand); color: var(--text-on-blue); box-shadow: 0 1px 0 rgba(255,255,255,0.10) inset, 0 4px 12px rgba(54,147,255,0.18); }
   .mx-btn--primary:hover { background: var(--brand-hover); }
   .mx-btn--primary:active { background: var(--brand-active); }
 

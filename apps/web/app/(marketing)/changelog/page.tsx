@@ -13,8 +13,8 @@ const TYPE_STYLES: Record<ChangeType, { fg: string; bg: string; bd: string }> =
     },
     Improved: {
       fg: "#5ba8ff",
-      bg: "rgba(54,147,255,0.12)",
-      bd: "rgba(54,147,255,0.30)",
+      bg: "rgba(255,255,255,0.04)",
+      bd: "color-mix(in srgb, var(--brand) 30%, transparent)",
     },
     Fixed: {
       fg: "#7ee0bf",
@@ -124,7 +124,7 @@ export default function ChangelogPage() {
           >
             <div className="md:sticky md:top-24 md:self-start">
               <div className="mb-2.5 inline-flex items-center gap-2">
-                <span className="h-[9px] w-[9px] rounded-full bg-[var(--accent)] shadow-[0_0_0_4px_rgba(54,147,255,0.16)]" />
+                <span className="h-[9px] w-[9px] rounded-full bg-[var(--accent)] shadow-[0_0_0_4px_rgba(255,255,255,0.05)]" />
                 <span className="font-mono text-[15px] font-semibold tracking-[-0.01em] text-[var(--text-strong)]">
                   {r.version}
                 </span>

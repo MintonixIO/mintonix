@@ -44,7 +44,7 @@ export const BWF_STATUS_UI: Record<
   processing: {
     label: BWF_STATUS_LABEL.processing,
     className:
-      "border-[rgba(54,147,255,0.35)] bg-[rgba(54,147,255,0.12)] text-[var(--accent)]",
+      "border-[var(--border)] bg-[var(--brand-subtle)] text-[var(--brand)]",
   },
   ready: {
     label: BWF_STATUS_LABEL.ready,

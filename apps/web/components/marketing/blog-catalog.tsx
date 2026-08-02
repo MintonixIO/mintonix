@@ -80,12 +80,12 @@ export function BlogCatalog() {
               className="relative flex min-h-[280px] items-center justify-center border-b border-[var(--border-subtle)] bg-[var(--bg-sunken)] md:min-h-[340px] md:border-b-0 md:border-r"
               style={{
                 backgroundImage:
-                  "radial-gradient(120% 90% at 30% 0%, rgba(54,147,255,0.20), transparent 60%), linear-gradient(rgba(54,147,255,0.06) 1px, transparent 1px), linear-gradient(90deg, rgba(54,147,255,0.06) 1px, transparent 1px)",
+                  "radial-gradient(120% 90% at 30% 0%, rgba(255,255,255,0.06), transparent 60%), linear-gradient(rgba(255,255,255,0.045) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.045) 1px, transparent 1px)",
                 backgroundSize: "auto, 40px 40px, 40px 40px",
               }}
             >
               <featured.icon
-                className="h-16 w-16 text-[rgba(54,147,255,0.55)]"
+                className="h-16 w-16 text-[var(--text-faint)]"
                 strokeWidth={1.25}
               />
               <span className="absolute bottom-4 left-[18px] font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--text-faint)]">
@@ -144,12 +144,12 @@ export function BlogCatalog() {
                   className="relative flex h-[168px] items-center justify-center border-b border-[var(--border-subtle)] bg-[var(--bg-sunken)]"
                   style={{
                     backgroundImage:
-                      "radial-gradient(120% 100% at 70% 0%, rgba(54,147,255,0.16), transparent 60%), linear-gradient(rgba(54,147,255,0.05) 1px, transparent 1px), linear-gradient(90deg, rgba(54,147,255,0.05) 1px, transparent 1px)",
+                      "radial-gradient(120% 100% at 70% 0%, rgba(255,255,255,0.05), transparent 60%), linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.04) 1px, transparent 1px)",
                     backgroundSize: "auto, 34px 34px, 34px 34px",
                   }}
                 >
                   <p.icon
-                    className="h-10 w-10 text-[rgba(54,147,255,0.5)]"
+                    className="h-10 w-10 text-[var(--text-faint)]"
                     strokeWidth={1.25}
                   />
                   <span className="absolute bottom-3 left-3.5 font-mono text-[9px] uppercase tracking-[0.14em] text-[var(--text-faint)]">
@@ -201,7 +201,7 @@ export function BlogCatalog() {
             className="pointer-events-none absolute inset-0 opacity-60"
             style={{
               background:
-                "radial-gradient(80% 120% at 100% 0%, rgba(54,147,255,0.16), transparent 55%)",
+                "radial-gradient(80% 120% at 100% 0%, rgba(255,255,255,0.05), transparent 55%)",
             }}
           />
           <div className="relative grid items-center gap-8 md:grid-cols-[1.1fr_1fr]">

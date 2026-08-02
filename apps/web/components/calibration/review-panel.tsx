@@ -44,7 +44,7 @@ export function ReviewPanel() {
           {Q.n >= 4 ? (
             <polygon
               points={activeCorners.map((p) => p.join(",")).join(" ")}
-              fill="rgba(54,147,255,0.12)"
+              fill="rgba(255,255,255,0.04)"
               stroke={PA}
               strokeWidth={3}
             />
@@ -143,7 +143,7 @@ export function ReviewPanel() {
             "color" in r && r.color
               ? r.color === PB
                 ? "color-mix(in srgb, var(--player-b) 14%, transparent)"
-                : "rgba(54,147,255,0.14)"
+                : "rgba(255,255,255,0.045)"
               : "ok" in r && r.ok
                 ? "var(--success-bg,rgba(45,212,167,0.12))"
                 : "var(--surface-3)";
@@ -184,7 +184,7 @@ export function ReviewPanel() {
         })}
       </div>
 
-      <div className="flex items-start gap-2 rounded-[11px] border border-[rgba(54,147,255,0.2)] bg-[var(--brand-subtle,rgba(54,147,255,0.12))] px-3 py-3">
+      <div className="flex items-start gap-2 rounded-[11px] border border-[rgba(54,147,255,0.2)] bg-[var(--brand-subtle)] px-3 py-3">
         <Sparkles className="mt-px h-[15px] w-[15px] shrink-0 text-[var(--brand)]" />
         <span className="text-[12.5px] leading-[1.5] text-[var(--text-primary)]">
           Mintonix will rectify the court from your reference points, track the

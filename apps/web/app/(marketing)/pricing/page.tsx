@@ -16,7 +16,7 @@ function PlanCell({
     <div
       className={
         featured
-          ? "flex items-center justify-center bg-[var(--brand-subtle,rgba(54,147,255,0.05))] px-3.5 py-3 text-center text-[13px] leading-[1.4] text-[var(--text-primary)]"
+          ? "flex items-center justify-center bg-[var(--brand-subtle)] px-3.5 py-3 text-center text-[13px] leading-[1.4] text-[var(--text-primary)]"
           : "flex items-center justify-center px-3.5 py-3 text-center text-[13px] leading-[1.4] text-[var(--text-muted)]"
       }
     >
@@ -39,13 +39,13 @@ function SectionRows({
           {title}
         </span>
         <span />
-        <span className="bg-[var(--brand-subtle,rgba(54,147,255,0.05))]" />
+        <span className="bg-[var(--brand-subtle)]" />
         <span />
       </div>
       {rows.map((row) => (
         <div
           key={row.label}
-          className="grid grid-cols-[1.5fr_1fr_1.2fr_1fr] border-t border-[var(--border-subtle)] transition-colors hover:bg-[rgba(54,147,255,0.045)]"
+          className="grid grid-cols-[1.5fr_1fr_1.2fr_1fr] border-t border-[var(--border-subtle)] transition-colors hover:bg-[var(--surface-2)]"
         >
           <span className="flex items-center px-[22px] py-3 text-[13.5px] leading-[1.4] text-[var(--text-secondary)]">
             {row.label}
@@ -84,7 +84,7 @@ export default function PricingPage() {
         <div className="mb-4 text-center font-mono text-[11px] uppercase tracking-[0.14em] text-[var(--accent)]">
           Pricing
         </div>
-        <div className="rounded-2xl border border-[rgba(54,147,255,0.35)] bg-[var(--surface-1)] p-6 shadow-[var(--shadow-ring-card)] sm:p-8">
+        <div className="rounded-2xl border border-[var(--border-strong)] bg-[var(--surface-1)] p-6 shadow-[var(--shadow-ring-card)] sm:p-8">
           <div className="flex flex-wrap items-start gap-4">
             <span className="inline-flex h-11 w-11 items-center justify-center rounded-[12px] border border-[var(--border)] bg-[var(--accent-soft)] text-[var(--accent)]">
               <Trophy className="h-5 w-5" />

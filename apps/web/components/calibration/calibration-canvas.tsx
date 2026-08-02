@@ -297,7 +297,7 @@ export function CalibrationCanvas() {
 
         {/* Scan overlay */}
         {step === "points" && linesDetected === "scanning" ? (
-          <div className="pointer-events-none absolute inset-0 overflow-hidden bg-[rgba(54,147,255,0.04)]">
+          <div className="pointer-events-none absolute inset-0 overflow-hidden bg-[rgba(255,255,255,0.035)]">
             <div
               className="absolute left-0 right-0 h-0.5"
               style={{

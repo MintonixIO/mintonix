@@ -72,7 +72,7 @@ export function AnalysisDemo({ className }: { className?: string }) {
               className="absolute inset-0 opacity-40"
               style={{
                 backgroundImage:
-                  "radial-gradient(ellipse 70% 50% at 50% 40%, rgba(54,147,255,0.2), transparent 70%), linear-gradient(rgba(54,147,255,0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(54,147,255,0.04) 1px, transparent 1px)",
+                  "radial-gradient(ellipse 70% 50% at 50% 40%, rgba(54,147,255,0.12), transparent 70%), linear-gradient(rgba(255,255,255,0.035) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.035) 1px, transparent 1px)",
                 backgroundSize: "auto, 40px 40px, 40px 40px",
               }}
             />

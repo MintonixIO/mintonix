@@ -29,7 +29,7 @@ export function CourtThumb({
         aria-hidden
       />
       <span
-        className="pointer-events-none absolute inset-0 bg-[radial-gradient(80%_60%_at_50%_42%,rgba(54,147,255,0.14),transparent_70%)]"
+        className="pointer-events-none absolute inset-0 bg-[radial-gradient(80%_60%_at_50%_42%,rgba(255,255,255,0.045),transparent_70%)]"
         aria-hidden
       />
       {children}

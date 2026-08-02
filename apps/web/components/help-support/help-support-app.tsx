@@ -130,7 +130,7 @@ export function HelpSupportApp() {
             className="pointer-events-none absolute inset-0"
             style={{
               background:
-                "radial-gradient(80% 130% at 50% -10%, rgba(54,147,255,0.16), transparent 58%)",
+                "radial-gradient(80% 130% at 50% -10%, rgba(255,255,255,0.05), transparent 58%)",
             }}
           />
           <div className="relative mx-auto max-w-[620px] text-center">

@@ -79,7 +79,7 @@ function heat(v: number) {
 export default function FeatureVideoAnalysisPage() {
   return (
     <div className="overflow-x-clip">
-      <div className="border-b border-[rgba(54,147,255,0.22)] bg-[rgba(54,147,255,0.07)] px-4 py-2.5 text-center text-[12.5px] text-[var(--text-secondary)]">
+      <div className="border-b border-[var(--border)] bg-[var(--surface-2)] px-4 py-2.5 text-center text-[12.5px] text-[var(--text-secondary)]">
         <strong className="font-medium text-[var(--text-strong)]">Roadmap / preview.</strong>{" "}
         Not part of the live public product — explore the{" "}
         <Link href="/bwf" className="text-[var(--text-link)] underline-offset-2 hover:underline">
@@ -96,7 +96,7 @@ export default function FeatureVideoAnalysisPage() {
           { href: "/bwf/matches", label: "Open a BWF match" },
           { href: "/bwf", label: "Browse BWF instead", variant: "outline" },
         ]}
-        glow="radial-gradient(110% 60% at 15% -10%, rgba(54,147,255,0.16), transparent 55%)"
+        glow="radial-gradient(110% 60% at 15% -10%, rgba(255,255,255,0.05), transparent 55%)"
       >
         <div className="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface-1)] shadow-[var(--shadow-xl),var(--shadow-edge)]">
           <div className="flex items-center gap-2 border-b border-[var(--border-subtle)] px-4 py-3">

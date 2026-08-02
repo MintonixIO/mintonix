@@ -340,7 +340,7 @@ export function FeatureCTA({
         style={{
           background:
             glow ??
-            "radial-gradient(120% 140% at 50% -20%, rgba(54,147,255,0.16), transparent 60%), var(--surface-1)",
+            "var(--hero-wash), var(--surface-1)",
         }}
       >
         <div>

@@ -196,7 +196,7 @@ export function PlayersPanel() {
         );
       })}
 
-      <div className="flex items-start gap-2 rounded-[10px] border border-[rgba(54,147,255,0.2)] bg-[var(--brand-subtle,rgba(54,147,255,0.12))] px-3 py-2.5">
+      <div className="flex items-start gap-2 rounded-[10px] border border-[rgba(54,147,255,0.2)] bg-[var(--brand-subtle)] px-3 py-2.5">
         <ScanSearch className="mt-px h-[15px] w-[15px] shrink-0 text-[var(--brand)]" />
         <span className="text-xs leading-[1.5] text-[var(--text-primary)]">
           One click runs SAM to mask each player, then link a Mintonix profile.

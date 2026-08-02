@@ -44,7 +44,7 @@ export default async function BlogPostPage({
             className="pointer-events-none absolute inset-0 opacity-50"
             style={{
               backgroundImage:
-                "linear-gradient(rgba(54,147,255,0.05) 1px, transparent 1px), linear-gradient(90deg, rgba(54,147,255,0.05) 1px, transparent 1px)",
+                "linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.04) 1px, transparent 1px)",
               backgroundSize: "64px 64px",
               maskImage:
                 "radial-gradient(90% 80% at 50% 0%, #000 30%, transparent 78%)",
@@ -104,12 +104,12 @@ export default async function BlogPostPage({
               className="relative flex h-[clamp(240px,34vw,420px)] items-center justify-center overflow-hidden rounded-2xl border border-[var(--border)] shadow-[var(--shadow-edge)]"
               style={{
                 background:
-                  "radial-gradient(120% 90% at 40% 0%, rgba(54,147,255,0.18), transparent 60%), linear-gradient(rgba(54,147,255,0.05) 1px, transparent 1px), linear-gradient(90deg, rgba(54,147,255,0.05) 1px, transparent 1px), var(--bg-sunken, #070809)",
+                  "radial-gradient(120% 90% at 40% 0%, rgba(255,255,255,0.055), transparent 60%), linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.04) 1px, transparent 1px), var(--bg-sunken, #070809)",
                 backgroundSize: "auto, 40px 40px, 40px 40px, auto",
               }}
             >
               <Activity
-                className="h-[72px] w-[72px] text-[rgba(54,147,255,0.5)]"
+                className="h-[72px] w-[72px] text-[var(--text-faint)]"
                 strokeWidth={1.1}
               />
               <span className="absolute bottom-4 left-5 font-mono text-[10px] uppercase tracking-[0.14em] text-[var(--text-faint)]">
@@ -162,12 +162,12 @@ export default async function BlogPostPage({
                 className="relative flex h-[148px] items-center justify-center border-b border-[var(--border-subtle)]"
                 style={{
                   background:
-                    "radial-gradient(120% 100% at 70% 0%, rgba(54,147,255,0.16), transparent 60%), linear-gradient(rgba(54,147,255,0.05) 1px, transparent 1px), linear-gradient(90deg, rgba(54,147,255,0.05) 1px, transparent 1px), var(--bg-sunken, #070809)",
+                    "radial-gradient(120% 100% at 70% 0%, rgba(255,255,255,0.05), transparent 60%), linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.04) 1px, transparent 1px), var(--bg-sunken, #070809)",
                   backgroundSize: "auto, 34px 34px, 34px 34px, auto",
                 }}
               >
                 <Activity
-                  className="h-[38px] w-[38px] text-[rgba(54,147,255,0.5)]"
+                  className="h-[38px] w-[38px] text-[var(--text-faint)]"
                   strokeWidth={1.25}
                 />
               </div>

@@ -110,7 +110,7 @@ export function DashboardHome() {
             className="pointer-events-none absolute inset-0"
             style={{
               background:
-                "radial-gradient(70% 130% at 50% 0%, rgba(54,147,255,0.12), transparent 60%)",
+                "radial-gradient(70% 130% at 50% 0%, rgba(255,255,255,0.04), transparent 60%)",
             }}
           />
           {dragging ? (

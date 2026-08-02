@@ -104,7 +104,7 @@ export function ReplayCameraDemo() {
             transformStyle: "preserve-3d",
           }}
         >
-          <div className="absolute inset-0 rounded border-2 border-[rgba(80,222,255,0.55)] bg-[linear-gradient(180deg,rgba(80,222,255,0.1),rgba(54,147,255,0.05))] shadow-[inset_0_0_30px_rgba(80,222,255,0.12)]" />
+          <div className="absolute inset-0 rounded border-2 border-[rgba(80,222,255,0.55)] bg-[linear-gradient(180deg,rgba(80,222,255,0.1),rgba(255,255,255,0.04))] shadow-[inset_0_0_30px_rgba(80,222,255,0.12)]" />
           <div className="absolute left-[8%] right-[8%] top-1/2 border-t border-dashed border-white/30" />
           <div className="absolute left-0 right-0 top-[26%] border-t border-[rgba(80,222,255,0.3)]" />
           <div className="absolute left-0 right-0 top-[74%] border-t border-[rgba(80,222,255,0.3)]" />

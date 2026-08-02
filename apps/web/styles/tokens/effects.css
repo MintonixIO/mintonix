@@ -1,18 +1,17 @@
 /* ============================================================
-   MINTONIX · EFFECTS — Ice lab
-   Navy ambient depth, frost edges, logo-blue only on primary.
+   MINTONIX · EFFECTS — Cool neutral
+   Neutral charcoal depth; brand blue reserved for primary.
    ============================================================ */
 
 :root {
-  /* ---- Ambient shadows (deep navy) ---- */
-  --shadow-xs:  0 1px 2px rgba(2, 6, 18, 0.45);
-  --shadow-sm:  0 2px 6px rgba(2, 6, 18, 0.50);
-  --shadow-md:  0 6px 18px rgba(2, 6, 18, 0.55);
-  --shadow-lg:  0 16px 40px rgba(2, 6, 18, 0.60);
-  --shadow-xl:  0 28px 70px rgba(2, 6, 18, 0.66);
+  /* ---- Ambient shadows (neutral black) ---- */
+  --shadow-xs:  0 1px 2px rgba(0, 0, 0, 0.40);
+  --shadow-sm:  0 2px 6px rgba(0, 0, 0, 0.45);
+  --shadow-md:  0 6px 18px rgba(0, 0, 0, 0.50);
+  --shadow-lg:  0 16px 40px rgba(0, 0, 0, 0.55);
+  --shadow-xl:  0 28px 70px rgba(0, 0, 0, 0.62);
 
-  /* Cold top hairline on elevated surfaces */
-  --shadow-edge: var(--frost-highlight, inset 0 1px 0 rgba(200, 225, 255, 0.06));
+  --shadow-edge: var(--frost-highlight, inset 0 1px 0 rgba(255, 255, 255, 0.05));
 
   /* ---- Focus rings ---- */
   --ring:          0 0 0 3px var(--brand-ring);
@@ -21,23 +20,21 @@
   --ring-player-b: 0 0 0 3px var(--player-b-ring);
   --ring-steel:    0 0 0 3px var(--steel-ring);
 
-  /* ---- Glows (restrained primary; cyan = live only) ---- */
-  --elev-glow-blue: 0 0 0 1px rgba(54,147,255,0.22), 0 6px 20px rgba(54,147,255,0.12);
-  --elev-glow-cyan: 0 0 0 1px rgba(80,222,255,0.22), 0 6px 20px rgba(80,222,255,0.10);
+  --elev-glow-blue: 0 0 0 1px rgba(54,147,255,0.22), 0 6px 18px rgba(54,147,255,0.10);
+  --elev-glow-cyan: 0 0 0 1px rgba(80,222,255,0.20), 0 6px 18px rgba(80,222,255,0.08);
 
-  /* ---- Backdrop blur ---- */
   --blur-sm: 6px;
   --blur-md: 14px;
   --blur-lg: 24px;
 
-  /* ---- Surface gradients ---- */
-  --grad-panel: linear-gradient(180deg, rgba(160,200,255,0.035), rgba(255,255,255,0) 58%);
+  /* Neutral panel sheen — not blue wash */
+  --grad-panel: linear-gradient(180deg, rgba(255,255,255,0.028), rgba(255,255,255,0) 58%);
   --grad-brand: linear-gradient(135deg, #3693ff 0%, #2a6fd4 100%);
   --grad-brand-cyan: linear-gradient(120deg, #3693ff 0%, #50deff 100%);
-  --grad-court: radial-gradient(120% 80% at 50% -10%, rgba(50, 100, 180, 0.12), transparent 62%);
-  --grad-frost: linear-gradient(180deg, rgba(160,200,255,0.06), transparent 70%);
+  /* Very quiet court wash */
+  --grad-court: radial-gradient(120% 80% at 50% -10%, rgba(255, 255, 255, 0.04), transparent 60%);
+  --grad-frost: linear-gradient(180deg, rgba(255,255,255,0.04), transparent 70%);
 
-  /* ---- Motion ---- */
   --ease-out:    cubic-bezier(0.22, 1, 0.36, 1);
   --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
   --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
@@ -45,19 +42,17 @@
   --dur-base:    200ms;
   --dur-slow:    340ms;
 
-  /* ---- Z-index ---- */
   --z-base: 1;
   --z-sticky: 100;
   --z-overlay: 800;
   --z-modal: 900;
   --z-toast: 1000;
 
-  /* Card ring + ice-lab hero wash (one cold field) */
-  --shadow-ring-card: 0 0 0 1px rgba(160, 200, 255, 0.08);
+  --shadow-ring-card: 0 0 0 1px rgba(255, 255, 255, 0.06);
+  /* Soft neutral lift — brand blue only in CTAs, not full-page cast */
   --hero-wash: radial-gradient(
-    110% 60% at 50% -14%,
-    rgba(60, 110, 190, 0.13),
-    rgba(20, 40, 80, 0.04) 42%,
-    transparent 62%
+    100% 55% at 50% -12%,
+    rgba(255, 255, 255, 0.035),
+    transparent 55%
   );
 }

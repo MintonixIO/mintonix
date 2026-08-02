@@ -59,7 +59,7 @@ export default function TermsPage() {
           className="pointer-events-none absolute inset-0"
           style={{
             background:
-              "radial-gradient(100% 50% at 50% -10%, rgba(54,147,255,0.13), transparent 56%)",
+              "radial-gradient(100% 50% at 50% -10%, rgba(255,255,255,0.04), transparent 56%)",
           }}
         />
         <div className="relative mx-auto max-w-[1080px] px-8 pt-20">
@@ -69,7 +69,7 @@ export default function TermsPage() {
           <h1 className="font-display text-[clamp(32px,4.6vw,48px)] font-semibold leading-[1.06] tracking-[-0.03em] text-[var(--text-strong)]">
             Terms of Service
           </h1>
-      <div className="mb-8 rounded-[12px] border border-[rgba(54,147,255,0.28)] bg-[rgba(54,147,255,0.08)] px-4 py-3 text-[13.5px] leading-[1.55] text-[var(--text-secondary)]">
+      <div className="mb-8 rounded-[12px] border border-[var(--border)] bg-[var(--surface-2)] px-4 py-3 text-[13.5px] leading-[1.55] text-[var(--text-secondary)]">
         <strong className="font-medium text-[var(--text-strong)]">Scope note. </strong>
         These terms cover the intended Mintonix product. The live public experience is the BWF match catalog. Features that require an account or paid plan are not offered until they ship.
       </div>

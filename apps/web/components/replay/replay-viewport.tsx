@@ -107,7 +107,7 @@ export function ReplayViewport({
           }}
         >
           {/* surface */}
-          <div className="absolute inset-0 rounded border-2 border-[rgba(80,222,255,0.5)] bg-[linear-gradient(180deg,rgba(80,222,255,0.09),rgba(54,147,255,0.04))] shadow-[inset_0_0_30px_rgba(80,222,255,0.1)]" />
+          <div className="absolute inset-0 rounded border-2 border-[rgba(80,222,255,0.5)] bg-[linear-gradient(180deg,rgba(80,222,255,0.09),rgba(255,255,255,0.035))] shadow-[inset_0_0_30px_rgba(80,222,255,0.1)]" />
           {/* singles lines */}
           <div className="absolute bottom-0 left-[8%] top-0 border-l border-[rgba(80,222,255,0.24)]" />
           <div className="absolute bottom-0 right-[8%] top-0 border-r border-[rgba(80,222,255,0.24)]" />

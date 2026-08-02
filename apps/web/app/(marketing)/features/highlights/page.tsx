@@ -105,7 +105,7 @@ const REEL = [
 export default function FeatureHighlightsPage() {
   return (
     <div className="overflow-x-clip">
-      <div className="border-b border-[rgba(54,147,255,0.22)] bg-[rgba(54,147,255,0.07)] px-4 py-2.5 text-center text-[12.5px] text-[var(--text-secondary)]">
+      <div className="border-b border-[var(--border)] bg-[var(--surface-2)] px-4 py-2.5 text-center text-[12.5px] text-[var(--text-secondary)]">
         <strong className="font-medium text-[var(--text-strong)]">Roadmap / preview.</strong>{" "}
         Not part of the live public product — explore the{" "}
         <Link href="/bwf" className="text-[var(--text-link)] underline-offset-2 hover:underline">

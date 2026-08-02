@@ -52,7 +52,7 @@ const TEAM = [
 export default function FeatureDashboardPage() {
   return (
     <div className="overflow-x-clip">
-      <div className="border-b border-[rgba(54,147,255,0.22)] bg-[rgba(54,147,255,0.07)] px-4 py-2.5 text-center text-[12.5px] text-[var(--text-secondary)]">
+      <div className="border-b border-[var(--border)] bg-[var(--surface-2)] px-4 py-2.5 text-center text-[12.5px] text-[var(--text-secondary)]">
         <strong className="font-medium text-[var(--text-strong)]">Roadmap / preview.</strong>{" "}
         Not part of the live public product — explore the{" "}
         <Link href="/bwf" className="text-[var(--text-link)] underline-offset-2 hover:underline">
@@ -70,7 +70,7 @@ export default function FeatureDashboardPage() {
           { href: "/bwf", label: "Open BWF catalog" },
           { href: "/bwf/matches", label: "Browse matches", variant: "outline" },
         ]}
-        glow="radial-gradient(100% 60% at 85% -10%, rgba(54,147,255,0.16), transparent 55%)"
+        glow="radial-gradient(100% 60% at 85% -10%, rgba(255,255,255,0.05), transparent 55%)"
         gridClassName="grid items-center gap-10 lg:grid-cols-[1fr_0.78fr] lg:gap-14"
       >
         <div className="grid grid-cols-2 gap-3.5">
@@ -102,7 +102,7 @@ export default function FeatureDashboardPage() {
             className="pointer-events-none absolute -inset-px rounded-2xl"
             style={{
               boxShadow:
-                "0 0 0 1px rgba(54,147,255,0.18), 0 30px 90px rgba(54,147,255,0.14)",
+                "0 0 0 1px rgba(255,255,255,0.055), 0 30px 90px rgba(255,255,255,0.045)",
             }}
           />
           <div className="overflow-hidden rounded-[14px] border border-[var(--border)] shadow-[var(--shadow-xl)]">
