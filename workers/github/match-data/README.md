@@ -72,6 +72,10 @@ python3 load_to_supabase.py \
   --json-file bwf_2026_results.json \
   --videos-file video_matches.json
 
+# Collapse re-keyed catalog duplicates (same tournament + roster, old id)
+python3 load_to_supabase.py --purge-duplicates-only --dry-run
+python3 load_to_supabase.py --purge-duplicates-only
+
 # Or every season file present:
 ./load_all.sh
 ```

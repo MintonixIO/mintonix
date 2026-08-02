@@ -148,8 +148,9 @@ manifest. `scores.csv` / score-timeline is **not implemented** (deferred).
   always emits CFR via `fps=`.
 - **Not best-effort** (unlike the thumbnail): extraction failure fails the job.
 - **Detect decode** uses NVDEC when a GPU is present (CPU scale to detection
-  size after hw decode). **OCR** runs on CPU (`paddleocr`); overlapped with
-  band decode; worker count defaults from host cores (`OCR_WORKERS`, cap 8).
+  size after hw decode). **OCR** (`paddleocr`) uses GPU when
+  `paddlepaddle-gpu` is installed (`OCR_DEVICE=auto|gpu|cpu`); otherwise CPU.
+  Worker count defaults to 1 on GPU, or from host cores on CPU (`OCR_WORKERS`).
   Models are best-effort baked at Docker build; non-BWF jobs never import paddle.
 
 `input_url` is downloaded (HTTP GET, or `file://` for local runs). Downloads use
@@ -246,7 +247,10 @@ engine on many cards. Concurrency and segment-parallel knobs:
 | `SEGMENT_PARALLEL_THRESHOLD_SEC` | `600` | Auto keyframe-split → concurrent NVENC → concat above this duration |
 | `SEGMENT_PARALLEL_N` | `4` | Segment count when parallel path engages |
 | `UPLOAD_ATTEMPTS` | `5` | Single PUT / multipart part retries after encode |
-| `OCR_WORKERS` | `max(2, min(8, cores//4))` | Parallel PaddleOCR threads (override to pin) |
+| `OCR_WORKERS` | `1` (GPU) / `max(2, min(8, cores//4))` (CPU) | Parallel PaddleOCR workers |
+| `OCR_DEVICE` | `auto` | `auto` → GPU if paddle CUDA and not Blackwell sm_120; else CPU. Force `gpu`/`cpu` |
+| `OCR_DET_LIMIT_SIDE_LEN` | `960` | Paddle text-det resize long side (default 64 is too small for bands) |
+| `NCC_FPS` | `5` | Court NCC sample rate (Hz); `0`/`src` = every source frame |
 | `DL_CONNECTIONS` / `UL_CONNECTIONS` | `8` | Parallel B2 range download / multipart upload |
 | `DL_MIN_PARALLEL_BYTES` | `16 MiB` | Min object size before range-parallel download |
 | `CALLBACK_URL_PREFIX` / `SUPABASE_URL` | **required in prod** | `callback_url` must match this prefix and end with `/functions/v1/jobs/callback`. **Fail-closed** if unset (no host-open path-suffix). |

@@ -25,6 +25,24 @@ class TestValidFramesLogic(unittest.TestCase):
         out = vf._hysteresis(ncc, 0.80, 0.70)
         self.assertListEqual(list(out), [False, True, True, True, False, False, True])
 
+    def test_expand_samples_to_source_frames_subsample(self):
+        # 30 fps source, 5 fps samples: each sample covers 6 source frames.
+        samples = [False, True, False]
+        out = vf.expand_samples_to_source_frames(
+            samples, n_src=18, src_fps=30.0, sample_fps=5.0,
+        )
+        self.assertEqual(len(out), 18)
+        self.assertFalse(out[0])
+        self.assertTrue(out[6] and out[11])
+        self.assertFalse(out[12])
+
+    def test_expand_samples_full_rate_passthrough(self):
+        samples = [True, False, True]
+        out = vf.expand_samples_to_source_frames(
+            samples, n_src=3, src_fps=30.0, sample_fps=30.0,
+        )
+        self.assertListEqual(list(out), [True, False, True])
+
     def test_runs_of_true_respects_min_len(self):
         mask = np.array([1, 1, 0, 1, 1, 1, 1, 0, 1], dtype=bool)
         self.assertEqual(vf._runs_of_true(mask, 3), [(3, 6)])

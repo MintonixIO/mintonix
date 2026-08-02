@@ -43,6 +43,21 @@ and the same B2 prefix (`bwf/<id>/`).
 **Scores are not part of the hash** (Wikipedia score corrections must not mint
 a new id).
 
+### Re-key orphans
+
+If `match_key` construction changes (e.g. section full breadcrumb → leaf only),
+`sha256` ids change and a naive upsert **inserts** the new row without removing
+the old one — the catalog then shows two rows for the same match (same
+`tournament` label + roster, different `id` / `created_at`).
+
+After each load the loader deletes BWF (`owner_id IS NULL`) rows that share a
+load row’s `(tournament, roster)` under another id. One-shot cleanup:
+
+```bash
+python3 load_to_supabase.py --purge-duplicates-only
+python3 load_to_supabase.py --purge-duplicates-only --dry-run
+```
+
 ## Finished-only policy
 
 A match is finished when a winner can be determined from, in order:

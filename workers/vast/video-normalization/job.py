@@ -259,6 +259,12 @@ def _bwf_detect_and_encode(
     )
     det_fps = float(src_info["fps"] or MAX_FPS)
     out_fps = delivery_fps(det_fps)
+    # Hint full timeline length so subsampled NCC expands to correct frame indices.
+    if src_info.get("duration") and det_fps > 0:
+        cfg = {
+            **cfg,
+            "source_frame_count": int(round(float(src_info["duration"]) * det_fps)),
+        }
 
     ranges, total_frames = valid_frames.detect_valid_ranges(
         src, cfg, fps=det_fps,
