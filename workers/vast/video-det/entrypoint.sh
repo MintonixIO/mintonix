@@ -2,7 +2,7 @@
 # Container entrypoint (docker ENTRYPOINT launch mode on vast serverless).
 #
 # Two processes: FastAPI backend (server.py) + vast PyWorker via start_server.sh.
-# Same pattern as video-normalization/entrypoint.sh.
+# Same pattern as video-preprocess/entrypoint.sh.
 #
 # Models (startup vs health):
 #   - Default: pose TRT + shuttle ckpt must exist at POSE_ENGINE / SHUTTLE_CKPT

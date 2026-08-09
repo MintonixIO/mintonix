@@ -540,7 +540,7 @@ presigned URLs + single-use callback token bound to `(job_id, attempt)`.
 
 | Stage | Worker | Inputs (B2 / URL) | Outputs (B2) |
 |-------|--------|-------------------|--------------|
-| `normalize` | vast video-normalization | `source_url` or `original.*`; BWF: `annotation.json` → valid_frames_config | `normalized.mp4` (full or BWF cleaned cut), `thumbnail.jpg`; BWF: `frame_ranges.csv`; archive `original.*` if YouTube |
+| `normalize` | vast video-preprocess | `source_url` or `original.*`; BWF: `annotation.json` (court corners) | `normalized.mp4` (full or BWF court cut); BWF: callback `bwf.frame_map` |
 | `detect` | vast video-det | `normalized.mp4` (always; BWF cut already written there) | `detections.json` |
 | `analyze` | CPU/worker TBD | detections + `annotation.json` | `analysis.json` |
 
@@ -615,7 +615,7 @@ geometry after probe, and writes the cleaned cut to `normalized.mp4`. Detect
 always GETs `normalized.mp4`. Analyze is not wired yet (detect is terminal →
 match `ready`; ops enqueue of `analyze` terminal-fails). Optional
 `VAST_NORMALIZE_ENDPOINT_NAME` / `VAST_DETECT_ENDPOINT_NAME` for the
-video-normalization and video-det vast endpoints (detect falls back to the
+video-preprocess and video-det vast endpoints (detect falls back to the
 normalize name if unset; legacy `VAST_ENDPOINT_NAME` still aliases normalize).
 User confirm does not HEAD-check B2 before enqueue
 (empty keys fail at normalize). Worker callback wire status is

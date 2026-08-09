@@ -12,7 +12,7 @@ on:
       - "scripts/test_stage_outputs.py"
       - "supabase/functions/ops/**"
       - "supabase/functions/jobs/**"
-      - "workers/vast/video-normalization/server.py"
+      - "workers/vast/video-preprocess/server.py"
       - "workers/vast/video-det/server.py"
       - ".github/workflows/contracts.yml"
   pull_request:
@@ -22,7 +22,7 @@ on:
       - "scripts/test_stage_outputs.py"
       - "supabase/functions/ops/**"
       - "supabase/functions/jobs/**"
-      - "workers/vast/video-normalization/server.py"
+      - "workers/vast/video-preprocess/server.py"
       - "workers/vast/video-det/server.py"
       - ".github/workflows/contracts.yml"
 

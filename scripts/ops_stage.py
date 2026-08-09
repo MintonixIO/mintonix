@@ -22,7 +22,7 @@ STAGE_OUTPUTS: dict[str, tuple[str, ...]] = {
     "normalize": (
         "normalized.mp4",
         "thumbnail.jpg",
-        # Live BWF compact range map (jobs + video-normalization).
+        # Live BWF compact range map (jobs + video-preprocess).
         "frame_ranges.csv",
         # Legacy / deferred names still possible in older buckets.
         "valid.mp4",

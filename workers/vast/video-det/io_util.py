@@ -1,6 +1,6 @@
 """HTTP / local file I/O shared by the detect job server.
 
-Mirrors the normalize worker contract: `file://` for local benchmark paths
+Mirrors the video-preprocess worker contract: `file://` for local benchmark paths
 (when ALLOW_FILE_URLS=1, allowlisted roots only), HTTP for production
 presigned URLs. Parallel byte-range GET when the server supports Range
 (S3/B2 presigned URLs do). Redirects are never followed — 3xx is a hard error

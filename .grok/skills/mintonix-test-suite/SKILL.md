@@ -132,7 +132,7 @@ pgmq → jobs/dispatch → vast normalize → callback → stage=detect
 dispatch → vast detect → detections.json → callback → job complete, match ready
 ```
 
-- **Workers:** `workers/vast/video-normalization`, `workers/vast/video-det` on **vast.ai serverless**.
+- **Workers:** `workers/vast/video-preprocess`, `workers/vast/video-det` on **vast.ai serverless**.
 - **Terminal stage today:** `detect`. Green E2E does **not** require `analysis.json`.
 - **Detect intent:** pose + shuttle for every frame of `normalized.mp4` (schema: `workers/vast/video-det/ARCHITECTURE.md`).
 
@@ -425,7 +425,8 @@ deno test supabase/functions/ops/stage_outputs_test.ts
 cd workers/vast/video-det && python3 -m unittest \
   test_contract.py test_io_util.py test_server_contract.py test_detect_pipeline.py -v
 
-# Normalize worker tests if present under workers/vast/video-normalization
+# Preprocess worker tests if present under workers/vast/video-preprocess
+cd workers/vast/video-preprocess && python3 -m unittest discover -v -s . -p 'test_*.py'
 ```
 
 GPU/TensorRT full worker e2e is environment-specific; do not claim GPU product path passed from CPU unit tests alone.
@@ -442,7 +443,7 @@ paste tokens or secret values. Workflow map: `references/ci-workflows.json`.
 |---|---|---|---|
 | `supabase.yml` | Supabase — migrations + edge functions | `migrate`, `unit`, `functions` | DEV (PR) / PROD (master): `db push` + edge function deploy; unit = stage_outputs goldens |
 | `contracts.yml` | Contracts | `stage-artifacts` | `contracts/stage_artifacts.json` + callback fixtures match Python/TS maps |
-| `video-normalization.yml` | Video Normalization Worker | `image / build-test-push`, `image / promote` | Docker image builds, unit tests in image, GHCR push/promote |
+| `video-preprocess.yml` | Video Preprocess Worker | `image / build-test-push`, `image / promote` | Docker image builds, unit tests in image, GHCR push/promote |
 | `video-det.yml` | Video Detection Worker | `image / build-test-push`, `image / promote` | Same for detect GPU image |
 | `cloudflare-cdn.yml` | Cloudflare CDN Worker | `deploy` | Typecheck + deploy CDN worker (dev env on PR) |
 | `match-data.yml` | Match data — scrape & load to Supabase | `scrape-and-load` | Catalog scrape/load path (creates BWF rows; **does not** enqueue GPU) |
@@ -547,7 +548,7 @@ When the user asks whether detect “really worked,” not only that keys exist:
 | Pipeline + job contract SSOT | `ARCHITECTURE.md` |
 | Supabase functions / schema | `supabase/README.md` |
 | Worker index | `workers/README.md` |
-| Normalize | `workers/vast/video-normalization/README.md` |
+| Normalize / preprocess | `workers/vast/video-preprocess/README.md` |
 | Detect | `workers/vast/video-det/README.md` (+ `ARCHITECTURE.md`) |
 | CDN | `workers/cloudflare/cdn/README.md` |
 | Match-data (catalog only) | `workers/github/match-data/README.md` |

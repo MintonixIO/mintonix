@@ -104,7 +104,7 @@ function isYoutubeUrl(raw: string | null | undefined): boolean {
 
 // ---------------------------------------------------------------- presign
 
-/** Worker multipart upload shape (matches video-normalization upload_multipart). */
+/** Worker multipart upload shape (matches video-preprocess multipart upload). */
 export interface MultipartUploadSpec {
   part_urls: string[];
   complete_url: string;

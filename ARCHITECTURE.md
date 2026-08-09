@@ -259,7 +259,7 @@ Regression *to* stage S deletes S outputs **and** every later stage's outputs.
 
 | Stage | Worker | Status | In | Out |
 |---|---|---|---|---|
-| `normalize` | `workers/vast/video-normalization` | ✅ (scores.csv deferred) | original / YouTube URL (worker yt-dlps ✅); BWF: annotation.json → valid_frames_config | normalized.mp4 (full or BWF cleaned cut), thumbnail.jpg; youtube: + original.mkv; BWF: + frame_ranges.csv |
+| `normalize` | `workers/vast/video-preprocess` | ✅ (scores.csv deferred) | original / YouTube URL (worker yt-dlp ✅); BWF: annotation.json (court corners) | normalized.mp4 (full or BWF court cut); BWF: callback `bwf.frame_map` |
 | `detect` | `workers/vast/video-det` | 🚧 worker + `STAGES.detect` wired; analyze next; embedding module 📐 | normalized.mp4 (BWF cut already primary) | detections.json (pose + TrackNetV5 **top-K shuttle candidates** in **source-frame** UV [0,1] + optional exclusive ReID). `server.py` + `detect/` + `pose/` |
 | `analyze` | `workers/…/analysis` | 📐 | detections.json + annotation.json | analysis.json: 3D shuttle trajectory (physics fit), player ground-plane positions (homography), metrics (TBD) |
 
@@ -369,7 +369,7 @@ mintonix/
 │   ├── cloudflare/cdn/        ✅ B2 delivery + /presign (README + DATAFLOWS)
 │   ├── github/match-data/     ✅ weekly scrape → Supabase (README + schema.md)
 │   └── vast/
-│       ├── video-normalization/  ✅ README (normalize + valid-frames)
+│       ├── video-preprocess/     ✅ README (normalize + BWF court detect)
 │       ├── video-det/            🚧 README + ARCHITECTURE (detect)
 │       └── analysis/             📐 3D + metrics
 └── .github/workflows/
@@ -424,7 +424,7 @@ in `wrangler.toml`).
 |---|---|---|---|---|
 | `match-data.yml` | `workers/github/match-data/**` | scrape + apply to dev DB | apply to prod (+ weekly cron) | ✅ |
 | `vast-worker.yml` | (reusable, `workflow_call`) | build + test + push SHA-tagged image to GHCR | promote the tested digest | ✅ |
-| `video-normalization.yml` | `workers/vast/video-normalization/**` | → `vast-worker.yml` (contract/unit + remux e2e; transcode is GPU-only and self-skips on the GPU-less runner — a bad host fails the job and the queue retries) | 〃 | ✅ |
+| `video-preprocess.yml` | `workers/vast/video-preprocess/**` | → `vast-worker.yml` (unit/contract in image; encode + BWF NVDEC are GPU-only and run on vast — a bad host fails the job and the queue retries) | 〃 | ✅ |
 | `video-det.yml` | `workers/vast/video-det/**` | → `vast-worker.yml` (CPU-safe tests; TensorRT engine build stays a documented manual step) | 〃 | ✅ |
 | `cloudflare-cdn.yml` | `workers/cloudflare/cdn/**` | tests + `wrangler deploy --env dev` | `wrangler deploy --env prod` | ✅ |
 | `supabase.yml` | `supabase/**`, `packages/shared/**` | `db push` → `functions deploy` to dev project | same, to prod | ✅ |

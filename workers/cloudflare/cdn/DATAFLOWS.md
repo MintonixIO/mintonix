@@ -95,7 +95,7 @@ thumbnail.jpg, annotation.json, …}` (see supabase/README.md). Access control i
 
 ---
 
-## 3. Video normalization  (compute pathway, credential-free worker)
+## 3. Video preprocess  (compute pathway, credential-free worker)
 
 Kicks off a GPU transcode on a Vast worker that holds **no credentials** — it
 gets presigned URLs + an HMAC callback token in the job envelope.

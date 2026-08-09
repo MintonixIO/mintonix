@@ -18,7 +18,7 @@ four user-clicked court corners.
   Tour match metadata and broadcast footage; users upload their own match
   videos via presigned direct-to-storage PUTs. Both converge to the same
   canonical form and processing chain.
-- **Video normalization** — every source is transcoded to a standard
+- **Video preprocess** — every source is transcoded to a standard
   ≤1080p/30fps H.264 form, with thumbnails; BWF broadcasts additionally get
   a valid-frames-only cut (dead time removed) and an OCR score timeline.
 - **Shuttle detection & tracking** — TrackNet-based per-frame shuttle
@@ -45,7 +45,7 @@ Condensed reference; full detail in [ARCHITECTURE.md](ARCHITECTURE.md),
 [supabase/README.md](supabase/README.md), and per-worker docs under
 [`workers/`](workers/) (e.g.
 [video-det](workers/vast/video-det/README.md),
-[video-normalization](workers/vast/video-normalization/README.md),
+[video-preprocess](workers/vast/video-preprocess/README.md),
 [cdn](workers/cloudflare/cdn/README.md),
 [match-data](workers/github/match-data/README.md)).
 Review findings originated in [CODE_REVIEW_ISSUES.md](CODE_REVIEW_ISSUES.md).
@@ -141,14 +141,13 @@ Move fixed items to the module's *Resolved* list with the fixing commit.
 
 **Resolved:** —
 
-### workers/vast/video-normalization — normalize stage ✅
+### workers/vast/video-preprocess — normalize stage ✅
 
 - [ ] **P0** No upload retry — after a long encode, a single failed B2 upload
       forces a full re-download and re-encode. Port detect's retry/backoff.
-- [ ] **P1** Missing GPU-scale support fails mid-job after download instead of
-      failing fast at accept time.
-- [ ] **P1** Huge single module — needs structural split (no behavior change).
-- [x] **P2** Score-timeline (`scores.csv`) — **deferred / not implemented** (BWF cleaned path is court∧scoreboard cut → `normalized.mp4` + `frame_ranges.csv`).
+- [x] **P1** Fail fast without NVENC before download (GPU required for encode + BWF NVDEC).
+- [x] **P1** Single-pass span-trim encode for BWF court ranges (no multi-seek / mezzanine primary path).
+- [x] **P2** Score-timeline / scoreboard OCR — **deferred** (BWF is court-only → `normalized.mp4` + callback `bwf.frame_map`).
 
 **Resolved:** —
 
