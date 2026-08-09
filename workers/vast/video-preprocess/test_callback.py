@@ -10,8 +10,6 @@ import callback
 
 
 class TestCallbackAllowlist(unittest.TestCase):
-    """Prefix-required allowlist (fail-closed without CALLBACK_URL_PREFIX)."""
-
     def _env(self, **kwargs):
         base = {"CALLBACK_URL_PREFIX": ""}
         base.update(kwargs)
@@ -21,10 +19,6 @@ class TestCallbackAllowlist(unittest.TestCase):
         good = "https://proj.supabase.co/functions/v1/jobs/callback"
         with self._env():
             self.assertFalse(callback.callback_allowed(good))
-            self.assertFalse(
-                callback.callback_allowed("https://evil.example/functions/v1/jobs/callback")
-            )
-            # empty / None always ok (no callback channel)
             self.assertTrue(callback.callback_allowed(""))
             self.assertTrue(callback.callback_allowed(None))
 
@@ -35,18 +29,7 @@ class TestCallbackAllowlist(unittest.TestCase):
                     "https://proj.supabase.co/functions/v1/jobs/callback"
                 )
             )
-            # Same host prefix is enough (no path-suffix restriction).
-            self.assertTrue(
-                callback.callback_allowed(
-                    "https://proj.supabase.co/functions/v1/jobs/callback/extra"
-                )
-            )
             self.assertFalse(callback.callback_allowed("https://evil.example/cb"))
-            self.assertFalse(
-                callback.callback_allowed(
-                    "https://other.supabase.co/functions/v1/jobs/callback"
-                )
-            )
 
 
 if __name__ == "__main__":

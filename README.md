@@ -143,11 +143,10 @@ Move fixed items to the module's *Resolved* list with the fixing commit.
 
 ### workers/vast/video-preprocess — normalize stage ✅
 
-- [ ] **P0** No upload retry — after a long encode, a single failed B2 upload
-      forces a full re-download and re-encode. Port detect's retry/backoff.
+- [x] **P0** Upload retries on single PUT and multipart parts/complete.
 - [x] **P1** Fail fast without NVENC before download (GPU required for encode + BWF NVDEC).
-- [x] **P1** Single-pass span-trim encode for BWF court ranges (no multi-seek / mezzanine primary path).
-- [x] **P2** Score-timeline / scoreboard OCR — **deferred** (BWF is court-only → `normalized.mp4` + callback `bwf.frame_map`).
+- [x] **P1** Span-trim select encode for BWF court ranges (single best multi-range path).
+- [x] **P2** Score-timeline / scoreboard OCR — **deferred** (BWF is court-only → `normalized.mp4` + `frame_ranges.csv`).
 
 **Resolved:** —
 

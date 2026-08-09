@@ -275,7 +275,8 @@ workers/vast/video-det/
   set `ALLOW_MISSING_MODELS=1` if the model server process is started without
   weights.
 - Env for jobs function: `VAST_DETECT_ENDPOINT_NAME` (optional fallback to
-  `VAST_NORMALIZE_ENDPOINT_NAME`, then legacy `VAST_ENDPOINT_NAME`).
+  `VAST_PREPROCESS_ENDPOINT_NAME`, then legacy `VAST_NORMALIZE_ENDPOINT_NAME` /
+  `VAST_ENDPOINT_NAME`).
 - Download parallelism: `DL_CONNECTIONS` (default 8) for range-capable GETs.
 - Upload streams from disk (no full-file `read_bytes` into RAM). Exception
   text for callbacks/API is redacted (presigned query strings stripped).

@@ -7,16 +7,10 @@ import logging
 import os
 import random
 import subprocess
-import tempfile
 
 log = logging.getLogger("video-preprocess.normalize")
 
 MAX_LONG, MAX_SHORT, MAX_FPS = 1920, 1080, 30
-
-# One linear decode + select when range count is in this band.
-_SINGLE_PASS_MIN_RANGES = 2
-_SINGLE_PASS_MAX_RANGES = 500
-_SINGLE_PASS_MAX_EXPR = 100_000
 # Skip span head/tail trim when the saved amount is tiny.
 _SPAN_MIN_SKIP_SEC = 1.0
 
@@ -80,6 +74,7 @@ def delivery_fps(src_fps: float) -> float:
 
 
 def use_gpu() -> bool:
+    """True when an NVIDIA device exists and ffmpeg exposes h264_nvenc."""
     import glob
     if not glob.glob("/dev/nvidia[0-9]*"):
         return False
@@ -94,7 +89,7 @@ def use_gpu() -> bool:
 
 
 def require_nvenc() -> None:
-    """Hard-fail without an NVIDIA device + ffmpeg h264_nvenc."""
+    """Hard-fail without NVIDIA + h264_nvenc (product invariant for this worker)."""
     import glob
     if not glob.glob("/dev/nvidia[0-9]*"):
         raise RuntimeError("no NVIDIA GPU present (/dev/nvidia*) — refusing to run")
@@ -116,7 +111,6 @@ def _needs_transcode(info: dict) -> bool:
 
 
 def _scale_parts(info: dict, *, force_cfr: bool, use_cuda_scale: bool) -> list[str]:
-    """Scale/fps filter pieces. CUDA scale only when frames stay on GPU."""
     w, h, fps = info["width"], info["height"], info.get("fps") or MAX_FPS
     long_e, short_e = max(w, h), min(w, h)
     ratio = min(MAX_LONG / long_e, MAX_SHORT / short_e) if long_e else 1.0
@@ -153,25 +147,17 @@ def _nvenc_args() -> list[str]:
 def _nvenc_cmd(
     src: str, dst: str, info: dict, *, force_cfr: bool, strip_audio: bool,
     ss: float | None = None, t: float | None = None,
-    input_seek: bool = True,
 ) -> list[str]:
-    """Build NVENC encode command.
-
-    When ``ss`` is set, prefer **input seek** (``-ss`` before ``-i``) so ffmpeg
-    can skip to a keyframe without decoding the whole prefix. Critical for
-    long AV1 sources with many range cuts.
-    """
+    """NVENC encode. Prefer input ``-ss`` so long AV1 prefixes skip decode."""
     cmd = [
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-threads", "0",
     ]
-    if input_seek and ss is not None:
+    if ss is not None:
         cmd += ["-ss", f"{ss:.6f}"]
     cmd += [
         "-hwaccel", "cuda", "-hwaccel_output_format", "cuda", "-hwaccel_device", "0",
         "-i", src,
     ]
-    if not input_seek and ss is not None:
-        cmd += ["-ss", f"{ss:.6f}"]
     if t is not None:
         cmd += ["-t", f"{t:.6f}"]
     cmd += _nvenc_args()
@@ -187,6 +173,11 @@ def _nvenc_cmd(
 
 
 def encode_full(src: str, dst: str, src_info: dict | None = None) -> dict:
+    """Full-timeline delivery encode (or remux-copy when already compliant).
+
+    GPU is still required at job start (see ``require_nvenc``); remux is only
+    a fast path when the source already matches the delivery spec.
+    """
     info = src_info or probe(src)
     force_cfr = is_vfr(info)
     if not force_cfr and not _needs_transcode(info):
@@ -200,77 +191,69 @@ def encode_full(src: str, dst: str, src_info: dict | None = None) -> dict:
     return probe(dst)
 
 
-def _select_expr(ranges: list[tuple[int, int]]) -> str:
+def select_expr(ranges: list[tuple[int, int]]) -> str:
     """ffmpeg select expression: keep inclusive frame indices (stream-local n)."""
-    # between(n,a,b) is inclusive; escape commas for -vf filtergraph.
     return "+".join(f"between(n\\,{a}\\,{b})" for a, b in ranges)
 
 
-def _span_window(
+def span_window(
     ranges: list[tuple[int, int]],
 ) -> tuple[int, int, list[tuple[int, int]]]:
-    """Bounding window over keep ranges + ranges rebased to window start.
-
-    Returns ``(start_frame, end_frame, relative_ranges)`` where
-    ``relative_ranges`` use frame indices with 0 == ``start_frame`` (inclusive
-    source indices).
-    """
+    """Bounding window + ranges rebased so 0 == start_frame."""
     start_f = min(a for a, _b in ranges)
     end_f = max(b for _a, b in ranges)
     rel = [(a - start_f, b - start_f) for a, b in ranges]
     return start_f, end_f, rel
 
 
-def _can_single_pass(ranges: list[tuple[int, int]]) -> bool:
-    n = len(ranges)
-    if n < _SINGLE_PASS_MIN_RANGES or n > _SINGLE_PASS_MAX_RANGES:
-        return False
-    expr = _select_expr(ranges)
-    return len(expr) <= _SINGLE_PASS_MAX_EXPR
-
-
-def _encode_ranges_single_pass(
+def encode_ranges(
     src: str,
     dst: str,
     ranges: list[tuple[int, int]],
-    info: dict,
+    src_info: dict | None = None,
     *,
-    strip_audio: bool,
-) -> None:
-    """One linear decode over the keep span: select → setpts → NVENC.
-
-    Decodes only ``[first_keep, last_keep]`` (input ``-ss`` + ``-t``) with
-    ``select`` indices rebased into that window. Skips long intros/outros.
-    """
+    strip_audio: bool = True,
+) -> dict:
+    """Encode keep ranges: one-range seek, else span-trim select + NVENC."""
+    info = dict(src_info or probe(src))
+    require_nvenc()
     fps = float(info.get("fps") or MAX_FPS)
-    out_fps = delivery_fps(fps)
-    start_f, end_f, rel_ranges = _span_window(ranges)
-    src_dur = float(info.get("duration") or 0.0)
-    src_frames_est = (
-        int(round(src_dur * fps)) if src_dur > 0 and fps > 0 else end_f + 1
-    )
+    if fps <= 0:
+        raise RuntimeError("invalid fps")
+    work = [(a, b) for a, b in ranges if b >= a]
+    if not work:
+        raise RuntimeError("no ranges to encode")
 
-    head_sec = start_f / fps if fps > 0 else 0.0
+    if len(work) == 1:
+        a, b = work[0]
+        log.info("encode_ranges: single segment frames=%d-%d", a, b)
+        _run(_nvenc_cmd(
+            src, dst, info, force_cfr=True, strip_audio=strip_audio,
+            ss=a / fps, t=(b - a + 1) / fps,
+        ))
+        return probe(dst)
+
+    out_fps = delivery_fps(fps)
+    start_f, end_f, rel_ranges = span_window(work)
+    src_dur = float(info.get("duration") or 0.0)
+    head_sec = start_f / fps
     tail_sec = (
         max(0.0, src_dur - (end_f + 1) / fps)
-        if src_dur > 0 and fps > 0
-        else 0.0
+        if src_dur > 0 else 0.0
     )
     use_span = head_sec >= _SPAN_MIN_SKIP_SEC or tail_sec >= _SPAN_MIN_SKIP_SEC
 
     if use_span:
         select_ranges = rel_ranges
-        span_frames = end_f - start_f + 1
         ss = start_f / fps
-        t_dur = span_frames / fps
+        t_dur = (end_f - start_f + 1) / fps
     else:
-        select_ranges = ranges
+        select_ranges = work
         ss = None
         t_dur = None
-        span_frames = src_frames_est
 
     parts = [
-        f"select='{_select_expr(select_ranges)}'",
+        f"select='{select_expr(select_ranges)}'",
         "setpts=N/FRAME_RATE/TB",
     ]
     scale_parts = _scale_parts(info, force_cfr=True, use_cuda_scale=False)
@@ -299,99 +282,17 @@ def _encode_ranges_single_pass(
         cmd += ["-c:a", "aac", "-b:a", "128k"]
     cmd += ["-movflags", "+faststart", dst]
 
-    kept = sum(b - a + 1 for a, b in ranges)
-    if use_span:
-        log.info(
-            "encode_ranges: span-trim n_ranges=%d kept≈%d "
-            "span_frames=%d (src≈%d) skip_head=%.1fs skip_tail=%.1fs",
-            len(ranges), kept, span_frames, src_frames_est, head_sec, tail_sec,
-        )
-    else:
-        log.info(
-            "encode_ranges: full-timeline n_ranges=%d kept≈%d",
-            len(ranges), kept,
-        )
-    _run(cmd)
-
-
-def _encode_ranges_segmented(
-    src: str,
-    dst: str,
-    ranges: list[tuple[int, int]],
-    info: dict,
-    *,
-    strip_audio: bool,
-    fps: float,
-) -> None:
-    """Fallback: one NVENC process per range with input ``-ss`` seek."""
-    with tempfile.TemporaryDirectory() as tmp:
-        segs: list[str] = []
-        for i, (a, b) in enumerate(ranges):
-            seg = os.path.join(tmp, f"s{i:04d}.mp4")
-            _run(_nvenc_cmd(
-                src, seg, info, force_cfr=True, strip_audio=strip_audio,
-                ss=a / fps, t=(b - a + 1) / fps, input_seek=True,
-            ))
-            segs.append(seg)
-        if len(segs) == 1:
-            os.replace(segs[0], dst)
-            return
-        list_path = os.path.join(tmp, "list.txt")
-        with open(list_path, "w") as f:
-            for p in segs:
-                f.write(f"file '{p}'\n")
-        _run([
-            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-            "-f", "concat", "-safe", "0", "-i", list_path,
-            "-c", "copy", "-movflags", "+faststart", dst,
-        ])
-
-
-def encode_ranges(
-    src: str,
-    dst: str,
-    ranges: list[tuple[int, int]],
-    src_info: dict | None = None,
-    *,
-    strip_audio: bool = True,
-) -> dict:
-    """Encode keep ranges: span-trim single-pass select + NVENC (best one-shot)."""
-    info = dict(src_info or probe(src))
-    require_nvenc()
-    fps = float(info.get("fps") or MAX_FPS)
-    if fps <= 0:
-        raise RuntimeError("invalid fps")
-    work = [(a, b) for a, b in ranges if b >= a]
-    if not work:
-        raise RuntimeError("no ranges to encode")
-
-    if len(work) == 1:
-        a, b = work[0]
-        log.info("encode_ranges: single segment frames=%d-%d", a, b)
-        _run(_nvenc_cmd(
-            src, dst, info, force_cfr=True, strip_audio=strip_audio,
-            ss=a / fps, t=(b - a + 1) / fps, input_seek=True,
-        ))
-        return probe(dst)
-
-    if _can_single_pass(work):
-        try:
-            _encode_ranges_single_pass(
-                src, dst, work, info, strip_audio=strip_audio,
-            )
-            return probe(dst)
-        except Exception as e:  # noqa: BLE001
-            log.warning("encode_ranges: single-pass failed (%s); segmented", e)
-
-    log.info("encode_ranges: segmented n_ranges=%d", len(work))
-    _encode_ranges_segmented(
-        src, dst, work, info, strip_audio=strip_audio, fps=fps,
+    kept = sum(b - a + 1 for a, b in work)
+    log.info(
+        "encode_ranges: span-select n_ranges=%d kept≈%d use_span=%s",
+        len(work), kept, use_span,
     )
+    _run(cmd)
     return probe(dst)
 
 
 def build_cfr_mezzanine(src: str, dst: str, src_info: dict) -> dict:
-    """VFR → same-res CFR mezzanine (job path only; not BWF range encode)."""
+    """VFR → same-res CFR mezzanine before BWF detect."""
     require_nvenc()
     fps = src_info.get("fps") or MAX_FPS
     vf = f"fps={fps:g}"

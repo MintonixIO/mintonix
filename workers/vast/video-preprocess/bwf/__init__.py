@@ -1,36 +1,20 @@
-"""BWF path: annotation → config → court-only detect keep-ranges.
-
-Public API only. Detection (cv2) lives in bwf.detect and is imported lazily
-so non-BWF jobs never load those deps.
-"""
+"""BWF path: annotation → court-only detect keep-ranges."""
 
 from __future__ import annotations
 
 import logging
+import os
 
-from bwf.annotation import (
-    annotation_to_valid_frames_config,
-    apply_valid_frames_defaults,
-)
+from bwf.annotation import config_from_annotation
 from normalize import delivery_fps
 
 log = logging.getLogger("video-preprocess.bwf")
 
 __all__ = [
     "config_from_annotation",
-    "apply_defaults",
     "detect_ranges",
+    "write_manifest_csv",
 ]
-
-
-def config_from_annotation(annotation: dict, roster: dict | None = None) -> dict | None:
-    """Map thin annotation.json (+ optional roster) → valid_frames_config."""
-    return annotation_to_valid_frames_config(annotation, roster=roster)
-
-
-def apply_defaults(config: dict, width: int, height: int) -> dict:
-    """Fill missing tunables after probe (court-only; no scoreboard)."""
-    return apply_valid_frames_defaults(config, width, height)
 
 
 def detect_ranges(
@@ -42,25 +26,10 @@ def detect_ranges(
     height: int,
     out_fps: float | None = None,
 ) -> dict:
-    """Run court-only detect; return ranges + frame_map for metadata.
-
-    Returns:
-      {
-        "ranges": [(old_start, old_end), …],  # inclusive source frames
-        "source_frame_count": int,
-        "kept_frames": int,
-        "frame_map": [
-          {"old_start", "old_end", "new_start", "new_end"}, …  # inclusive
-        ],
-        "detect_timings": {…},  # sub-stage seconds
-      }
-    """
+    """Run court-only detect; return ranges + frame_map + optional CSV path helper."""
     from bwf import detect as _detect  # lazy: cv2
 
-    log.info(
-        "bwf.detect: %s fps=%.3f %dx%d (court-only)",
-        video_path, fps, width, height,
-    )
+    log.info("bwf.detect: %s fps=%.3f %dx%d", video_path, fps, width, height)
     ranges, n_src, detect_timings = _detect.detect_valid_ranges(
         video_path, config, fps=fps, width=width, height=height,
     )
@@ -83,3 +52,11 @@ def detect_ranges(
         "src_fps": fps,
         "out_fps": out_fps,
     }
+
+
+def write_manifest_csv(frame_map: list[dict], path: str) -> int:
+    """Write frame_ranges.csv; return file size."""
+    from bwf.detect import write_range_manifest_csv
+
+    write_range_manifest_csv(frame_map, path)
+    return os.path.getsize(path)

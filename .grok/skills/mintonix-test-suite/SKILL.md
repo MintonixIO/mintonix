@@ -250,8 +250,8 @@ Report a per-check table (pass / fail / skip / warn). Do not claim ready if any
 5. **Project edge secrets (names only)** — `supabase secrets list --project-ref <ref>` must include digests for:
    - `PIPELINE_SERVICE_TOKEN`, `JOB_TOKEN_SECRET`, `PRESIGN_SERVICE_TOKEN`, `CDN_PRESIGN_URL`
    - `VAST_API_KEY`
-   - `VAST_NORMALIZE_ENDPOINT_NAME` (or legacy `VAST_ENDPOINT_NAME` with a **warn**)
-   - `VAST_DETECT_ENDPOINT_NAME` (warn if missing — detect falls back to normalize endpoint)
+   - `VAST_PREPROCESS_ENDPOINT_NAME` (or legacy `VAST_NORMALIZE_ENDPOINT_NAME` / `VAST_ENDPOINT_NAME` with a **warn**)
+   - `VAST_DETECT_ENDPOINT_NAME` (warn if missing — detect falls back to preprocess endpoint)
 6. **Migrations aligned** — `supabase migration list --linked` (with DB password if needed): no remote-only versions missing from local `supabase/migrations/` for the branch you intend to maintain. Remote-ahead without local files → **not_ready** for “maintain this branch”; remote up-to-date with local → pass.
 
 ### Warning-only checks (do not alone force `not_ready`)

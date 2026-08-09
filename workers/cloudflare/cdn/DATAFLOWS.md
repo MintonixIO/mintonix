@@ -113,7 +113,7 @@ sequenceDiagram
   Cron->>W: /presign GET + MULTIPART + PUT
   W-->>Cron: input_url, output_upload (parts), thumbnail_upload_url
   Note over Cron: mint HMAC job token<br/>{job_id,match_id,stage,attempt} aud=jobs-callback
-  Cron->>V: POST /normalize/sync envelope
+  Cron->>V: POST /preprocess/sync envelope
   V->>B: GET input_url (parallel Range) → NVDEC/nvenc
   V->>B: multipart part PUTs → Complete normalized.mp4
   V->>B: PUT thumbnail.jpg (single)

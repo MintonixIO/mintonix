@@ -540,7 +540,7 @@ presigned URLs + single-use callback token bound to `(job_id, attempt)`.
 
 | Stage | Worker | Inputs (B2 / URL) | Outputs (B2) |
 |-------|--------|-------------------|--------------|
-| `normalize` | vast video-preprocess | `source_url` or `original.*`; BWF: `annotation.json` (court corners) | `normalized.mp4` (full or BWF court cut); BWF: callback `bwf.frame_map` |
+| `normalize` | vast video-preprocess (`/preprocess/sync`) | `source_url` or `original.*`; BWF: `annotation.json` (court corners) | `normalized.mp4`, `thumbnail.jpg`; BWF: + `frame_ranges.csv` |
 | `detect` | vast video-det | `normalized.mp4` (always; BWF cut already written there) | `detections.json` |
 | `analyze` | CPU/worker TBD | detections + `annotation.json` | `analysis.json` |
 
@@ -608,19 +608,18 @@ for MVP.
 | `purge` | Default false — stage with enqueue=false, LIST+DELETE stage+later basenames, then enqueue if requested |
 
 MVP notes: **normalize → detect** are wired in `jobs` STAGES. For system/BWF
-(`owner_id` null), dispatch loads raw `annotation.json` + roster into the
-envelope and presigns `frame_ranges.csv`. The **worker** maps annotation →
-`valid_frames_config` (`annotation_map.py`), defaults missing scoreboard
-geometry after probe, and writes the cleaned cut to `normalized.mp4`. Detect
-always GETs `normalized.mp4`. Analyze is not wired yet (detect is terminal →
-match `ready`; ops enqueue of `analyze` terminal-fails). Optional
-`VAST_NORMALIZE_ENDPOINT_NAME` / `VAST_DETECT_ENDPOINT_NAME` for the
-video-preprocess and video-det vast endpoints (detect falls back to the
-normalize name if unset; legacy `VAST_ENDPOINT_NAME` still aliases normalize).
-User confirm does not HEAD-check B2 before enqueue
-(empty keys fail at normalize). Worker callback wire status is
-`success`|`failed` (see [`ARCHITECTURE.md`](../ARCHITECTURE.md) § One job
-contract); DB stores `complete`|`failed`.
+(`owner_id` null), dispatch loads raw `annotation.json` and presigns
+`frame_ranges.csv`. The **video-preprocess** worker maps `court.corners` →
+court-only keep ranges and writes the cleaned cut to `normalized.mp4` plus
+thumbnail / CSV. Detect always GETs `normalized.mp4`. Analyze is not wired
+yet (detect is terminal → match `ready`). Env:
+`VAST_PREPROCESS_ENDPOINT_NAME` / `VAST_DETECT_ENDPOINT_NAME` (detect falls
+back to preprocess; legacy `VAST_NORMALIZE_ENDPOINT_NAME` /
+`VAST_ENDPOINT_NAME` still work). Worker route: `POST /preprocess/sync`.
+User confirm does not HEAD-check B2 before enqueue (empty keys fail at
+normalize). Worker callback wire status is `success`|`failed` (see
+[`ARCHITECTURE.md`](../ARCHITECTURE.md) § One job contract); DB stores
+`complete`|`failed`.
 
 ---
 

@@ -83,7 +83,7 @@ supabase secrets set --project-ref <dev-ref> \
 ```
 
 The compute pathway (`jobs` dispatch/callback) additionally needs
-`JOB_TOKEN_SECRET`, `VAST_NORMALIZE_ENDPOINT_NAME`,
+`JOB_TOKEN_SECRET`, `VAST_PREPROCESS_ENDPOINT_NAME` (legacy `VAST_NORMALIZE_ENDPOINT_NAME`),
 `VAST_DETECT_ENDPOINT_NAME`, `VAST_API_KEY` — see
 `supabase/functions/jobs/index.ts` and `supabase/README.md`.
 

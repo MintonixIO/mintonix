@@ -4,8 +4,6 @@ uvicorn==0.52.1
 requests==2.34.2
 vastai==1.5.1
 yt-dlp
-# debug.py network baseline (optional at runtime; install for remote tests)
-speedtest-cli
 # BWF detect (court NCC only)
 opencv-python-headless
 numpy
