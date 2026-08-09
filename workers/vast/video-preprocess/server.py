@@ -61,8 +61,10 @@ async def preprocess_sync(request: Request) -> JSONResponse:
                 })
             raise
         if cb_url:
+            # Wire status must be success|failed for jobs/callback.
+            # Job result uses status "ok" — put wire status after **result.
             callback.post_callback(cb_url, cb_tok, {
-                "request_id": rid, "status": "success", **result,
+                **result, "request_id": rid, "status": "success",
             })
         return result
 
