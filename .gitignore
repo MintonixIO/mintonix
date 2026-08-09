@@ -112,3 +112,8 @@ blob-report/
 
 # Agent / local worktrees
 .worktrees/
+
+# Local partial downloads / large media (never commit)
+*.part
+workers/vast/video-preprocess/testdata/*.mp4
+workers/vast/video-preprocess/testdata/*.mkv
