@@ -28,4 +28,5 @@ jobs:
       image: video-preprocess
       # Transcode/detect are GPU-only and CI runners have no GPU: unit/contract
       # tests in the image validate the package; full encode e2e runs on vast.
-      test_command: python -m unittest discover -v -s . -p 'test_*.py'
+      # Deps live in the image venv (/opt/worker-env), not system python.
+      test_command: /opt/worker-env/bin/python -m unittest discover -v -s . -p 'test_*.py'
