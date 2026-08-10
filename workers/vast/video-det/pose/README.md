@@ -8,7 +8,7 @@ Product pose inference used by `detect.VideoDetector` → `detections.json`.
 |---|---|
 | `engine.py` | `PoseEngine`: letterbox batch → TRT → pixel detections |
 | `letterbox.py` | 640 letterbox / unletterbox geometry (`IMGSZ`) |
-| `trt_runtime.py` | `load_engine`, product `GpuConsumer` (K=1 CUDA graph: stage→run→sync) |
+| `trt_runtime.py` | `load_engine`, product `_TrtRunner.infer` (CUDA graph, one batch) |
 | `export_trt.py` / `download_model.py` | Manual engine build on target GPU |
 
 ## Engine build

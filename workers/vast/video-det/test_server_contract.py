@@ -43,23 +43,16 @@ class TestServerHealthAndStartup(unittest.TestCase):
 
             return server_mod
         except ImportError as e:
-            # FastAPI still required for the app; uvicorn is not.
             self.skipTest(f"server deps missing: {e}")
 
     def test_server_import_does_not_need_uvicorn(self) -> None:
-        """uvicorn must not be a hard import dependency of server.py."""
-        from pathlib import Path as P
-
-        path = P(__file__).resolve().parent / "server.py"
+        path = Path(__file__).resolve().parent / "server.py"
         src = path.read_text(encoding="utf-8")
-        # Top-level import uvicorn is forbidden; only under __main__.
         for line in src.splitlines():
             stripped = line.strip()
             if stripped.startswith("import uvicorn") or stripped.startswith(
                 "from uvicorn"
             ):
-                # Allowed only after if __name__ guard is already open — crude check:
-                # line must be indented (inside a block).
                 if not line.startswith((" ", "\t")):
                     self.fail(f"top-level uvicorn import: {line!r}")
 
@@ -156,14 +149,14 @@ class TestServerHealthAndStartup(unittest.TestCase):
         ]
 
         class FakeDet:
-            def run(self, video_path, player_mask=None):
-                yield frames, 2, 2
+            def run(self, video_path):
+                yield frames
 
         server_mod._detector = FakeDet()  # type: ignore[assignment]
         with tempfile.TemporaryDirectory() as td:
             dest = Path(td) / "d.json"
             n = server_mod._stream_detections_json(
-                dest, request_id="job-1", video_path=Path(td) / "v.mp4", player_mask=None
+                dest, request_id="job-1", video_path=Path(td) / "v.mp4"
             )
             self.assertEqual(n, 2)
             body = json.loads(dest.read_text())
@@ -171,35 +164,7 @@ class TestServerHealthAndStartup(unittest.TestCase):
             self.assertEqual(len(body["frames"]), 2)
         server_mod._detector = None
 
-    def test_player_mask_unreadable_raises(self) -> None:
-        server_mod = self._import_server()
-        server_mod._detector = MagicMock()
-
-        with tempfile.TemporaryDirectory() as td:
-            # Empty "png" will make cv2.imread return None after download of path.
-            bad = Path(td) / "mask.png"
-            bad.write_bytes(b"not-a-png")
-
-            def fake_download(url, dest, **kwargs):
-                if "mask" in str(url) or str(dest).endswith(".png"):
-                    Path(dest).write_bytes(b"not-a-png")
-                else:
-                    Path(dest).write_bytes(b"fake-video")
-
-            with patch.object(server_mod, "download", side_effect=fake_download):
-                with patch.object(server_mod.cv2, "imread", return_value=None):
-                    with self.assertRaises(RuntimeError) as ctx:
-                        server_mod._run_job(
-                            request_id="j1",
-                            input_url="https://example/v.mp4",
-                            output_upload_url="https://example/o.json",
-                            player_mask_url="https://example/mask.png",
-                        )
-            self.assertIn("player_mask unreadable", str(ctx.exception))
-        server_mod._detector = None
-
     def test_uses_lifespan_not_on_event(self) -> None:
-        """Startup should use FastAPI lifespan, not deprecated on_event."""
         path = Path(__file__).resolve().parent / "server.py"
         src = path.read_text(encoding="utf-8")
         self.assertIn("lifespan", src)
@@ -220,10 +185,8 @@ class TestServerHealthAndStartup(unittest.TestCase):
         try:
             self.assertTrue(callable(server_mod.lifespan))
             self.assertIsNotNone(server_mod.app.router.lifespan_context)
-            # Entering TestClient runs lifespan (load_models with allow-missing).
             with TestClient(server_mod.app, raise_server_exceptions=False) as client:
                 r = client.get("/health")
-                # Models missing → not ready, but lifespan ran without raising.
                 self.assertIn(r.status_code, (200, 503))
         finally:
             if prev_allow is None:
@@ -245,6 +208,13 @@ class TestProductImports(unittest.TestCase):
         self.assertFalse(hasattr(detect, "run_opencv_pose"))
         self.assertIn("VideoDetector", detect.__all__)
 
+    def test_no_reid_module(self) -> None:
+        import importlib.util
+
+        root = Path(__file__).resolve().parent
+        self.assertIsNone(importlib.util.find_spec("detect.reid"))
+        self.assertFalse((root / "detect" / "reid.py").exists())
+
     def test_no_pose_feed_module(self) -> None:
         import importlib.util
 
@@ -257,7 +227,12 @@ class TestProductImports(unittest.TestCase):
 
     def test_product_modules_do_not_import_ffmpeg_bench(self) -> None:
         root = Path(__file__).resolve().parent
-        banned = ("tools.ffmpeg_pose_bench", "ffmpeg_pose_bench", "ffmpeg_feed", "ring_consumer")
+        banned = (
+            "tools.ffmpeg_pose_bench",
+            "ffmpeg_pose_bench",
+            "ffmpeg_feed",
+            "ring_consumer",
+        )
         product_files = [
             root / "server.py",
             root / "worker.py",
@@ -271,36 +246,24 @@ class TestProductImports(unittest.TestCase):
                 stripped = line.strip()
                 if not stripped or stripped.startswith("#"):
                     continue
-                # Only flag real import statements (ignore docstrings/comments).
                 if not (
-                    stripped.startswith("import ")
-                    or stripped.startswith("from ")
+                    stripped.startswith("import ") or stripped.startswith("from ")
                 ):
                     continue
                 for token in banned:
                     if token in stripped:
                         self.fail(f"{path.name} imports research stack: {line}")
 
-    def test_product_gpu_consumer_has_no_feed_or_multi_k(self) -> None:
-        from pose import trt_runtime
-
-        src = Path(trt_runtime.__file__).read_text(encoding="utf-8")
+    def test_product_trt_runner_is_single_infer(self) -> None:
+        """Product path exposes one-shot infer; no multi-K feed/ring API."""
+        src = (
+            Path(__file__).resolve().parent / "pose" / "trt_runtime.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("def infer(", src)
         self.assertNotIn("def feed(", src)
         self.assertNotIn("slot_in", src)
-        # Product consumer is single-buffer (K=1), not a research ring.
-        self.assertIn("self.K = 1", src)
-
-    def test_gpu_consumer_run_gpu_rejects_nonzero_buffer(self) -> None:
-        """Behavioral: product run_gpu only accepts buffer 0."""
-        from pose.trt_runtime import GpuConsumer
-
-        # Construct without real TRT: call run_gpu on a shell instance.
-        c = object.__new__(GpuConsumer)
-        c.K = 1
-        with self.assertRaises(ValueError) as ctx:
-            # Minimal: method body checks b != 0 before using stream
-            GpuConsumer.run_gpu(c, 1)
-        self.assertIn("buffer 0", str(ctx.exception))
+        self.assertNotIn("def stage_host(", src)
+        self.assertNotIn("def run_gpu(", src)
 
 
 if __name__ == "__main__":

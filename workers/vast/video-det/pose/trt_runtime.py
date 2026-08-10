@@ -1,8 +1,8 @@
-"""TensorRT runtime primitives for PoseEngine (product path).
+"""TensorRT runtime for PoseEngine (product path).
 
-Owns engine deserialize (Ultralytics metadata strip) and a single-buffer
-CUDA-graph GPU consumer (`stage_host` → `run_gpu` → `sync`). Multi-K decode
-rings and zero-copy `feed` live under `tools/ffmpeg_pose_bench/` only.
+Owns engine deserialize (Ultralytics metadata strip) and a single CUDA-graph
+infer path used only by `PoseEngine.run_batch`. Multi-K research rings live
+under `tools/ffmpeg_pose_bench/` only.
 """
 from __future__ import annotations
 
@@ -40,23 +40,14 @@ def load_engine(path: Path):
     return engine
 
 
-class GpuConsumer:
-    """Single-buffer product consumer: pinned H2D + normalize + CUDA graph.
-
-    Product ``PoseEngine`` stages one host batch at a time and fully syncs
-    before shuttle/ReID share the GPU — so K=1 is sufficient (no multi-buffer
-    ring, no decode-slot ``feed``).
-
-    Spatial size defaults to module ``IMGSZ`` but must match the TRT engine
-    input (caller should pass ``imgsz`` from the engine tensor shape).
-    """
+class _TrtRunner:
+    """Pinned H2D + normalize + CUDA-graph inference for one host batch."""
 
     def __init__(self, engine, batch: int, *, imgsz: int = IMGSZ) -> None:
         import tensorrt as trt
 
         self.engine = engine
         self.batch = batch
-        self.K = 1  # product path: one sync buffer only
         self.imgsz = int(imgsz)
         self.context = engine.create_execution_context()
 
@@ -90,7 +81,6 @@ class GpuConsumer:
             device="cuda",
         )
         self.out = torch.empty(out_shape, dtype=torch.float32, device="cuda")
-        self.ev = torch.cuda.Event()
         self.graph = None
         self._capture()
 
@@ -110,22 +100,17 @@ class GpuConsumer:
         self.graph = g
         torch.cuda.synchronize()
 
-    def stage_host(self, host_arr: np.ndarray) -> int:
-        """Copy a host batch into the pinned buffer; return buffer index (always 0)."""
-        self.ev.synchronize()
+    def infer(self, host_arr: np.ndarray) -> np.ndarray:
+        """Run one full batch: host NHWC uint8 → host float TRT output."""
         self.pinned.copy_(torch.from_numpy(host_arr))
-        return 0
-
-    def run_gpu(self, b: int = 0) -> None:
-        """Async H2D + normalize + CUDA-graph inference on the ordered stream."""
-        if b != 0:
-            raise ValueError(f"product GpuConsumer only has buffer 0, got b={b}")
         with torch.cuda.stream(self.stream):
             self.staging.copy_(self.pinned, non_blocking=True)
             self.inp.copy_(self.staging.permute(0, 3, 1, 2))
             self.inp.div_(255.0)
             self.graph.replay()
-            self.ev.record(self.stream)
-
-    def sync(self) -> None:
         self.stream.synchronize()
+        return self.out.detach().float().cpu().numpy()
+
+
+# Back-compat alias for research tools / older imports.
+GpuConsumer = _TrtRunner

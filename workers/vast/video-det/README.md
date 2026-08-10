@@ -1,8 +1,7 @@
 # video-det (vast.ai — detect stage)
 
 GPU worker for pipeline stage **`detect`**: download `normalized.mp4`, run pose
-+ shuttle (+ optional ReID), upload `detections.json`, callback Supabase
-`jobs/callback`.
++ shuttle, upload `detections.json`, callback Supabase `jobs/callback`.
 
 Workers hold **no** B2 or Supabase service credentials — only presigned URLs
 and a single-use `callback_token`.
@@ -10,7 +9,7 @@ and a single-use `callback_token`.
 | | |
 |---|---|
 | **Stage** | `detect` (after `normalize`; MVP terminal → match `ready`) |
-| **In** | `normalized.mp4` (presigned GET); optional `player_mask_url` PNG |
+| **In** | `normalized.mp4` (presigned GET) |
 | **Out** | `detections.json` (presigned PUT) |
 | **HTTP** | `POST /detect/sync` (PyWorker → FastAPI model server) |
 | **Dispatcher** | `supabase/functions/jobs` → `STAGES.detect` |
@@ -35,8 +34,8 @@ worker; detect always reads that single key.
 |------|------|
 | `server.py` | FastAPI model server: `/detect/sync`, `/health` |
 | `worker.py` | vast PyWorker proxy |
-| `io_util.py` | Download / upload / callback |
-| `detect/` | `VideoDetector`, pose adapter, shuttle (TrackNet), ReID |
+| `io_util.py` | Stream download / upload / callback |
+| `detect/` | `VideoDetector`, pose adapter, shuttle (TrackNet) |
 | `pose/` | YOLO pose TRT engine + letterbox |
 | `tools/` | Eval / bench (not the product path) |
 | `Dockerfile` | TensorRT base + product image |
@@ -52,8 +51,7 @@ Inner envelope (jobs may wrap as `{ input: … }`):
   "input_url": "https://…",              // presigned GET or file://
   "output_upload_url": "https://…",      // presigned PUT or file://
   "callback_url": "https://…/functions/v1/jobs/callback",
-  "callback_token": "<jwt>",
-  "player_mask_url": "https://…"         // optional; not yet presigned by jobs
+  "callback_token": "<jwt>"
 }
 ```
 

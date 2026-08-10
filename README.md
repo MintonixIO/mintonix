@@ -23,9 +23,8 @@ four user-clicked court corners.
   a valid-frames-only cut (dead time removed) and an OCR score timeline.
 - **Shuttle detection & tracking** — TrackNet-based per-frame shuttle
   candidates tuned for high recall.
-- **Player pose tracking** — per-frame multi-person pose estimation with
-  track IDs, plus optional appearance (ReID) embeddings for re-linking
-  tracks across camera cuts.
+- **Player pose tracking** — per-frame multi-person pose estimation
+  (`player_id` assignment / ReID is future work).
 - **Player labeling in the browser** — click a player → in-browser
   point-prompted segmentation (SlimSAM-class, no server round-trip) → attach
   a name. Labels are resolved to pose tracks during analysis.
@@ -161,7 +160,7 @@ Move fixed items to the module's *Resolved* list with the fixing commit.
       fully in memory before upload. Stream the upload from disk.
 - [ ] **P1** Health endpoint reports healthy with models missing, then fails
       real jobs.
-- [ ] **P2** ReID / player-mask path (`player_mask_url`) not presigned by jobs
+- [ ] **P2** Player identity / ReID (not in product detect path; `player_id` always null)
       yet — `player_id` stays null; don't let it block detect.
 - [ ] **P2** Research pose pipeline (`pose/research_pipeline.py`) — high ops
       risk; keep out of the product default.

@@ -10,7 +10,7 @@
 #   - ALLOW_MISSING_MODELS=1 (CI only): server starts without loading models;
 #     GET /health then returns 503 {status:not_ready, models_loaded:false} and
 #     jobs are refused until weights are present and the process restarts.
-# Mount or download weights into /app/models before launching this entrypoint.
+# Mount pose engine + shuttle ckpt into /app/models before launching this entrypoint.
 #
 # Local/benchmark file:// I/O requires ALLOW_FILE_URLS=1 (Dockerfile for sample.mp4).
 # Paths are allowlisted to /app, /tmp, and tempfile.gettempdir() only.

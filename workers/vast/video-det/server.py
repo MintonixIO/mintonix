@@ -12,9 +12,7 @@ still-wrapped body):
           "input_url": "...",                  # presigned GET or file://
           "output_upload_url": "...",          # presigned PUT or file:// for detections.json
           "callback_url": "...",               # jobs/callback
-          "callback_token": "...",             # Bearer token (HMAC JWT)
-          # optional: SlimSAM label mask PNG (0=bg, 1..N=player) for ReID seeds
-          "player_mask_url": "..."
+          "callback_token": "..."              # Bearer token (HMAC JWT)
         }
       -> 200 { "request_id", "frame_count", "elapsed_sec" }
       -> 422 / 500 { "request_id", "error" }
@@ -26,7 +24,7 @@ still-wrapped body):
 Callback (from the job thread, Authorization: Bearer <callback_token>):
     { "request_id", "status": "success"|"failed", "frame_count"?, "error"? }
 
-No Realtime progress in MVP — re-add later if the UI needs a progress bar.
+No Realtime progress in MVP — re-add later if the UI needs it.
 
 Startup requires pose + shuttle weights on disk unless ALLOW_MISSING_MODELS=1
 (CI). Mount/download engines before server.py becomes healthy.
@@ -43,19 +41,12 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlparse
 
-import cv2
 from fastapi import FastAPI, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
 from detect import DetectConfig, VideoDetector
-from io_util import (
-    MAX_MASK_BYTES,
-    download,
-    post_callback,
-    safe_error_message,
-    upload_file,
-)
+from io_util import download, post_callback, safe_error_message, upload_file
 
 _DEFAULT_CALLBACK_PATH_SUFFIX = "/functions/v1/jobs/callback"
 
@@ -92,6 +83,7 @@ def _callback_url_allowed(url: str | None) -> bool:
         return False
     return url.startswith(prefix + "/") or url.startswith(prefix + "?") or url == prefix
 
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
@@ -127,15 +119,10 @@ async def _load_models() -> None:
             return
         log.error("%s — refusing to start (set ALLOW_MISSING_MODELS=1 for CI)", msg)
         raise FileNotFoundError(msg)
-    if cfg.reid_engine is None:
-        log.warning(
-            "startup: ReID engine missing — player_id will be null (check REID_ENGINE)"
-        )
     _detector = VideoDetector.from_config(cfg)
     log.info(
-        "startup: VideoDetector loaded (batch=%d reid=%s conf=%s)",
+        "startup: VideoDetector loaded (batch=%d conf=%s)",
         _detector.pose_batch,
-        cfg.reid_engine is not None,
         cfg.conf,
     )
 
@@ -171,7 +158,6 @@ async def detect_sync(request: Request) -> JSONResponse:
     output_upload_url = body.get("output_upload_url")
     callback_url = body.get("callback_url")
     callback_token = body.get("callback_token")
-    player_mask_url = body.get("player_mask_url")
 
     if not input_url or not output_upload_url:
         return JSONResponse(
@@ -206,7 +192,6 @@ async def detect_sync(request: Request) -> JSONResponse:
                 request_id=request_id,
                 input_url=input_url,
                 output_upload_url=output_upload_url,
-                player_mask_url=player_mask_url,
             )
         except Exception as e:
             err = safe_error_message(e)
@@ -261,7 +246,6 @@ def _run_job(
     request_id: str | None,
     input_url: str,
     output_upload_url: str,
-    player_mask_url: str | None,
 ) -> dict:
     assert _detector is not None
     t0 = time.monotonic()
@@ -272,23 +256,12 @@ def _run_job(
     json_fd, json_name = tempfile.mkstemp(suffix=".json")
     os.close(json_fd)
     json_tmp = Path(json_name)
-    mask_tmp: Path | None = None
 
     try:
         download(input_url, video_tmp)
 
-        player_mask = None
-        if player_mask_url:
-            mask_fd, mask_name = tempfile.mkstemp(suffix=".png")
-            os.close(mask_fd)
-            mask_tmp = Path(mask_name)
-            download(player_mask_url, mask_tmp, max_bytes=MAX_MASK_BYTES)
-            player_mask = cv2.imread(str(mask_tmp), cv2.IMREAD_GRAYSCALE)
-            if player_mask is None:
-                raise RuntimeError("player_mask unreadable")
-
         frame_count = _stream_detections_json(
-            json_tmp, request_id=request_id, video_path=video_tmp, player_mask=player_mask
+            json_tmp, request_id=request_id, video_path=video_tmp
         )
         if frame_count == 0:
             raise RuntimeError("no frames decoded from video")
@@ -305,8 +278,6 @@ def _run_job(
     finally:
         video_tmp.unlink(missing_ok=True)
         json_tmp.unlink(missing_ok=True)
-        if mask_tmp is not None:
-            mask_tmp.unlink(missing_ok=True)
 
 
 def _stream_detections_json(
@@ -314,7 +285,6 @@ def _stream_detections_json(
     *,
     request_id: str | None,
     video_path: Path,
-    player_mask,
 ) -> int:
     """Write detections.json incrementally so long matches stay memory-bounded."""
     assert _detector is not None
@@ -324,9 +294,7 @@ def _stream_detections_json(
         f.write('{"job_id":')
         f.write(json.dumps(request_id))
         f.write(',"frames":[')
-        for chunk_results, _done, _total in _detector.run(
-            video_path, player_mask=player_mask
-        ):
+        for chunk_results in _detector.run(video_path):
             for fr in chunk_results:
                 if not first:
                     f.write(",")

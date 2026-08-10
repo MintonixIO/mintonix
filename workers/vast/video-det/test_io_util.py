@@ -9,8 +9,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import numpy as np
-
 from detect.types import FrameResult, ShuttleCandidate
 from io_util import (
     download,
@@ -33,6 +31,7 @@ class TestSafeErrorRedaction(unittest.TestCase):
         self.assertNotIn("SECRET", safe)
         self.assertNotIn("X-Amz-Signature", safe)
         self.assertIn("https://b2.example/bucket/key", safe)
+
 
 class TestFileIO(unittest.TestCase):
     def setUp(self) -> None:
@@ -77,7 +76,6 @@ class TestFileIO(unittest.TestCase):
             self.assertIn("ALLOW_FILE_URLS", str(ctx.exception))
 
     def test_file_url_outside_allowlist(self) -> None:
-        # Path under a non-allowlisted root must fail even when ALLOW_FILE_URLS=1.
         evil = Path("/etc/hosts")
         if not evil.is_file():
             self.skipTest("/etc/hosts not present")
@@ -86,11 +84,8 @@ class TestFileIO(unittest.TestCase):
         self.assertIn("allowlist", str(ctx.exception).lower())
 
     def test_file_write_rejects_app_root(self) -> None:
-        """Writes must not land under /app even when ALLOW_FILE_URLS=1."""
         import io_util
 
-        # Only meaningful when /app is a real root on the system; still validate
-        # the write allowlist helper excludes /app.
         write_roots = {str(p) for p in io_util._file_url_write_roots()}
         self.assertNotIn(str(Path("/app").resolve()), write_roots)
         read_roots = {str(p) for p in io_util._file_url_read_roots()}
@@ -99,7 +94,6 @@ class TestFileIO(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             src = Path(td) / "src.bin"
             src.write_bytes(b"x")
-            # Simulate a write path under /app via resolve allowlist check.
             with self.assertRaises(RuntimeError) as ctx:
                 upload_file(src, "file:///app/models/evil.json")
             self.assertIn("write", str(ctx.exception).lower())
@@ -114,54 +108,18 @@ class TestFileIO(unittest.TestCase):
                 download(f"file://{src}", dest, max_bytes=5)
             self.assertIn("max_bytes", str(ctx.exception))
 
-    def test_multi_range_download_total_over_limit(self) -> None:
-        """Range probe Content-Range total > max_bytes fails before writing."""
-        import io_util
 
-        class FakeProbe:
-            status_code = 206
-            headers = {"Content-Range": "bytes 0-0/99999"}
-
-        class FakeClient:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *a):
-                return False
-
-            def get(self, url, headers=None):
-                return FakeProbe()
-
-        with tempfile.TemporaryDirectory() as td:
-            dest = Path(td) / "out.bin"
-            with patch.object(io_util, "_httpx", return_value=MagicMock()):
-                with patch.object(io_util, "_http_client", return_value=FakeClient()):
-                    with patch.object(io_util, "_MIN_RANGE_BYTES", 1):
-                        with self.assertRaises(RuntimeError) as ctx:
-                            download(
-                                "https://cdn.example/v.mp4?sig=SECRET",
-                                dest,
-                                connections=2,
-                                max_bytes=100,
-                            )
-            self.assertIn("too large", str(ctx.exception).lower())
-            self.assertNotIn("SECRET", str(ctx.exception))
-            self.assertFalse(dest.exists())
-
-    def test_multi_range_download_undershoot_unlinks_partial(self) -> None:
-        """Short range body leaves holes; must abort and delete dest."""
-        import io_util
-
-        total = 200
-
-        class FakeProbe:
-            status_code = 206
-            headers = {"Content-Range": f"bytes 0-0/{total}"}
+class TestHttpIO(unittest.TestCase):
+    def test_stream_download_respects_max_bytes(self) -> None:
+        try:
+            import httpx
+        except ImportError:
+            self.skipTest("httpx not installed")
 
         class StreamResp:
-            status_code = 206
-            request = MagicMock()
-            headers: dict = {}
+            status_code = 200
+            request = httpx.Request("GET", "https://cdn.example/v.mp4?sig=SECRET")
+            headers = {}
 
             def __enter__(self):
                 return self
@@ -170,7 +128,8 @@ class TestFileIO(unittest.TestCase):
                 return False
 
             def iter_bytes(self, n):
-                yield b"x" * 10  # undershoot vs expected ~100
+                yield b"x" * 20
+                yield b"y" * 20
 
         class FakeClient:
             def __enter__(self):
@@ -179,44 +138,32 @@ class TestFileIO(unittest.TestCase):
             def __exit__(self, *a):
                 return False
 
-            def get(self, url, headers=None):
-                return FakeProbe()
-
-            def stream(self, method, url, headers=None):
+            def stream(self, method, url):
                 return StreamResp()
 
         with tempfile.TemporaryDirectory() as td:
-            dest = Path(td) / "partial.bin"
-            with patch.object(io_util, "_httpx", return_value=MagicMock()):
-                with patch.object(io_util, "_http_client", return_value=FakeClient()):
-                    with patch.object(io_util, "_MIN_RANGE_BYTES", 1):
-                        with self.assertRaises(RuntimeError) as ctx:
-                            download(
-                                "https://cdn.example/v.mp4",
-                                dest,
-                                connections=2,
-                                max_bytes=10_000,
-                            )
-            self.assertIn("undershot", str(ctx.exception).lower())
+            dest = Path(td) / "out.bin"
+            with patch("io_util._http_client", return_value=FakeClient()):
+                with self.assertRaises(RuntimeError) as ctx:
+                    download(
+                        "https://cdn.example/v.mp4?sig=SECRET",
+                        dest,
+                        max_bytes=25,
+                    )
+            self.assertIn("max_bytes", str(ctx.exception).lower())
+            self.assertNotIn("SECRET", str(ctx.exception))
             self.assertFalse(dest.exists())
 
-    def test_multi_range_download_overshoot_unlinks_partial(self) -> None:
-        """Range body larger than expected span aborts and deletes dest."""
-        import io_util
-
-        total = 200  # under max_bytes but multi-range eligible with patched min
-
-        class FakeProbe:
-            status_code = 206
-            headers = {"Content-Range": f"bytes 0-0/{total}"}
+    def test_stream_download_content_length_precheck(self) -> None:
+        try:
+            import httpx
+        except ImportError:
+            self.skipTest("httpx not installed")
 
         class StreamResp:
-            status_code = 206
-            request = MagicMock()
-            headers: dict = {}
-
-            def __init__(self, payload: bytes) -> None:
-                self._payload = payload
+            status_code = 200
+            request = httpx.Request("GET", "https://cdn.example/v.mp4")
+            headers = {"Content-Length": "1000"}
 
             def __enter__(self):
                 return self
@@ -225,50 +172,25 @@ class TestFileIO(unittest.TestCase):
                 return False
 
             def iter_bytes(self, n):
-                # One oversized chunk for the first range (expected 100 when 2 conns).
-                yield self._payload
+                yield b"x"
 
         class FakeClient:
-            def __init__(self, *a, **k) -> None:
-                pass
-
             def __enter__(self):
                 return self
 
             def __exit__(self, *a):
                 return False
 
-            def get(self, url, headers=None):
-                return FakeProbe()
-
-            def stream(self, method, url, headers=None):
-                # Overshoot: 150 bytes for a 100-byte range (total/2).
-                return StreamResp(b"x" * 150)
+            def stream(self, method, url):
+                return StreamResp()
 
         with tempfile.TemporaryDirectory() as td:
-            dest = Path(td) / "partial.bin"
-            with patch.object(io_util, "_httpx", return_value=MagicMock()):
-                with patch.object(
-                    io_util, "_http_client", side_effect=lambda mod, t: FakeClient()
-                ):
-                    with patch.object(io_util, "_MIN_RANGE_BYTES", 1):
-                        with self.assertRaises(RuntimeError) as ctx:
-                            download(
-                                "https://cdn.example/v.mp4?sig=SECRET",
-                                dest,
-                                connections=2,
-                                max_bytes=10_000,
-                            )
-            msg = str(ctx.exception).lower()
-            self.assertTrue(
-                "overshot" in msg or "download failed" in msg,
-                msg=str(ctx.exception),
-            )
-            self.assertNotIn("SECRET", str(ctx.exception))
-            self.assertFalse(
-                dest.exists(),
-                msg="partial multi-range dest must be unlinked on failure",
-            )
+            dest = Path(td) / "out.bin"
+            with patch("io_util._http_client", return_value=FakeClient()):
+                with self.assertRaises(RuntimeError) as ctx:
+                    download("https://cdn.example/v.mp4", dest, max_bytes=100)
+            self.assertIn("too large", str(ctx.exception).lower())
+            self.assertFalse(dest.exists())
 
     def test_http_upload_rejects_3xx(self) -> None:
         try:
@@ -358,7 +280,6 @@ class TestFileIO(unittest.TestCase):
                             "url": url,
                             "headers": dict(headers or {}),
                             "body": data,
-                            "is_file": hasattr(content, "read"),
                         }
                     )
                     return FakeResp(statuses.pop(0))
@@ -376,7 +297,7 @@ class TestFileIO(unittest.TestCase):
             self.assertEqual(put_calls[0]["headers"]["Content-Length"], str(len(payload)))
             self.assertEqual(put_calls[0]["headers"]["Content-Type"], "application/json")
             self.assertEqual(put_calls[0]["body"], payload)
-            self.assertEqual(put_calls[1]["body"], payload)  # re-open on retry
+            self.assertEqual(put_calls[1]["body"], payload)
 
     def test_http_upload_no_retry_on_4xx(self) -> None:
         try:
@@ -451,6 +372,7 @@ class TestFileIO(unittest.TestCase):
                         )
             self.assertIn("after 2 attempts", str(ctx.exception))
             self.assertNotIn("SECRET", str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -68,7 +68,7 @@ def _run_detector(video: Path, out_json: Path) -> dict:
     first = True
     with out_json.open("w", encoding="utf-8") as f:
         f.write('{"job_id":"ds1-eval","frames":[')
-        for chunk_results, _done, _total in det.run(video, player_mask=None):
+        for chunk_results in det.run(video):
             for fr in chunk_results:
                 if not first:
                     f.write(",")
@@ -84,7 +84,6 @@ def _run_detector(video: Path, out_json: Path) -> dict:
         "pose_batch": getattr(det, "pose_batch", None),
         "pose_engine": str(cfg.pose_engine),
         "shuttle_ckpt": str(cfg.shuttle_ckpt),
-        "reid": cfg.reid_engine is not None,
     }
 
 

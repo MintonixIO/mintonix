@@ -1,8 +1,8 @@
 """Pose engine package for the video-det product worker.
 
-Owns YOLO26x-pose TensorRT inference, letterbox geometry, CUDA-graph consumer,
-and engine export helpers. Job I/O, shuttle, and ReID live in `detect/` +
-`server.py` and should import pose only through this package.
+Owns YOLO26x-pose TensorRT inference, letterbox geometry, CUDA-graph runner,
+and engine export helpers. Job I/O and shuttle live in `detect/` + `server.py`
+and should import pose only through this package.
 
 Multi-ffmpeg research code lives under `tools/ffmpeg_pose_bench/` (not product).
 """

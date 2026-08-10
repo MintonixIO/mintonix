@@ -11,7 +11,6 @@ export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
 export ALLOW_FILE_URLS="${ALLOW_FILE_URLS:-1}"
 export POSE_ENGINE="${POSE_ENGINE:-/app/models/yolo26x_pose_int8.engine}"
 export SHUTTLE_CKPT="${SHUTTLE_CKPT:-/app/models/tracknetv5.pt}"
-export REID_ENGINE="${REID_ENGINE:-/app/models/osnet_reid_int8.engine}"
 
 echo "=== host ==="
 hostname

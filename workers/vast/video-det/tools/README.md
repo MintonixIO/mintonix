@@ -7,7 +7,7 @@ Multi-ffmpeg SHM + CUDA-graph pose throughput research. **Not** used by
 sequential OpenCV shuttle indices; product stays single OpenCV pass.
 
 Owns multi-K `RingGpuConsumer` + zero-copy `feed` (`ring_consumer.py`); product
-`pose.trt_runtime.GpuConsumer` is K=1 only.
+pose uses `pose.trt_runtime._TrtRunner.infer` only.
 
 ```bash
 # from workers/vast/video-det with PYTHONPATH=.

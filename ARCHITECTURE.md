@@ -260,7 +260,7 @@ Regression *to* stage S deletes S outputs **and** every later stage's outputs.
 | Stage | Worker | Status | In | Out |
 |---|---|---|---|---|
 | `normalize` | `workers/vast/video-normalization` | ✅ (scores.csv deferred) | original / YouTube URL (worker yt-dlps ✅); BWF: annotation.json → valid_frames_config | normalized.mp4 (full or BWF cleaned cut), thumbnail.jpg; youtube: + original.mkv; BWF: + frame_ranges.csv |
-| `detect` | `workers/vast/video-det` | 🚧 worker + `STAGES.detect` wired; analyze next; embedding module 📐 | normalized.mp4 (BWF cut already primary) | detections.json (pose + TrackNetV5 **top-K shuttle candidates** in **source-frame** UV [0,1] + optional exclusive ReID). `server.py` + `detect/` + `pose/` |
+| `detect` | `workers/vast/video-det` | 🚧 worker + `STAGES.detect` wired; analyze next | normalized.mp4 (BWF cut already primary) | detections.json (pose + TrackNetV5 **top-K shuttle candidates** in **source-frame** UV [0,1]; `player_id` always null). `server.py` + `detect/` + `pose/` |
 | `analyze` | `workers/…/analysis` | 📐 | detections.json + annotation.json | analysis.json: 3D shuttle trajectory (physics fit), player ground-plane positions (homography), metrics (TBD) |
 
 `analyze` is CPU-dominant (geometry + curve fitting, no NN inference) — it can

@@ -54,8 +54,7 @@ ENV MODEL_SERVER_PORT=18000 \
     BENCHMARK_INPUT_URL=file:///app/sample.mp4 \
     ALLOW_FILE_URLS=1 \
     POSE_ENGINE=/app/models/yolo26x_pose_int8.engine \
-    SHUTTLE_CKPT=/app/models/tracknetv5.pt \
-    REID_ENGINE=/app/models/osnet_reid_int8.engine
+    SHUTTLE_CKPT=/app/models/tracknetv5.pt
 
 # Models are mounted or downloaded at container start (not always baked in).
 # server.py fails startup if POSE_ENGINE / SHUTTLE_CKPT are missing unless

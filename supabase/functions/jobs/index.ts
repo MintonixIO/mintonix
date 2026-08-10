@@ -359,15 +359,13 @@ const STAGES: Record<string, {
       const prefix = job.b2_prefix;
       // Always normalized.mp4 — for BWF this is already the cleaned cut
       // (court ∧ scoreboard). No separate valid.mp4 primary path.
-      // player_mask_url is accepted by the worker for exclusive ReID seeds but
-      // not presigned yet — player_id stays null until mask upload is productized.
+      // player_id in detections.json stays null (ReID not in product path).
       return {
         request_id: job.job_id,
         callback_url: `${Deno.env.get("SUPABASE_URL")}/functions/v1/jobs/callback`,
         callback_token: token,
         input_url: await presign(`${prefix}normalized.mp4`, "GET"),
         output_upload_url: await presign(`${prefix}detections.json`, "PUT"),
-        // player_mask_url: await presign(`${prefix}player_mask.png`, "GET"),
       };
     },
 
