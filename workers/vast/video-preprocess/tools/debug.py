@@ -156,17 +156,6 @@ def _load_json(path: str) -> dict:
     return data
 
 
-def _input_url(spec: str) -> str:
-    if io_util.is_youtube_url(spec):
-        return spec
-    if spec.startswith("file://"):
-        return spec
-    path = os.path.abspath(spec)
-    if not os.path.isfile(path):
-        raise RuntimeError(f"input file not found: {path}")
-    return "file://" + path
-
-
 def run_debug(
     input_spec: str,
     out_dir: str,
@@ -179,18 +168,24 @@ def run_debug(
 
     body: dict[str, Any] = {
         "request_id": "debug",
-        "input_url": _input_url(input_spec),
-        "output_upload": "file://" + os.path.join(out_dir, "normalized.mp4"),
-        "thumbnail_upload_url": "file://" + os.path.join(out_dir, "thumbnail.jpg"),
-        "preprocess_log_upload_url": "file://" + os.path.join(
-            out_dir, "preprocess-log.json",
-        ),
+        "local_output_dir": os.path.abspath(out_dir),
         "annotation": annotation,
     }
 
+    if io_util.is_youtube_url(input_spec):
+        body["input_url"] = input_spec
+        path_mode = "bwf"
+    else:
+        path = os.path.abspath(input_spec)
+        if not os.path.isfile(path):
+            raise RuntimeError(f"input file not found: {path}")
+        body["local_source"] = path
+        # No input_url → user path (full encode)
+        path_mode = "user"
+
     log.info(
         "pipeline: start path_mode=%s (sample every %.2fs)",
-        io_util.resolve_path_mode(body["input_url"]),
+        path_mode,
         sample_interval,
     )
     mon = ResourceMonitor(interval_sec=sample_interval)
@@ -212,7 +207,7 @@ def run_debug(
         "preprocess_log_path": os.path.join(out_dir, "preprocess-log.json"),
         "resources": resources,
         "resources_series_path": series_path,
-        "note": "local debug via job.py — no remote upload",
+        "note": "local debug via local_source/local_output_dir — no remote upload",
     }
     result_path = os.path.join(out_dir, "result.json")
     with open(result_path, "w") as f:
@@ -223,7 +218,7 @@ def run_debug(
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Local video-preprocess debug run")
-    p.add_argument("input", help="YouTube URL, file://, or local path")
+    p.add_argument("input", help="YouTube URL or local file path")
     p.add_argument(
         "--annotation", required=True,
         help="annotation.json (court.corners[4] + court.net_poles[2])",
@@ -252,11 +247,6 @@ def main(argv: list[str] | None = None) -> int:
     n = len(res.get("series") or [])
     res["series"] = f"<{n} samples — see resources.jsonl>"
     printable["resources"] = res
-    if isinstance(printable.get("bwf"), dict):
-        b = dict(printable["bwf"])
-        if "frame_map" in b:
-            b["frame_map"] = f"<{len(b['frame_map'])} ranges>"
-        printable["bwf"] = b
     print(json.dumps(printable, indent=2))
     return 0
 

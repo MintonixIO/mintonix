@@ -36,12 +36,12 @@ RUN python3 -m venv /opt/worker-env \
 
 COPY . .
 
-# sample.mp4 is used by PyWorker BenchmarkConfig (file:///app/sample.mp4).
+# sample.mp4 is used by PyWorker BenchmarkConfig via local_source.
 ENV MODEL_SERVER_PORT=18000 \
     MODEL_LOG=/var/log/portal/video-preprocess.log \
     ENV_PATH=/opt/worker-env \
     WORKER_PORT=3000 \
-    BENCHMARK_INPUT_URL=file:///app/sample.mp4
+    BENCHMARK_LOCAL_SOURCE=/app/sample.mp4
 
 EXPOSE 3000
 CMD ["bash", "entrypoint.sh"]

@@ -37,17 +37,23 @@ def probe(path: str) -> dict:
         capture_output=True, text=True, check=True,
     )
     data = json.loads(out.stdout)
+    streams = data.get("streams") or []
     video = next(
-        s for s in data["streams"]
-        if s["codec_type"] == "video"
-        and not s.get("disposition", {}).get("attached_pic", 0)
+        (
+            s for s in streams
+            if s.get("codec_type") == "video"
+            and not s.get("disposition", {}).get("attached_pic", 0)
+        ),
+        None,
     )
-    audio = next((s for s in data["streams"] if s["codec_type"] == "audio"), None)
+    if video is None:
+        raise RuntimeError(f"no video stream in source: {path}")
+    audio = next((s for s in streams if s.get("codec_type") == "audio"), None)
     r = _parse_fps(video.get("r_frame_rate", "0/1"))
     avg = _parse_fps(video.get("avg_frame_rate", "0/1"))
     fps = r if r > 0 else avg
     is_vfr = bool(r > 0 and avg > 0 and abs(r - avg) / max(r, avg) > 0.02)
-    duration = float(data["format"].get("duration") or video.get("duration") or 0)
+    duration = float(data.get("format", {}).get("duration") or video.get("duration") or 0)
     return {
         "width": int(video["width"]),
         "height": int(video["height"]),
@@ -56,7 +62,7 @@ def probe(path: str) -> dict:
         "codec": video["codec_name"],
         "pixel_fmt": video.get("pix_fmt"),
         "audio_codec": audio["codec_name"] if audio else None,
-        "file_size": int(data["format"].get("size") or 0),
+        "file_size": int(data.get("format", {}).get("size") or 0),
         "is_vfr": is_vfr,
     }
 
@@ -157,11 +163,14 @@ def _nvenc_args() -> list[str]:
 
 
 def _nvenc_cmd(
-    src: str, dst: str, info: dict, *, force_cfr: bool, strip_audio: bool,
+    src: str, dst: str, info: dict, *, force_cfr: bool,
     ss: float | None = None, t: float | None = None,
     faststart: bool = True,
 ) -> list[str]:
-    """NVENC encode. Prefer input ``-ss`` so long AV1 prefixes skip decode."""
+    """NVENC encode. Prefer input ``-ss`` so long AV1 prefixes skip decode.
+
+    Audio is kept when present (AAC 128k); product invariant — never stripped.
+    """
     cmd = [
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-threads", "0",
     ]
@@ -177,10 +186,10 @@ def _nvenc_cmd(
     vf = _scale_vf(info, force_cfr)
     if vf:
         cmd += ["-vf", vf]
-    if strip_audio or not info.get("audio_codec"):
-        cmd += ["-an"]
-    else:
+    if info.get("audio_codec"):
         cmd += ["-c:a", "aac", "-b:a", "128k"]
+    else:
+        cmd += ["-an"]
     if faststart:
         cmd += ["-movflags", "+faststart"]
     cmd += [dst]
@@ -202,12 +211,16 @@ def encode_full(src: str, dst: str, src_info: dict | None = None) -> dict:
         ])
     else:
         require_nvenc()
-        _run(_nvenc_cmd(src, dst, info, force_cfr=force_cfr, strip_audio=False))
+        _run(_nvenc_cmd(src, dst, info, force_cfr=force_cfr))
     return probe(dst)
 
 
-def _concat_copy(paths: list[str], dst: str) -> None:
-    """Lossless concat of same-codec MP4 segments."""
+def _concat_segments(paths: list[str], dst: str, *, has_audio: bool) -> None:
+    """Concat same-codec MP4 segments.
+
+    Video is stream-copied. When audio is present, re-encode AAC on the join so
+    multi-range court cuts do not fail on AAC frame-boundary discontinuities.
+    """
     import tempfile
 
     if not paths:
@@ -225,11 +238,17 @@ def _concat_copy(paths: list[str], dst: str) -> None:
             f.write(f"file '{esc}'\n")
         list_path = f.name
     try:
-        _run([
+        cmd = [
             "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
             "-f", "concat", "-safe", "0", "-i", list_path,
-            "-c", "copy", "-movflags", "+faststart", dst,
-        ])
+            "-c:v", "copy",
+        ]
+        if has_audio:
+            cmd += ["-c:a", "aac", "-b:a", "128k"]
+        else:
+            cmd += ["-an"]
+        cmd += ["-movflags", "+faststart", dst]
+        _run(cmd)
     finally:
         try:
             os.unlink(list_path)
@@ -245,13 +264,12 @@ def _encode_segment(
     info: dict,
     *,
     fps: float,
-    strip_audio: bool,
     faststart: bool,
 ) -> None:
     """NVENC one keep-range via input seek (decode keep frames only)."""
     log.info("encode_segment: frames=%d-%d (%.2fs)", a, b, (b - a + 1) / fps)
     _run(_nvenc_cmd(
-        src, dst, info, force_cfr=True, strip_audio=strip_audio,
+        src, dst, info, force_cfr=True,
         ss=a / fps, t=(b - a + 1) / fps, faststart=faststart,
     ))
 
@@ -261,13 +279,12 @@ def encode_ranges(
     dst: str,
     ranges: list[tuple[int, int]],
     src_info: dict | None = None,
-    *,
-    strip_audio: bool = False,
 ) -> dict:
-    """Encode keep ranges: one NVENC seek per range, then concat-copy.
+    """Encode keep ranges: one NVENC seek per range, then concat (audio kept).
 
     Decodes only keep frames (no hole fill, no span-select). Multiple ranges
-    write temp segments without faststart; the final concat adds it once.
+    write temp segments without faststart; final concat stream-copies video and
+    re-encodes AAC so joins stay robust.
     """
     import tempfile
 
@@ -280,43 +297,48 @@ def encode_ranges(
     if not work:
         raise RuntimeError("no ranges to encode")
 
+    has_audio = bool(info.get("audio_codec"))
     kept = sum(b - a + 1 for a, b in work)
-    log.info("encode_ranges: ranges=%d kept≈%d", len(work), kept)
+    log.info(
+        "encode_ranges: ranges=%d kept≈%d audio=%s",
+        len(work), kept, has_audio,
+    )
 
     if len(work) == 1:
         a, b = work[0]
-        _encode_segment(
-            src, dst, a, b, info, fps=fps, strip_audio=strip_audio, faststart=True,
-        )
+        _encode_segment(src, dst, a, b, info, fps=fps, faststart=True)
         return probe(dst)
 
     with tempfile.TemporaryDirectory(prefix="enc-seg-") as tmp:
         parts: list[str] = []
         for i, (a, b) in enumerate(work):
             part = os.path.join(tmp, f"part_{i:04d}.mp4")
-            _encode_segment(
-                src, part, a, b, info, fps=fps, strip_audio=strip_audio,
-                faststart=False,
-            )
+            _encode_segment(src, part, a, b, info, fps=fps, faststart=False)
             parts.append(part)
-        _concat_copy(parts, dst)
+        _concat_segments(parts, dst, has_audio=has_audio)
     return probe(dst)
 
 
 def build_cfr_mezzanine(src: str, dst: str, src_info: dict) -> dict:
-    """VFR → same-res CFR mezzanine before BWF detect."""
+    """VFR → same-res CFR mezzanine before BWF detect (audio preserved as AAC)."""
     require_nvenc()
     fps = src_info.get("fps") or MAX_FPS
     vf = f"fps={fps:g}"
     if (src_info.get("pixel_fmt") or "") != "yuv420p":
         vf += ",scale_cuda=iw:ih:format=nv12"
-    _run([
+    cmd = [
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
         "-hwaccel", "cuda", "-hwaccel_output_format", "cuda", "-hwaccel_device", "0",
         "-i", src,
         *_nvenc_args(),
-        "-vf", vf, "-an", "-movflags", "+faststart", dst,
-    ])
+        "-vf", vf,
+    ]
+    if src_info.get("audio_codec"):
+        cmd += ["-c:a", "aac", "-b:a", "128k"]
+    else:
+        cmd += ["-an"]
+    cmd += ["-movflags", "+faststart", dst]
+    _run(cmd)
     return probe(dst)
 
 

@@ -4,22 +4,26 @@ Vast.ai serverless worker for the pipeline **normalize** stage.
 
 ```text
 YouTube URL → BWF:  download → [CFR if VFR] → court detect → encode_ranges
-B2 / local  → user: download → encode_full
+B2 / CDN    → user: download → encode_full
 Both: upload normalized.mp4 (multipart) + thumbnail.jpg + preprocess-log.json
+Audio is kept on both paths.
 ```
 
 **Annotation is always required**: `court.corners` (4 points, TL→TR→BR→BL) and
-`court.net_poles` (2 points, left/right net-pole tops). Path mode is derived
-from `input_url` (YouTube → BWF; local/B2 → user), not from annotation presence.
+`court.net_poles` (2 points, left/right net-pole tops). Corners drive BWF court
+detect; net poles are required pipeline contract fields (recorded in
+`preprocess-log.json`, used by later stages). Path mode is derived from
+`input_url` (YouTube → BWF; otherwise → user). `local_source` alone (no URL)
+always takes the user path.
 
 | File | Role |
 |---|---|
 | `job.py` | Pipeline (download → process → upload) |
-| `io_util.py` | Download / multipart upload |
+| `io_util.py` | HTTPS download / multipart upload |
 | `normalize.py` | ffmpeg encode + thumbnail |
 | `bwf/` | Court detect + frame shifts |
 | `worker_info.py` | Cheap host/GPU fingerprint for preprocess-log |
-| `callback.py` | Result callback |
+| `callback.py` | Result callback (failures fail the job) |
 | `server.py` / `worker.py` / `entrypoint.sh` | Vast HTTP harness |
 | `tools/debug.py` | Local debug only (not in image) |
 
@@ -28,25 +32,36 @@ from `input_url` (YouTube → BWF; local/B2 → user), not from annotation prese
 - `GET /health`
 - `POST /preprocess/sync` — job envelope from `jobs` dispatch
 
-### Required body fields
+### Required body fields (production)
 
 | Field | Shape |
 |---|---|
-| `input_url` | YouTube, B2/CDN presign, or `file://` |
-| `output_upload` | Multipart `{part_urls, complete_url, abort_url, part_size}` (or `file://` locally) |
-| `thumbnail_upload_url` | Presigned PUT |
-| `preprocess_log_upload_url` | Presigned PUT for `preprocess-log.json` |
+| `input_url` | YouTube or B2/CDN HTTPS presign (`file://` not supported) |
+| `output_upload` | Multipart `{part_urls, complete_url, abort_url, part_size}` |
+| `thumbnail_upload_url` | Presigned HTTPS PUT |
+| `preprocess_log_upload_url` | Presigned HTTPS PUT for `preprocess-log.json` |
 | `annotation` | `{ court: { corners: [[x,y]×4], net_poles: [[x,y]×2] } }` |
+
+`preprocess-log.json` holds frame shifts, timings, worker fingerprint, source +
+output probes, encode metadata, and the validated annotation (corners + net
+poles). The callback body stays thin (no full `frame_map`).
+
+### Local debug / benchmark only
+
+| Field | Shape |
+|---|---|
+| `local_source` | Absolute path to input video (skips download) |
+| `local_output_dir` | Directory for `normalized.mp4`, `thumbnail.jpg`, `preprocess-log.json` |
+
+**Not allowed with `callback_url`.** Production settlement always uploads to B2.
+Benchmark and `tools/debug.py` use local fields without a callback.
 
 ## Debug (local)
 
 ```bash
-# from this directory, with GPU + deps
 python tools/debug.py /data/match.mp4 --annotation ./testdata/annotation.json
 python tools/debug.py 'https://youtu.be/…' --annotation ./annotation.json --out ./debug-bwf
 ```
-
-Local inputs always take the **user** path (full encode). YouTube takes **BWF**.
 
 ## Deploy
 

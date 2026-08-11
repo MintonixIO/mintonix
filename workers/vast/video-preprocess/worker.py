@@ -34,14 +34,15 @@ def request_parser(request: dict) -> dict:
 
 
 def benchmark_generator() -> dict:
-    # Local file destinations for vast SDK readiness probe (not production B2).
-    base = f"/tmp/benchmark_{uuid.uuid4().hex}"
+    # Local paths only (no file://, no callback). Sample at /app/sample.mp4.
+    # Path mode is user when input_url is omitted.
+    out = f"/tmp/benchmark_{uuid.uuid4().hex}"
+    os.makedirs(out, exist_ok=True)
+    sample = os.environ.get("BENCHMARK_LOCAL_SOURCE", "/app/sample.mp4")
     return {
         "request_id": "benchmark",
-        "input_url": os.environ.get("BENCHMARK_INPUT_URL", "file:///app/sample.mp4"),
-        "output_upload": f"file://{base}.mp4",
-        "thumbnail_upload_url": f"file://{base}.jpg",
-        "preprocess_log_upload_url": f"file://{base}-preprocess-log.json",
+        "local_source": sample,
+        "local_output_dir": out,
         "annotation": {
             "court": {
                 "corners": [[0, 0], [100, 0], [100, 100], [0, 100]],

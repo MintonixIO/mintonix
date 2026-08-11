@@ -36,17 +36,35 @@ async def preprocess_sync(request: Request) -> JSONResponse:
 
     rid = body.get("request_id")
     cb_url, cb_tok = body.get("callback_url"), body.get("callback_token")
+    has_local = bool(body.get("local_output_dir") or body.get("local_source"))
 
-    missing = [
-        k for k in (
-            "input_url",
-            "output_upload",
-            "thumbnail_upload_url",
-            "preprocess_log_upload_url",
-            "annotation",
+    # Local debug/benchmark is incompatible with production settlement.
+    if cb_url and has_local:
+        return JSONResponse(
+            {
+                "request_id": rid,
+                "error": "local_source/local_output_dir cannot be used with callback_url",
+            },
+            status_code=422,
         )
-        if body.get(k) is None or body.get(k) == ""
-    ]
+
+    # Production envelope vs local debug/benchmark (local_output_dir).
+    if body.get("annotation") is None:
+        missing = ["annotation"]
+    elif body.get("local_output_dir"):
+        missing = []
+        if not body.get("local_source") and not body.get("input_url"):
+            missing.append("input_url or local_source")
+    else:
+        missing = [
+            k for k in (
+                "input_url",
+                "output_upload",
+                "thumbnail_upload_url",
+                "preprocess_log_upload_url",
+            )
+            if body.get(k) is None or body.get(k) == ""
+        ]
     if missing:
         return JSONResponse(
             {
@@ -66,14 +84,27 @@ async def preprocess_sync(request: Request) -> JSONResponse:
             result = run_preprocess_job(body)
         except Exception as e:
             if cb_url:
-                callback.post_callback(cb_url, cb_tok, {
-                    "request_id": rid, "status": "failed",
-                    "error": sanitize_error(e),
-                })
+                try:
+                    callback.post_callback(cb_url, cb_tok, {
+                        "request_id": rid, "status": "failed",
+                        "error": sanitize_error(e),
+                    })
+                except Exception as cb_err:
+                    log.error(
+                        "job failed and failure callback also failed: %s",
+                        sanitize_error(cb_err),
+                    )
+                    raise RuntimeError(
+                        f"job failed: {sanitize_error(e)}; "
+                        f"callback failed: {sanitize_error(cb_err)}"
+                    ) from e
+            # Failure callback may have settled the job; re-raise so the HTTP
+            # response is still an error (Vast may retry; jobs uses attempt tokens).
             raise
         if cb_url:
             # Wire status must be success|failed for jobs/callback.
             # Job result uses status "ok" — put wire status after **result.
+            # Callback failure fails the job (do not leave jobs stuck processing).
             callback.post_callback(cb_url, cb_tok, {
                 **result, "request_id": rid, "status": "success",
             })

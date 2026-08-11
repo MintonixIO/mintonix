@@ -178,7 +178,7 @@ PyWorker may wrap as `{ input: env }`.
 ```jsonc
 {
   "request_id": "<job_id>",
-  "input_url": "<presigned GET | YouTube URL | file://…>",
+  "input_url": "<presigned GET | YouTube URL>",
   "output_upload": { "part_urls": […], "complete_url": "…", "abort_url": "…", "part_size": 67108864 },
   "thumbnail_upload_url": "<presigned PUT>",
   "preprocess_log_upload_url": "<presigned PUT preprocess-log.json>",
@@ -187,7 +187,8 @@ PyWorker may wrap as `{ input: env }`.
   "callback_token": "<HS256 JWT: job_id, match_id, stage, attempt; aud=jobs-callback; 12h>"
 }
 // Worker route: POST /preprocess/sync (video-preprocess)
-// Path mode: YouTube → BWF court cut; B2/local → full encode
+// Path mode: YouTube → BWF court cut; B2/CDN → full encode
+// file:// not supported; frame_shifts live only in preprocess-log.json
 ```
 
 #### Worker → `jobs/callback` (Bearer `callback_token`)
@@ -257,7 +258,7 @@ Regression *to* stage S deletes S outputs **and** every later stage's outputs.
 
 | Stage | Worker | Status | In | Out |
 |---|---|---|---|---|
-| `normalize` | `workers/vast/video-preprocess` (`POST /preprocess/sync`) | ✅ | original / YouTube URL (worker yt-dlp ✅); always annotation.json (corners + net poles). Path: YouTube→BWF court cut, B2/local→full encode | normalized.mp4, thumbnail.jpg, preprocess-log.json |
+| `normalize` | `workers/vast/video-preprocess` (`POST /preprocess/sync`) | ✅ | original / YouTube URL (worker yt-dlp ✅); always annotation.json (corners + net poles for later stages). Path: YouTube→BWF court cut, B2/CDN→full encode; `file://` not supported | normalized.mp4, thumbnail.jpg, preprocess-log.json |
 | `detect` | `workers/vast/video-det` | 🚧 worker + `STAGES.detect` wired; analyze next; embedding module 📐 | normalized.mp4 (BWF cut already primary) | detections.json (pose + TrackNetV5 **top-K shuttle candidates** in **source-frame** UV [0,1] + optional exclusive ReID). `server.py` + `detect/` + `pose/` |
 | `analyze` | `workers/…/analysis` | 📐 | detections.json + annotation.json | analysis.json: 3D shuttle trajectory (physics fit), player ground-plane positions (homography), metrics (TBD) |
 

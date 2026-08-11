@@ -609,7 +609,7 @@ for MVP.
 MVP notes: **normalize → detect** are wired in `jobs` STAGES. Dispatch always
 loads `annotation.json` (corners + net poles) and presigns multipart
 `normalized.mp4`, `thumbnail.jpg`, and `preprocess-log.json`. Path mode is
-URL-driven on the worker (YouTube → BWF court cut; B2/local → full encode).
+URL-driven on the worker (YouTube → BWF court cut; B2/CDN → full encode).
 Detect always GETs `normalized.mp4`. Analyze is not wired yet (detect is
 terminal → match `ready`). Env: `VAST_PREPROCESS_ENDPOINT_NAME` /
 `VAST_DETECT_ENDPOINT_NAME` (detect falls back to preprocess;

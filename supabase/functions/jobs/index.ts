@@ -30,7 +30,7 @@
  *
  * Stages wired: normalize → detect. analyze lands when its worker contract
  * is pinned. Normalize always loads annotation.json (corners + net poles).
- * Path mode is URL-driven on the worker: YouTube → BWF court cut; B2/local →
+ * Path mode is URL-driven on the worker: YouTube → BWF court cut; B2/CDN →
  * full encode. Both write normalized.mp4, thumbnail.jpg, preprocess-log.json.
  *
  * Secrets:

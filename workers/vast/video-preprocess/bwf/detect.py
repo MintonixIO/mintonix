@@ -6,7 +6,6 @@ a short trial succeeds).
 
 from __future__ import annotations
 
-import csv
 import logging
 import os
 import subprocess
@@ -398,11 +397,3 @@ def build_range_manifest(ranges, src_fps: float | None = None,
         })
         new_idx = new_end + 1 if n_out > 0 else new_idx
     return out
-
-
-def write_range_manifest_csv(range_manifest, path):
-    with open(path, "w", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(["old_start", "old_end", "new_start", "new_end"])
-        for r in range_manifest:
-            w.writerow([r["old_start"], r["old_end"], r["new_start"], r["new_end"]])

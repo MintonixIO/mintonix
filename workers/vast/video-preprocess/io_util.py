@@ -1,4 +1,4 @@
-"""Download and upload. Presigned URLs only — no storage credentials."""
+"""Download and upload. Presigned HTTPS only — no storage credentials, no file://."""
 
 from __future__ import annotations
 
@@ -37,7 +37,8 @@ def sanitize_error(err: object) -> str:
     return text[:500]
 
 
-def _retriable_http(code: int) -> bool:
+def retriable_http(code: int) -> bool:
+    """True for status codes worth retrying (5xx, request timeout, rate limit)."""
     return code >= 500 or code in (408, 429)
 
 
@@ -49,39 +50,31 @@ def is_youtube_url(url: str) -> bool:
     return host in {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"}
 
 
-def is_file_url(url: str) -> bool:
-    return isinstance(url, str) and url.startswith("file://")
-
-
-def is_local_input(url: str) -> bool:
-    """True for file:// inputs (local debug / sample paths)."""
-    return is_file_url(url)
-
-
 def resolve_path_mode(input_url: str) -> str:
     """BWF vs user from input URL.
 
     - YouTube → bwf (catalog court-cut path)
-    - B2 / other remote / local file → user (full-timeline encode)
+    - Otherwise (B2/CDN presign, etc.) → user (full-timeline encode)
     """
     if is_youtube_url(input_url):
         return "bwf"
     return "user"
 
 
+def reject_file_url(url: str, what: str) -> None:
+    if isinstance(url, str) and url.startswith("file:"):
+        raise RuntimeError(f"{what}: file:// is not supported")
+
+
 def download(url: str, dest: str) -> None:
-    if url.startswith("file://"):
-        src = urlparse(url).path
-        log.info("download(file): %s", src)
-        shutil.copy(src, dest)
-        return
+    reject_file_url(url, "download")
     log.info("download: %s", _redact(url))
     last_err: Exception | None = None
     for i in range(UPLOAD_ATTEMPTS):
         try:
             with requests.get(url, stream=True, timeout=600) as r:
                 if not (200 <= r.status_code < 300):
-                    if not _retriable_http(r.status_code):
+                    if not retriable_http(r.status_code):
                         raise RuntimeError(f"download HTTP {r.status_code} {_redact(url)}")
                     last_err = RuntimeError(f"download HTTP {r.status_code}")
                 else:
@@ -105,6 +98,7 @@ def download_youtube(url: str, dest_dir: str) -> str:
     """Fetch YouTube with yt-dlp (≤1080p preferred). Requires deno for n-challenge."""
     import yt_dlp
 
+    reject_file_url(url, "download_youtube")
     log.info("download(youtube): %s", _redact(url))
     deno = shutil.which("deno") or (
         os.path.expanduser("~/.deno/bin/deno")
@@ -138,16 +132,8 @@ def download_youtube(url: str, dest_dir: str) -> str:
 
 
 def upload(local_path: str, url: str) -> None:
-    """PUT with retries on 5xx/408/429/network. Other 4xx are terminal.
-
-    ``file://`` is always allowed (local debug / sample paths).
-    """
-    if url.startswith("file://"):
-        dst = urlparse(url).path
-        os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
-        shutil.copy(local_path, dst)
-        log.info("upload(file): %s", dst)
-        return
+    """PUT with retries on 5xx/408/429/network. Other 4xx are terminal."""
+    reject_file_url(url, "upload")
     size = os.path.getsize(local_path)
     log.info("upload: %s (%d bytes) -> %s", local_path, size, _redact(url))
     last_err: Exception | None = None
@@ -158,7 +144,7 @@ def upload(local_path: str, url: str) -> None:
             if 200 <= r.status_code < 300:
                 log.info("upload(done)")
                 return
-            if not _retriable_http(r.status_code):
+            if not retriable_http(r.status_code):
                 raise RuntimeError(f"upload HTTP {r.status_code} {_redact(url)}")
             last_err = RuntimeError(f"upload HTTP {r.status_code}")
         except requests.RequestException as e:
@@ -171,12 +157,35 @@ def upload(local_path: str, url: str) -> None:
     raise RuntimeError(f"upload failed: {sanitize_error(last_err)}")
 
 
+def validate_multipart(spec: object) -> dict:
+    """Require a complete multipart destination dict."""
+    if not isinstance(spec, dict):
+        raise RuntimeError(
+            "output_upload must be a multipart object "
+            "{part_urls, complete_url, abort_url, part_size}"
+        )
+    part_urls = spec.get("part_urls")
+    complete_url = spec.get("complete_url")
+    abort_url = spec.get("abort_url")
+    if not isinstance(part_urls, list) or not part_urls:
+        raise RuntimeError("output_upload.part_urls must be a non-empty list")
+    if not isinstance(complete_url, str) or not complete_url:
+        raise RuntimeError("output_upload.complete_url is required")
+    if not isinstance(abort_url, str) or not abort_url:
+        raise RuntimeError("output_upload.abort_url is required")
+    for u in (*part_urls, complete_url, abort_url):
+        if isinstance(u, str):
+            reject_file_url(u, "output_upload")
+    return spec
+
+
 def upload_multipart(local_path: str, spec: dict) -> None:
     """Parallel multipart upload with per-part and complete retries."""
+    spec = validate_multipart(spec)
     part_size = int(spec.get("part_size") or MULTIPART_PART_SIZE)
     part_urls = spec["part_urls"]
     complete_url = spec["complete_url"]
-    abort_url = spec.get("abort_url")
+    abort_url = spec["abort_url"]
     size = os.path.getsize(local_path)
     nparts = max(1, math.ceil(size / part_size))
     if nparts > len(part_urls):
@@ -198,7 +207,7 @@ def upload_multipart(local_path: str, spec: dict) -> None:
                     if not etag:
                         raise RuntimeError(f"multipart part {n}: no ETag")
                     return n, etag
-                if not _retriable_http(r.status_code):
+                if not retriable_http(r.status_code):
                     raise RuntimeError(f"multipart part {n}: HTTP {r.status_code}")
                 last_err = RuntimeError(f"HTTP {r.status_code}")
             except requests.RequestException as e:
@@ -234,7 +243,7 @@ def upload_multipart(local_path: str, spec: dict) -> None:
                         raise RuntimeError(f"multipart complete error: {r.text[:200]}")
                     log.info("upload(multipart,done)")
                     return
-                if not _retriable_http(r.status_code):
+                if not retriable_http(r.status_code):
                     raise RuntimeError(f"multipart complete HTTP {r.status_code}")
                 last_err = RuntimeError(f"HTTP {r.status_code}")
             except requests.RequestException as e:
@@ -247,27 +256,8 @@ def upload_multipart(local_path: str, spec: dict) -> None:
                 time.sleep(min(2 ** attempt, 30))
         raise RuntimeError(f"multipart complete failed: {sanitize_error(last_err)}")
     except Exception:
-        if abort_url:
-            try:
-                requests.delete(abort_url, timeout=60)
-            except Exception:
-                pass
+        try:
+            requests.delete(abort_url, timeout=60)
+        except Exception:
+            pass
         raise
-
-
-def put_object(local_path: str, dest: dict | str) -> None:
-    """Upload normalized delivery video.
-
-    Production: multipart dict ``{part_urls, complete_url, abort_url, part_size}``.
-    Local debug: ``file://…`` string (copy). Single-PUT HTTPS is not supported.
-    """
-    if isinstance(dest, dict):
-        upload_multipart(local_path, dest)
-        return
-    if isinstance(dest, str) and dest.startswith("file://"):
-        upload(local_path, dest)
-        return
-    raise RuntimeError(
-        "output_upload must be a multipart spec "
-        "({part_urls, complete_url, abort_url, part_size}) or a file:// path"
-    )

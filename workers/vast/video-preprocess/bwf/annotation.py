@@ -17,7 +17,11 @@ def _points(value: object, *, n: int, name: str) -> list[list[float]] | None:
 
 
 def config_from_annotation(annotation: dict) -> dict | None:
-    """Require court.corners (4) + court.net_poles (2). Returns None if unusable."""
+    """Require court.corners (4) + court.net_poles (2). Returns None if unusable.
+
+    Net poles are part of the pipeline annotation contract (required by every
+    normalize job; used by later stages). Court-only NCC uses corners.
+    """
     if not isinstance(annotation, dict):
         return None
     court = annotation.get("court") or {}
