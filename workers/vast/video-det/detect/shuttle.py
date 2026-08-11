@@ -14,6 +14,7 @@ ShuttleDetector construction / process_frames.
 from __future__ import annotations
 
 import os
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -64,6 +65,10 @@ def _autocast_cuda(device: str):
     return torch.cuda.amp.autocast(enabled=True)
 
 
+def _env_flag(name: str, default: str = "0") -> bool:
+    return os.environ.get(name, default) not in ("0", "false", "False", "")
+
+
 class ShuttleDetector:
     def __init__(
         self,
@@ -73,12 +78,17 @@ class ShuttleDetector:
         min_conf: float = MIN_CONF,
         nms_radius: int = NMS_RADIUS,
         device: str | None = None,
+        engine_path: str | Path | None = None,
     ) -> None:
         torch = _torch()
         self.top_k = top_k
         self.min_conf = min_conf
         self.nms_radius = nms_radius
+        self.trt = None
+        self.backend = "torch"
+        self.model = None
         self.max_triplets = _max_triplets()
+
         # Fail fast on device before importing TrackNet (heavy / torch-dependent).
         if device is None:
             if not torch.cuda.is_available():
@@ -93,10 +103,25 @@ class ShuttleDetector:
                 raise RuntimeError(
                     f"ShuttleDetector device={self.device!r} but CUDA is unavailable"
                 )
-        from .tracknet import TrackNetV5
 
         if str(self.device).startswith("cuda"):
             torch.backends.cudnn.benchmark = True
+
+        # Prefer explicit arg, else env SHUTTLE_ENGINE.
+        eng = engine_path or os.environ.get("SHUTTLE_ENGINE") or ""
+        eng_path = Path(eng) if eng else None
+        if eng_path is not None and eng_path.is_file():
+            from .shuttle_trt import TrackNetTrtRunner
+
+            trt_batch = os.environ.get("SHUTTLE_TRT_BATCH")
+            b = int(trt_batch) if trt_batch else None
+            self.trt = TrackNetTrtRunner(eng_path, batch=b)
+            self.backend = "trt"
+            # Lock micro-batch to engine batch (pad path inside runner).
+            self.max_triplets = int(self.trt.batch)
+            return
+
+        from .tracknet import TrackNetV5
 
         self.model = TrackNetV5().to(self.device).eval()
         state = torch.load(ckpt_path, map_location=self.device, weights_only=True)
@@ -104,34 +129,47 @@ class ShuttleDetector:
         self.model.load_state_dict(sd)
 
         # Optional: torch.compile (env SHUTTLE_COMPILE=1). Warmup cost is outside
-        # steady-state; first process_frames may be slower.
+        # steady-state; first process_frames may be slower. Campaign rejected for e2e.
         if (
             str(self.device).startswith("cuda")
-            and os.environ.get("SHUTTLE_COMPILE", "0") not in ("0", "false", "False")
+            and _env_flag("SHUTTLE_COMPILE")
             and hasattr(torch, "compile")
         ):
             self.model = torch.compile(self.model, mode="reduce-overhead")  # type: ignore[assignment]
 
+    def _resize_one(self, frame: np.ndarray) -> np.ndarray:
+        interp = (
+            cv2.INTER_AREA
+            if frame.shape[1] >= _INPUT_W and frame.shape[0] >= _INPUT_H
+            else cv2.INTER_LINEAR
+        )
+        return cv2.cvtColor(
+            cv2.resize(frame, (_INPUT_W, _INPUT_H), interpolation=interp),
+            cv2.COLOR_BGR2RGB,
+        )
+
     def _preprocess_stack(self, frames: list[np.ndarray]):
-        """Preprocess frames → (N, 3, H, W) float CPU tensor."""
+        """Preprocess frames → (N, 3, H, W) float CPU tensor.
+
+        Threaded cv2.resize for N≥8 (GIL released in OpenCV C++) — large e2e win
+        on 1080p→512×288.
+        """
         torch = _torch()
         if not frames:
             return torch.empty((0, 3, _INPUT_H, _INPUT_W), dtype=torch.float32)
         tiles = np.empty((len(frames), _INPUT_H, _INPUT_W, 3), dtype=np.uint8)
-        for i, frame in enumerate(frames):
-            interp = (
-                cv2.INTER_AREA
-                if frame.shape[1] >= _INPUT_W and frame.shape[0] >= _INPUT_H
-                else cv2.INTER_LINEAR
-            )
-            tiles[i] = cv2.cvtColor(
-                cv2.resize(frame, (_INPUT_W, _INPUT_H), interpolation=interp),
-                cv2.COLOR_BGR2RGB,
-            )
+        n = len(frames)
+        if n >= 8:
+            workers = min(8, n)
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                for i, rgb in enumerate(ex.map(self._resize_one, frames)):
+                    tiles[i] = rgb
+        else:
+            for i, frame in enumerate(frames):
+                tiles[i] = self._resize_one(frame)
         # NHWC uint8 → NCHW float in one shot (less Python per-frame overhead).
         t = torch.from_numpy(tiles).permute(0, 3, 1, 2).float().div_(255.0)
         return t
-
     def _peaks_from_heatmap(self, heatmap: np.ndarray) -> list[ShuttleCandidate]:
         """Single (H, W) heatmap → top-K candidates."""
         return top_candidates(
@@ -204,8 +242,12 @@ class ShuttleDetector:
                 )
                 if not use_cuda:
                     batch = batch.to(self.device)
-                with _autocast_cuda(self.device):
-                    heatmaps = self.model(batch)
+                if self.trt is not None:
+                    # TRT path: no autocast; runner pads to fixed engine batch.
+                    heatmaps = self.trt.forward(batch)
+                else:
+                    with _autocast_cuda(self.device):
+                        heatmaps = self.model(batch)
                 if heatmaps.ndim != 4 or heatmaps.shape[1] != SHUTTLE_WIN:
                     raise RuntimeError(
                         f"TrackNet heatmap shape {heatmaps.shape} expected "
@@ -217,7 +259,6 @@ class ShuttleDetector:
                     )
                 # Center channel only — defer D2H until all micro-batches finish.
                 center_parts.append(heatmaps[:, 1].float())
-
             centers = torch.cat(center_parts, dim=0)
             if use_cuda:
                 centers = centers.contiguous()
