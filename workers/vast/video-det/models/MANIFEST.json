@@ -1,0 +1,28 @@
+{
+  "version": "2026-08-11-fp16",
+  "description": "Product detect weights baked into the video-det image. Engines are TRT/GPU-stack specific — rebuild and re-upload when the Dockerfile base or target GPU arch changes.",
+  "b2_prefix": "models/video-det/2026-08-11-fp16",
+  "files": [
+    {
+      "name": "yolo26x-pose.engine",
+      "role": "pose_trt",
+      "notes": "YOLO26x-pose FP16 TRT, batch 16, imgsz 640 — must match image TRT stack",
+      "sha256": null,
+      "bytes": null
+    },
+    {
+      "name": "tracknetv5.pt",
+      "role": "shuttle_ckpt",
+      "notes": "TrackNetV5 PyTorch weights (fallback / torch path; still required when SHUTTLE_ENGINE is set)",
+      "sha256": null,
+      "bytes": null
+    },
+    {
+      "name": "tracknetv5_fp16_b48.engine",
+      "role": "shuttle_trt",
+      "notes": "TrackNetV5 FP16 TRT fixed batch 48 (modelopt AutoCast + strongly-typed)",
+      "sha256": null,
+      "bytes": null
+    }
+  ]
+}

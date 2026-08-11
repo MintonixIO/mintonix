@@ -38,7 +38,9 @@ worker; detect always reads that single key.
 | `detect/` | `VideoDetector`, pose adapter, shuttle (TrackNet) |
 | `pose/` | YOLO pose TRT engine + letterbox |
 | `tools/` | Eval / bench (not the product path) |
-| `Dockerfile` | TensorRT base + product image |
+| `Dockerfile` | TensorRT base + product image (models baked in) |
+| `models/` | `MANIFEST.json` + B2-fetched weights (not in git) |
+| `tools/fetch_models.sh` | CI / local download via CDN delivery URLs |
 | `test_*.py` | Contract + pipeline unit tests |
 
 ## Wire contract (summary)
@@ -78,10 +80,15 @@ GPU / TensorRT engine build and full e2e remain environment-specific (see
 
 - vast serverless PyWorker pattern (same family as video-normalization):
   backend on localhost, PyWorker on the published port.
-- Product pose engines must match the image’s TensorRT / CUDA stack
+- Product engines must match the image’s TensorRT / CUDA stack
   (`Dockerfile` base: `nvcr.io/nvidia/tensorrt:24.04-py3`).
+- **Model bake-in:** GitHub Actions mints CDN delivery URLs
+  (`ops/model-urls` + `models/MANIFEST.json`) and bakes weights into
+  `/app/models`. Neither GHA nor runtime workers hold B2 keys. Details:
+  [models/README.md](models/README.md).
 - Env knobs for models and batching live in `detect/config.py` /
-  `DetectConfig.from_env()`.
+  `DetectConfig.from_env()` and Dockerfile defaults (`POSE_ENGINE`,
+  `SHUTTLE_CKPT`, `SHUTTLE_ENGINE`, overlap / parallel flags).
 
 ## See also
 

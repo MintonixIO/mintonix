@@ -33,6 +33,21 @@ on:
         required: false
         type: boolean
         default: false
+      fetch_models:
+        description: "Download models/ via CDN delivery (ops/model-urls) before docker build"
+        required: false
+        type: boolean
+        default: false
+      docker_build_args:
+        description: "Extra docker build args, e.g. --build-arg BUILD_ALLOW_MISSING_MODELS=1"
+        required: false
+        type: string
+        default: ""
+    secrets:
+      SUPABASE_URL:
+        required: false
+      PIPELINE_SERVICE_TOKEN:
+        required: false
 
 jobs:
   build-test-push:
@@ -67,9 +82,21 @@ jobs:
           echo "image=${IMAGE,,}" >> "$GITHUB_OUTPUT"
           echo "sha_tag=sha-${{ github.sha }}" >> "$GITHUB_OUTPUT"
 
+      - name: Fetch models via CDN delivery (ops/model-urls)
+        if: ${{ inputs.fetch_models }}
+        working-directory: ${{ inputs.directory }}
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          PIPELINE_SERVICE_TOKEN: ${{ secrets.PIPELINE_SERVICE_TOKEN }}
+        run: bash tools/fetch_models.sh
+
       - name: Build
         working-directory: ${{ inputs.directory }}
-        run: docker build -t "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.sha_tag }}" .
+        run: >
+          docker build
+          ${{ inputs.docker_build_args }}
+          -t "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.sha_tag }}"
+          .
 
       - name: Test
         run: >

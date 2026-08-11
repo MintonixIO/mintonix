@@ -224,25 +224,31 @@ workers/vast/video-det/
 ## Ops notes
 
 - TensorRT engines are GPU-arch + TRT-version specific; build via
-  `pose/export_trt.py` on a host matching the product image
-  (`tensorrt:24.04-py3`).
-- Weights expected under `/app/models/` (mount or download at start):
-  - pose TRT engine (`POSE_ENGINE`; spatial size + batch from tensor shape)
+  `pose/export_trt.py` / `tools/export_tracknet_trt.py` on a host matching the
+  product image (`tensorrt:24.04-py3`) and target GPU arch.
+- **Model cache (baked into image):** CI mints CDN delivery URLs via Supabase
+  `ops/model-urls` (`PIPELINE_SERVICE_TOKEN`), downloads through Cloudflare
+  (free B2→CF egress), writes `models/` (`tools/fetch_models.sh` +
+  `models/MANIFEST.json`), then `Dockerfile` copies to `/app/models/`.
+  Runtime workers and GHA hold **no** B2 keys. See `models/README.md`.
+- Default paths under `/app/models/`:
+  - `yolo26x-pose.engine` (`POSE_ENGINE`)
   - `tracknetv5.pt` (`SHUTTLE_CKPT`)
-- Detect env (see `detect/config.py`): `POSE_ENGINE`, `SHUTTLE_CKPT`,
-  `POSE_CONF`. Startup **fails** if pose/shuttle weights are
-  missing unless `ALLOW_MISSING_MODELS=1` (CI). `/health` returns **503** when
-  models are not loaded. Mount models **before** `server.py` starts
-  (see `entrypoint.sh` comment).
+  - `tracknetv5_fp16_b48.engine` (`SHUTTLE_ENGINE`)
+- Detect env (see `detect/config.py` + Dockerfile): `POSE_ENGINE`,
+  `SHUTTLE_CKPT`, `SHUTTLE_ENGINE`, `POSE_CONF`, batching / overlap flags.
+  Startup **fails** if pose/shuttle weights are missing unless
+  `ALLOW_MISSING_MODELS=1` (CI unit tests). `/health` returns **503** when
+  models are not loaded.
 - `ALLOW_FILE_URLS=1` required for `file://` benchmark I/O (set in Dockerfile for
   `sample.mp4`). **Reads** allowlisted under `/app`, `/tmp`, or
   `tempfile.gettempdir()`. **Writes** allowlisted under `/tmp` /
   `tempfile.gettempdir()` only (not `/app`). Production jobs use https
   presigned URLs. Downloads capped by `MAX_DOWNLOAD_BYTES`. HTTP clients use
   `follow_redirects=False`; **3xx is a hard error**.
-- CI smoke: `import server, worker, detect` + `test_*.py` with CUDA stub;
-  set `ALLOW_MISSING_MODELS=1` if the model server process is started without
-  weights.
+- CI smoke: fetch models via CDN delivery → bake → assert files present →
+  `import server, worker, detect` + `test_*.py` with CUDA stub and
+  `ALLOW_MISSING_MODELS=1` (tests that exercise missing-model 503).
 - Env for jobs function: `VAST_DETECT_ENDPOINT_NAME` (optional fallback to
   `VAST_NORMALIZE_ENDPOINT_NAME`, then legacy `VAST_ENDPOINT_NAME`).
 - Upload streams from disk (no full-file `read_bytes` into RAM). Exception
@@ -250,8 +256,8 @@ workers/vast/video-det/
 
 ### CUDA stacks
 
-- Pose: torch + TensorRT CUDA graphs
-- Shuttle: torch TrackNetV5 (PyTorch, not TRT — known gap)
+- Pose: TensorRT FP16 engine (CUDA graphs in product path)
+- Shuttle: TrackNetV5 TRT FP16 when `SHUTTLE_ENGINE` is set; torch `.pt` fallback
 
 ### Payload sizing (analyze consumers)
 

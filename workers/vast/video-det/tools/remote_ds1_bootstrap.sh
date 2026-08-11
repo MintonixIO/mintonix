@@ -9,8 +9,9 @@ DS1="${DS1_DIR:-/data/ds1}"
 OUT="${OUT_DIR:-/tmp/ds1_eval}"
 export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
 export ALLOW_FILE_URLS="${ALLOW_FILE_URLS:-1}"
-export POSE_ENGINE="${POSE_ENGINE:-/app/models/yolo26x_pose_int8.engine}"
+export POSE_ENGINE="${POSE_ENGINE:-/app/models/yolo26x-pose.engine}"
 export SHUTTLE_CKPT="${SHUTTLE_CKPT:-/app/models/tracknetv5.pt}"
+export SHUTTLE_ENGINE="${SHUTTLE_ENGINE:-/app/models/tracknetv5_fp16_b48.engine}"
 
 echo "=== host ==="
 hostname

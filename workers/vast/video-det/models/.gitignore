@@ -1,0 +1,5 @@
+# Weights are large binary artifacts: download from B2 (CI / ops), never commit.
+*
+!.gitignore
+!MANIFEST.json
+!README.md

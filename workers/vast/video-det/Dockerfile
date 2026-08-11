@@ -33,7 +33,49 @@ assert path.is_file() and path.stat().st_size > 0, path
 print("sample.mp4", path.stat().st_size, "bytes")
 PY
 
-RUN mkdir -p /app/models
+# Product weights are fetched in CI via CDN delivery (tools/fetch_models.sh →
+# ops/model-urls) into ./models/ before `docker build`, then baked here.
+# Fail the image if MANIFEST-required files are missing (unless
+# BUILD_ALLOW_MISSING_MODELS=1).
+ARG BUILD_ALLOW_MISSING_MODELS=0
+ENV BUILD_ALLOW_MISSING_MODELS=${BUILD_ALLOW_MISSING_MODELS}
+RUN python3 - <<'PY'
+import json, os, sys
+from pathlib import Path
+
+models = Path("/app/models")
+models.mkdir(parents=True, exist_ok=True)
+manifest_path = models / "MANIFEST.json"
+allow = os.environ.get("BUILD_ALLOW_MISSING_MODELS", "0") in ("1", "true", "True")
+if not manifest_path.is_file():
+    print("ERROR: /app/models/MANIFEST.json missing", file=sys.stderr)
+    sys.exit(0 if allow else 1)
+manifest = json.loads(manifest_path.read_text())
+missing = []
+for entry in manifest.get("files", []):
+    p = models / entry["name"]
+    if not p.is_file() or p.stat().st_size == 0:
+        missing.append(entry["name"])
+    else:
+        print(f"model ok: {p.name} ({p.stat().st_size} bytes)")
+if missing:
+    msg = "models missing: " + ", ".join(missing)
+    if allow:
+        print("WARN:", msg, "(BUILD_ALLOW_MISSING_MODELS=1)")
+    else:
+        print("ERROR:", msg, file=sys.stderr)
+        print(
+            "CI must run tools/fetch_models.sh before docker build.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+print(
+    "models bake: version=",
+    manifest.get("version"),
+    "prefix=",
+    manifest.get("b2_prefix"),
+)
+PY
 
 # vast's start_server.sh launches the PyWorker via `python -m worker` from
 # SERVER_DIR ($WORKSPACE_DIR/vast-pyworker). Pre-place worker.py there so the
@@ -47,18 +89,26 @@ RUN mkdir -p /workspace/vast-pyworker \
 # Reads: /app (sample.mp4), /tmp, tempfile.gettempdir().
 # Writes: /tmp + tempfile only — never /app (see io_util._file_url_write_roots).
 # Production job traffic must use https presigned URLs, not file://.
+#
+# Models are baked under /app/models (B2 → CI → image). Runtime still may
+# override paths via env. server.py fails startup if weights are missing
+# unless ALLOW_MISSING_MODELS=1 (CI unit tests only).
 ENV MODEL_SERVER_PORT=18000 \
     MODEL_LOG=/var/log/portal/video-det.log \
     WORKSPACE_DIR=/workspace \
     WORKER_PORT=3000 \
     BENCHMARK_INPUT_URL=file:///app/sample.mp4 \
     ALLOW_FILE_URLS=1 \
-    POSE_ENGINE=/app/models/yolo26x_pose_int8.engine \
-    SHUTTLE_CKPT=/app/models/tracknetv5.pt
+    POSE_ENGINE=/app/models/yolo26x-pose.engine \
+    SHUTTLE_CKPT=/app/models/tracknetv5.pt \
+    SHUTTLE_ENGINE=/app/models/tracknetv5_fp16_b48.engine \
+    SHUTTLE_TRT_BATCH=48 \
+    SHUTTLE_MAX_TRIPLETS=48 \
+    SHUTTLE_COMPILE=0 \
+    OVERLAP_DECODE=1 \
+    PARALLEL_DETECT=1 \
+    POSE_IMGSZ=640
 
-# Models are mounted or downloaded at container start (not always baked in).
-# server.py fails startup if POSE_ENGINE / SHUTTLE_CKPT are missing unless
-# ALLOW_MISSING_MODELS=1 (do not use that in production).
 EXPOSE 3000
 
 CMD ["bash", "entrypoint.sh"]

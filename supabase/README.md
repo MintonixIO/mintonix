@@ -586,7 +586,7 @@ access.
 | `cdn-access` | User JWT → upload/delivery tokens; `users/<uid>/` prefix + upload basename allowlist |
 | `matches-ingest` | Front door: create/upsert match + enqueue job (service token or user JWT) |
 | `jobs` | `/dispatch` (pipeline token) + `/callback` (job HMAC bound to job_id/match_id/stage/attempt) |
-| `ops` | `/set-stage` only (`PIPELINE_SERVICE_TOKEN` / `x-pipeline-token`) — set stage; purge uses non-dispatchable stage then optional enqueue |
+| `ops` | `/set-stage` (stage control + optional B2 purge) and `/model-urls` (CDN delivery mint for `models/video-det/*`, CI model bake) — both `PIPELINE_SERVICE_TOKEN` / `x-pipeline-token` |
 
 CDN worker remains the only holder of B2 credentials (`/presign` + delivery).
 `/presign` supports `GET` | `PUT` | `DELETE` | `MULTIPART` | `LIST`. Normalize
@@ -596,6 +596,17 @@ so the GPU worker uploads at line rate; thumbnail / CSV / JSON stay single PUT.
 **Ops auth:** same pipeline token as `matches-ingest` / `/jobs/dispatch`
 (`PIPELINE_SERVICE_TOKEN`, header `x-pipeline-token`). No separate ops token
 for MVP.
+
+**`POST /functions/v1/ops/model-urls` body** (CI model bake — CDN data plane, not B2 presign):
+
+```jsonc
+{ "keys": ["models/video-det/<version>/yolo26x-pose.engine", "..."] }
+// → { "urls": { "<key>": "https://cdn…/<key>?t=<jwt>" }, "expiresAt", "ttl_sec" }
+```
+
+Keys must be under `models/video-det/<version>/<file>`. Requires edge secrets
+`CDN_JWT_PRIVATE_KEY` + `CDN_BASE_URL` (same as `cdn-access`). Optional
+`MODELS_DELIVERY_TOKEN_TTL_SECONDS` (default 1800).
 
 **`POST /functions/v1/ops/set-stage` body:**
 

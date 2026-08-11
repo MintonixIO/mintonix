@@ -23,20 +23,31 @@ jobs:
     permissions:
       contents: read
       packages: write
+    # Pipeline token mints CDN delivery URLs for models/video-det/* (no B2 keys).
+    # Use the same SUPABASE_URL + PIPELINE_SERVICE_TOKEN as jobs/dispatch (prod
+    # or a dedicated CI project that can reach the CDN that holds the models).
+    secrets:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      PIPELINE_SERVICE_TOKEN: ${{ secrets.PIPELINE_SERVICE_TOKEN }}
     with:
       directory: workers/vast/video-det
       image: video-det
       # The TensorRT base image is ~9 GB; reclaim runner disk first.
       free_disk_space: true
-      # No GPU on CI runners: the TensorRT engine build and real inference stay
-      # a manual step (see workers/vast/video-det/ARCHITECTURE.md). This import
-      # smoke test still catches broken deps, syntax errors, and API drift in
-      # server/detect/worker at image-build time. pycuda's extension module
-      # links libcuda.so.1 (the host driver, absent here), so point the loader
-      # at the CUDA toolkit's stub — importing works, initializing wouldn't
-      # (PoseEngine defers CUDA to construction; server skips load without weights).
+      # MANIFEST-listed weights via Cloudflare data plane (free B2→CF egress).
+      fetch_models: true
+      # No GPU on CI runners: TensorRT engine *build* and real inference stay
+      # manual. Import + unit tests still catch API drift. CUDA stub for imports.
+      # ALLOW_MISSING_MODELS only for unit tests that assert 503 without GPU load.
+      docker_run_args: "-e ALLOW_MISSING_MODELS=1"
       test_command: >-
         bash -c "ln -s /usr/local/cuda/lib64/stubs/libcuda.so
         /usr/local/lib/libcuda.so.1 && ldconfig &&
+        test -f /app/models/MANIFEST.json &&
+        python3 -c 'import json; from pathlib import Path;
+        m=json.loads(Path(\"/app/models/MANIFEST.json\").read_text());
+        missing=[f[\"name\"] for f in m[\"files\"] if not (Path(\"/app/models\")/f[\"name\"]).is_file()];
+        assert not missing, missing;
+        print(\"baked models ok\", [f[\"name\"] for f in m[\"files\"]])' &&
         python3 -c 'import server, worker, detect' &&
         python3 -m unittest discover -p 'test_*.py' -v"

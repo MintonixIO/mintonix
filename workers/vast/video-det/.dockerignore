@@ -7,12 +7,17 @@
 **/.gitignore
 **/*.md
 !ARCHITECTURE.md
+!models/README.md
 
 # Non-product multi-ffmpeg research bench (not needed at runtime).
 tools/ffmpeg_pose_bench/
 
 # Local test artifacts
 **/sample_local.*
-**/*.engine
-**/*.pt
-**/*.onnx
+
+# Do NOT ignore models/ — CI fetches weights into models/ and the Dockerfile
+# COPYs them into /app/models. Loose engines/checkpoints outside models/ stay out.
+*.engine
+*.pt
+*.onnx
+!models/**

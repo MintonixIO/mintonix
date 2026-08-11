@@ -30,7 +30,7 @@ class DetectConfig:
     @classmethod
     def from_env(cls) -> DetectConfig:
         pose_engine = Path(
-            os.environ.get("POSE_ENGINE", "/app/models/yolo26x_pose_int8.engine")
+            os.environ.get("POSE_ENGINE", "/app/models/yolo26x-pose.engine")
         )
         shuttle_ckpt = Path(
             os.environ.get("SHUTTLE_CKPT", "/app/models/tracknetv5.pt")
