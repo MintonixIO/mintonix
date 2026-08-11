@@ -78,7 +78,7 @@ GPU / TensorRT engine build and full e2e remain environment-specific (see
 
 ## Deploy notes
 
-- vast serverless PyWorker pattern (same family as video-normalization):
+- vast serverless PyWorker pattern (same family as video-preprocess):
   backend on localhost, PyWorker on the published port.
 - Product pose engines must match the image’s TensorRT / CUDA stack
   (`Dockerfile` base: `nvcr.io/nvidia/tensorrt:24.04-py3`).
@@ -89,6 +89,6 @@ GPU / TensorRT engine build and full e2e remain environment-specific (see
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) — full detect worker design
 - [pose/README.md](pose/README.md) — pose engine package
-- [../video-normalization/README.md](../video-normalization/README.md) — previous stage
+- [../video-preprocess/README.md](../video-preprocess/README.md) — previous stage
 - [../../../ARCHITECTURE.md](../../../ARCHITECTURE.md) — system job contract / stages
 - [../../../supabase/README.md](../../../supabase/README.md) — `jobs` / `complete_job`

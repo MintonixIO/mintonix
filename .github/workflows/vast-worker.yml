@@ -12,11 +12,11 @@ on:
   workflow_call:
     inputs:
       directory:
-        description: "Worker directory, e.g. workers/vast/video-normalization"
+        description: "Worker directory, e.g. workers/vast/video-preprocess"
         required: true
         type: string
       image:
-        description: "GHCR image name, e.g. video-normalization"
+        description: "GHCR image name, e.g. video-preprocess"
         required: true
         type: string
       test_command:

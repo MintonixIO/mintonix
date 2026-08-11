@@ -222,12 +222,10 @@ Objects under the prefix:
 original.<ext>            raw source (upload or yt-dlp archive)
 normalized.mp4            primary cleaned asset (full normalize OR BWF cut)
 thumbnail.jpg
-frame_ranges.csv          BWF optional (compact old/new range map)
+preprocess-log.json       frame shifts + worker fingerprint + stage timings
 annotation.json           court geometry + player labels (single file)
 detections.json           detect output
 analysis.json             analyze output
-# scores.csv              NOT implemented (score timeline deferred)
-# valid.mp4               legacy name; primary BWF cut is normalized.mp4
 ```
 
 ### `annotation.json` (collapsed court + labels)
@@ -236,9 +234,10 @@ analysis.json             analyze output
 {
   "court": {
     "corners": [[x, y], [x, y], [x, y], [x, y]],  // TL → TR → BR → BL
-    "scoreboard_crop": { "x", "y", "w", "h" },    // BWF optional
-    "score_sub_crop":  { "x", "y", "w", "h" },    // BWF optional
-    "row_split_y": 0                                // BWF optional
+    "net_poles": [[x, y], [x, y]],                // left, right (net pole tops)
+    "scoreboard_crop": { "x", "y", "w", "h" },    // optional
+    "score_sub_crop":  { "x", "y", "w", "h" },    // optional
+    "row_split_y": 0                                // optional
   },
   "labels": [
     {
@@ -540,7 +539,7 @@ presigned URLs + single-use callback token bound to `(job_id, attempt)`.
 
 | Stage | Worker | Inputs (B2 / URL) | Outputs (B2) |
 |-------|--------|-------------------|--------------|
-| `normalize` | vast video-normalization | `source_url` or `original.*`; BWF: `annotation.json` → valid_frames_config | `normalized.mp4` (full or BWF cleaned cut), `thumbnail.jpg`; BWF: `frame_ranges.csv`; archive `original.*` if YouTube |
+| `normalize` | vast video-preprocess (`/preprocess/sync`) | `source_url` or `original.*`; always `annotation.json` (corners + net poles) | `normalized.mp4`, `thumbnail.jpg`, `preprocess-log.json` |
 | `detect` | vast video-det | `normalized.mp4` (always; BWF cut already written there) | `detections.json` |
 | `analyze` | CPU/worker TBD | detections + `annotation.json` | `analysis.json` |
 
@@ -557,7 +556,7 @@ When **regressing to** stage S, delete outputs for S **and every later stage**:
 
 | Stage | Outputs deleted on regress *to* this stage (and later) | Always keep |
 |-------|--------------------------------------------------------|-------------|
-| `normalize` | `normalized.mp4`, `thumbnail.jpg`, `frame_ranges.csv` (BWF); legacy `valid.mp4` / `scores.csv` if present | `original.*`, `annotation.json` |
+| `normalize` | `normalized.mp4`, `thumbnail.jpg`, `preprocess-log.json` | `original.*`, `annotation.json` |
 | `detect` | `detections.json` | earlier outputs |
 | `analyze` | `analysis.json` | earlier outputs |
 
@@ -607,18 +606,16 @@ for MVP.
 | `cancel_live` | Default true — if false and a job is `processing`, reject without mutate |
 | `purge` | Default false — stage with enqueue=false, LIST+DELETE stage+later basenames, then enqueue if requested |
 
-MVP notes: **normalize → detect** are wired in `jobs` STAGES. For system/BWF
-(`owner_id` null), dispatch loads raw `annotation.json` + roster into the
-envelope and presigns `frame_ranges.csv`. The **worker** maps annotation →
-`valid_frames_config` (`annotation_map.py`), defaults missing scoreboard
-geometry after probe, and writes the cleaned cut to `normalized.mp4`. Detect
-always GETs `normalized.mp4`. Analyze is not wired yet (detect is terminal →
-match `ready`; ops enqueue of `analyze` terminal-fails). Optional
-`VAST_NORMALIZE_ENDPOINT_NAME` / `VAST_DETECT_ENDPOINT_NAME` for the
-video-normalization and video-det vast endpoints (detect falls back to the
-normalize name if unset; legacy `VAST_ENDPOINT_NAME` still aliases normalize).
-User confirm does not HEAD-check B2 before enqueue
-(empty keys fail at normalize). Worker callback wire status is
+MVP notes: **normalize → detect** are wired in `jobs` STAGES. Dispatch always
+loads `annotation.json` (corners + net poles) and presigns multipart
+`normalized.mp4`, `thumbnail.jpg`, and `preprocess-log.json`. Path mode is
+URL-driven on the worker (YouTube → BWF court cut; B2/CDN → full encode).
+Detect always GETs `normalized.mp4`. Analyze is not wired yet (detect is
+terminal → match `ready`). Env: `VAST_PREPROCESS_ENDPOINT_NAME` /
+`VAST_DETECT_ENDPOINT_NAME` (detect falls back to preprocess;
+`VAST_NORMALIZE_ENDPOINT_NAME` / `VAST_ENDPOINT_NAME` still work). Worker
+route: `POST /preprocess/sync`. User confirm does not HEAD-check B2 before
+enqueue (empty keys fail at normalize). Worker callback wire status is
 `success`|`failed` (see [`ARCHITECTURE.md`](../ARCHITECTURE.md) § One job
 contract); DB stores `complete`|`failed`.
 

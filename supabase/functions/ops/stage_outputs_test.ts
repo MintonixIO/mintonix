@@ -19,12 +19,9 @@ Deno.test("outputsToPurge normalize includes later stages", () => {
   assertEquals(got, [
     "analysis.json",
     "detections.json",
-    "frame_manifest.csv",
-    "frame_ranges.csv",
     "normalized.mp4",
-    "scores.csv",
+    "preprocess-log.json",
     "thumbnail.jpg",
-    "valid.mp4",
   ].sort());
 });
 
@@ -51,7 +48,7 @@ Deno.test("STAGE_OUTPUTS golden shape", () => {
   assertEquals(STAGE_OUTPUTS.detect, ["detections.json"]);
   assertEquals(STAGE_OUTPUTS.analyze, ["analysis.json"]);
   assert(STAGE_OUTPUTS.normalize.includes("normalized.mp4"));
-  assert(STAGE_OUTPUTS.normalize.includes("frame_ranges.csv"));
+  assert(STAGE_OUTPUTS.normalize.includes("preprocess-log.json"));
   assert(isStage("normalize"));
   assert(!isStage("nope"));
 });

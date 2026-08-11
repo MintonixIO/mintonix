@@ -40,7 +40,12 @@ Test-suite / monitor flags
   --dry-run             annotate + print; write nothing
 
 UI flow (OpenCV; skipped with --annotation or --monitor-only)
-  pick frame → court corners TL→TR→BR→BL → SlimSAM player clicks + names
+  pick frame → court corners TL→TR→BR→BL → net poles L→R tops
+  → SlimSAM player clicks + names
+
+Annotation contract (required for every normalize job, both lanes)
+  court.corners[4] + court.net_poles[2]  — worker hard-fails without both
+  labels[] optional for analyze later; not used by normalize/detect today
 
 Secrets (~/.mintonix/dev-secrets.env)
   PIPELINE_SERVICE_TOKEN, SUPABASE_SERVICE_ROLE_KEY, PRESIGN_SERVICE_TOKEN
@@ -96,13 +101,13 @@ MAX_DISPLAY_W, MAX_DISPLAY_H = 1400, 850
 WINDOW = "annotate"
 
 # Secondary B2 artifacts (nice-to-have; not hard fail if missing).
+# Worker always writes these on success; soft so partial CDN LIST lag does not
+# fail the suite. Completeness probe remains primary normalized.mp4 only.
 STAGE_SECONDARY: dict[str, tuple[str, ...]] = {
-    "normalize": ("thumbnail.jpg",),
+    "normalize": ("thumbnail.jpg", "preprocess-log.json"),
     "detect": (),
     "analyze": (),
 }
-# BWF-only extras after normalize.
-BWF_NORMALIZE_EXTRA = ("frame_ranges.csv",)
 
 
 # ── secrets / HTTP ────────────────────────────────────────────────────────────
@@ -626,9 +631,36 @@ def put_file(url: str, path: str) -> None:
         raise RuntimeError(f"upload PUT failed (curl exit {r.returncode})")
 
 
+def _valid_points(value: object, n: int) -> bool:
+    """True when value is n points of [x, y] numbers (worker-compatible)."""
+    if not (isinstance(value, list) and len(value) == n):
+        return False
+    for p in value:
+        if not (isinstance(p, (list, tuple)) and len(p) == 2):
+            return False
+        try:
+            float(p[0])
+            float(p[1])
+        except (TypeError, ValueError):
+            return False
+    return True
+
+
 def build_annotation_json(config: dict, labels: list[dict], labeled_by: str) -> dict:
-    """Single B2 file shape from supabase/README.md (court + labels)."""
-    court: dict = {"corners": config["corners"]}
+    """Single B2 file shape from supabase/README.md (court + labels).
+
+    Requires court.corners[4] + court.net_poles[2] — same gate as the worker.
+    """
+    corners = config.get("corners")
+    net_poles = config.get("net_poles")
+    if not _valid_points(corners, 4):
+        raise ValueError("annotation court.corners must be 4 [x,y] points")
+    if not _valid_points(net_poles, 2):
+        raise ValueError("annotation court.net_poles must be 2 [x,y] points")
+    court: dict = {
+        "corners": corners,
+        "net_poles": net_poles,
+    }
     if config.get("scoreboard_crop") is not None:
         court["scoreboard_crop"] = config["scoreboard_crop"]
         court["score_sub_crop"] = config["score_sub_crop"]
@@ -655,9 +687,15 @@ def load_annotation_file(path: str) -> dict:
         obj = json.load(f)
     if not isinstance(obj, dict) or "court" not in obj:
         sys.exit(f"--annotation must be annotation.json with a court object: {path}")
-    corners = (obj.get("court") or {}).get("corners")
-    if not (isinstance(corners, list) and len(corners) == 4):
-        sys.exit(f"--annotation court.corners must be 4 points: {path}")
+    court = obj.get("court") or {}
+    if not _valid_points(court.get("corners"), 4):
+        sys.exit(
+            f"--annotation court.corners must be 4 [x,y] points: {path}"
+        )
+    if not _valid_points(court.get("net_poles"), 2):
+        sys.exit(
+            f"--annotation court.net_poles must be 2 [x,y] points (left, right tops): {path}"
+        )
     return obj
 
 
@@ -820,8 +858,8 @@ def label_players(frame: np.ndarray, t: float, fps: float,
         cv2.setMouseCallback(WINDOW, lambda *a: None)
 
 
-def annotate(source, sam: SlimSam, with_geometry: bool,
-             with_scoreboard: bool) -> dict | None:
+def annotate(source, sam: SlimSam, *, with_scoreboard: bool) -> dict | None:
+    """Interactive annotate. Always collects court.corners[4] + court.net_poles[2]."""
     cv2.namedWindow(WINDOW)
     t = min(300.0, source.duration / 3)
     try:
@@ -830,15 +868,20 @@ def annotate(source, sam: SlimSam, with_geometry: bool,
             if picked is None:
                 return None
             frame, t = picked
-            corners = None
 
-            if with_geometry:
-                corners = click_points(
-                    frame, 4, "COURT CORNERS",
-                    "click the 4 court corners IN ORDER: top-left, top-right, "
-                    "bottom-right, bottom-left", closed=True)
-                if corners is None:
-                    continue
+            corners = click_points(
+                frame, 4, "COURT CORNERS",
+                "click the 4 court corners IN ORDER: top-left, top-right, "
+                "bottom-right, bottom-left", closed=True)
+            if corners is None:
+                continue
+            net_poles = click_points(
+                frame, 2, "NET POLES",
+                "click the 2 net pole tops IN ORDER: left, right "
+                "(required pipeline annotation for later stages)",
+                closed=False)
+            if net_poles is None:
+                continue
 
             fps = 30.0
             if isinstance(source, FrameSource):
@@ -851,6 +894,7 @@ def annotate(source, sam: SlimSam, with_geometry: bool,
             quad = {"x": 0, "y": 0, "w": qw, "h": qh}
             return {
                 "corners": corners,
+                "net_poles": net_poles,
                 "scoreboard_crop": dict(quad) if with_scoreboard else None,
                 "score_sub_crop": dict(quad) if with_scoreboard else None,
                 "row_split_y": qh // 2 if with_scoreboard else None,
@@ -974,15 +1018,8 @@ def evaluate_success(snap: Snapshot, *, until: str, lane: str) -> list[CheckResu
         checks.append(CheckResult(
             f"b2.{sec}",
             True,
-            "present" if sec in bases else "missing (optional)",
+            "present" if sec in bases else "missing (soft; worker writes on success)",
         ))
-    if lane == "bwf":
-        for extra in BWF_NORMALIZE_EXTRA:
-            checks.append(CheckResult(
-                f"b2.{extra}",
-                True,
-                "present" if extra in bases else "missing (BWF expected, non-fatal)",
-            ))
 
     if m and n_primary in bases:
         probes_ok = all(
@@ -1505,7 +1542,6 @@ def main(argv: list[str] | None = None) -> int:
               + (f" (youtube id {yt['video_id']})" if yt else ""))
         config = annotate(
             source, sam,
-            with_geometry=True,
             with_scoreboard=lane == "bwf",
         )
         if config is None:
@@ -1560,6 +1596,7 @@ def main(argv: list[str] | None = None) -> int:
             court = annotation.get("court") or {}
             config = {
                 "corners": court.get("corners"),
+                "net_poles": court.get("net_poles"),
                 "scoreboard_crop": court.get("scoreboard_crop"),
                 "score_sub_crop": court.get("score_sub_crop"),
                 "row_split_y": court.get("row_split_y"),

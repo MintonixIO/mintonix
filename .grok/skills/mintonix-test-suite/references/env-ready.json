@@ -46,14 +46,15 @@
     "PRESIGN_SERVICE_TOKEN",
     "CDN_PRESIGN_URL",
     "VAST_API_KEY",
-    "VAST_NORMALIZE_ENDPOINT_NAME"
+    "VAST_PREPROCESS_ENDPOINT_NAME"
   ],
   "project_secrets_recommended_names": [
     "VAST_DETECT_ENDPOINT_NAME",
     "VAST_TLS_CA"
   ],
   "project_secrets_legacy_aliases": {
-    "VAST_ENDPOINT_NAME": "Deprecated alias for VAST_NORMALIZE_ENDPOINT_NAME — warn if only legacy is set"
+    "VAST_NORMALIZE_ENDPOINT_NAME": "Legacy alias for VAST_PREPROCESS_ENDPOINT_NAME — warn if only legacy is set",
+    "VAST_ENDPOINT_NAME": "Deprecated alias for VAST_PREPROCESS_ENDPOINT_NAME — warn if only legacy is set"
   },
   "edge_functions_expected": [
     "jobs",

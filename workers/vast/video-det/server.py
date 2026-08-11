@@ -1,6 +1,6 @@
 """Backend model server for the video-det PyWorker.
 
-Mirrors workers/vast/video-normalization/server.py: this is the HTTP service the
+Mirrors workers/vast/video-preprocess/server.py: this is the HTTP service the
 vast.ai PyWorker proxies to. It does the work; worker.py only reports load.
 
 Contract (request_parser unwraps {"input": {...}}; this server also accepts a
@@ -69,7 +69,7 @@ def _callback_prefix() -> str:
 
 
 def _callback_url_allowed(url: str | None) -> bool:
-    """Same policy as video-normalization: prefix-required, path suffix, fail-closed."""
+    """Same policy as video-preprocess: prefix-required, path suffix, fail-closed."""
     if not url:
         return True
     if os.environ.get("ALLOW_UNSAFE_CALLBACK", "0").lower() in (

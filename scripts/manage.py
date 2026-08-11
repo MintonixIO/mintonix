@@ -111,9 +111,7 @@ HTTP_USER_AGENT = "Mintonix-manager/1.0 (+scripts/manage.py)"
 
 KNOWN_BASENAMES = (
     "original.mp4", "original.mov", "original.mkv", "annotation.json",
-    "normalized.mp4", "thumbnail.jpg", "frame_ranges.csv",
-    # legacy / deferred names still listed so LIST inspect surfaces them:
-    "valid.mp4", "frame_manifest.csv", "scores.csv",
+    "normalized.mp4", "thumbnail.jpg", "preprocess-log.json",
     "detections.json", "analysis.json",
 )
 

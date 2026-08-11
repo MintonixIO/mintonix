@@ -12,7 +12,7 @@ on:
       - "scripts/test_stage_outputs.py"
       - "supabase/functions/ops/**"
       - "supabase/functions/jobs/**"
-      - "workers/vast/video-normalization/server.py"
+      - "workers/vast/video-preprocess/server.py"
       - "workers/vast/video-det/server.py"
       - ".github/workflows/contracts.yml"
   pull_request:
@@ -22,7 +22,7 @@ on:
       - "scripts/test_stage_outputs.py"
       - "supabase/functions/ops/**"
       - "supabase/functions/jobs/**"
-      - "workers/vast/video-normalization/server.py"
+      - "workers/vast/video-preprocess/server.py"
       - "workers/vast/video-det/server.py"
       - ".github/workflows/contracts.yml"
 
@@ -56,7 +56,11 @@ jobs:
               assert tuple(names) == tuple(s.STAGE_OUTPUTS[stage]), (
                   f"{stage}: contracts={names} py={s.STAGE_OUTPUTS[stage]}"
               )
-          assert "frame_ranges.csv" in s.STAGE_OUTPUTS["normalize"]
+          assert c["primary"] == s.STAGE_PRIMARY
+          assert set(c["keep_on_regress"]) == set(s.KEEP_ON_REGRESS)
+          # Normalize SSOT is preprocess-log.json (frame_shifts); frame_ranges.csv removed
+          assert "preprocess-log.json" in s.STAGE_OUTPUTS["normalize"]
+          assert "frame_ranges.csv" not in s.STAGE_OUTPUTS["normalize"]
           # Callback wire vocabulary fixture
           with open("contracts/callback.success.json") as f:
               assert json.load(f)["status"] == "success"

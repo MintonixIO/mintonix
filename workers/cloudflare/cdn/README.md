@@ -20,7 +20,7 @@ edge cache; cache-fill from B2 costs nothing.
 
 B2 credentials live in **exactly one place — this Worker**. **No Vast/RunPod
 compute worker ever holds a credential** — they only receive presigned URLs,
-exactly as `workers/vast/video-normalization/normalize.py` already works.
+exactly as `workers/vast/video-preprocess/normalize.py` already works.
 
 | Component | Holds | Can it... |
 |---|---|---|
@@ -192,4 +192,4 @@ If it stays `MISS`, fall back to the Cache-API + full-object recipe (store a ful
 - [DEPLOYMENT.md](DEPLOYMENT.md) — env / deploy checklist
 - [../../../ARCHITECTURE.md](../../../ARCHITECTURE.md) — trust model
 - [../../../supabase/README.md](../../../supabase/README.md) — `cdn-access` + key layout
-- [../../vast/video-normalization/README.md](../../vast/video-normalization/README.md) — first consumer of multipart presigns
+- [../../vast/video-preprocess/README.md](../../vast/video-preprocess/README.md) — first consumer of multipart presigns

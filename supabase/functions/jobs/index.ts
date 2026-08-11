@@ -29,21 +29,20 @@
  *   owner_id set      →  users/<owner_id>/<match_id>/
  *
  * Stages wired: normalize → detect. analyze lands when its worker contract
- * is pinned. For system/BWF matches, dispatch loads annotation.json into a
- * thin valid_frames_config (corners + names + stored crops only; worker
- * defaults missing scoreboard geometry after probe) so normalize writes a
- * cleaned cut to normalized.mp4 (detect always reads that key). scores.csv
- * is not produced (deferred).
+ * is pinned. Normalize always loads annotation.json (corners + net poles).
+ * Path mode is URL-driven on the worker: YouTube → BWF court cut; B2/CDN →
+ * full encode. Both write normalized.mp4, thumbnail.jpg, preprocess-log.json.
  *
  * Secrets:
  *   PIPELINE_SERVICE_TOKEN  auth for /dispatch (shared with matches-ingest)
  *   JOB_TOKEN_SECRET        HMAC secret for the callback token
  *   CDN_PRESIGN_URL         CDN Worker control plane (e.g. https://…/presign)
  *   PRESIGN_SERVICE_TOKEN   auth for /presign (shared with cdn-access)
- *   VAST_NORMALIZE_ENDPOINT_NAME  vast serverless endpoint for normalize
- *   VAST_DETECT_ENDPOINT_NAME     vast serverless endpoint for detect
- *                                 (falls back to normalize endpoint if unset)
- *   VAST_ENDPOINT_NAME      deprecated alias for VAST_NORMALIZE_ENDPOINT_NAME
+ *   VAST_PREPROCESS_ENDPOINT_NAME  vast serverless endpoint for preprocess
+ *   VAST_NORMALIZE_ENDPOINT_NAME   deprecated alias for preprocess endpoint
+ *   VAST_DETECT_ENDPOINT_NAME      vast serverless endpoint for detect
+ *                                  (falls back to preprocess endpoint if unset)
+ *   VAST_ENDPOINT_NAME      deprecated alias for preprocess endpoint
  *   VAST_API_KEY            vast ACCOUNT API key
  *   VAST_AUTOSCALER_URL     optional, default https://run.vast.ai
  *   VAST_TLS_CA             optional PEM: vast's self-signed worker CA
@@ -104,7 +103,7 @@ function isYoutubeUrl(raw: string | null | undefined): boolean {
 
 // ---------------------------------------------------------------- presign
 
-/** Worker multipart upload shape (matches video-normalization upload_multipart). */
+/** Worker multipart upload shape (matches video-preprocess multipart upload). */
 export interface MultipartUploadSpec {
   part_urls: string[];
   complete_url: string;
@@ -138,7 +137,7 @@ async function presign(key: string, op: "GET" | "PUT"): Promise<string> {
 
 /**
  * Create a B2 multipart upload session and return presigned part/complete/abort
- * URLs for large pipeline outputs (normalized.mp4, original.mkv). Small objects
+ * URLs for large pipeline outputs (normalized.mp4). Small objects
  * (thumbnail, CSV, JSON) stay on single PUT via presign(..., "PUT").
  */
 async function presignMultipart(key: string): Promise<MultipartUploadSpec> {
@@ -234,40 +233,27 @@ interface Settlement {
 }
 
 /**
- * Load raw annotation.json for system/BWF matches.
- * Mapping to valid_frames_config is **worker-owned** (annotation_map.py).
- * Throws when missing so the job fails instead of silently full-timeline
- * normalizing an uncleaned BWF master into detect.
+ * Load raw annotation.json for every normalize job.
+ * Worker validates court.corners[4] + court.net_poles[2].
+ * Throws when missing — annotation is required for both BWF and user paths.
  */
-async function loadBwfAnnotation(job: DispatchedJob): Promise<unknown> {
+async function loadAnnotation(job: DispatchedJob): Promise<unknown> {
   const url = await presign(`${job.b2_prefix}annotation.json`, "GET");
   const resp = await fetch(url);
   if (!resp.ok) {
     throw new Error(
-      `BWF match ${job.match_id}: annotation.json missing or unreadable ` +
-        `(HTTP ${resp.status}); cannot run valid-frames path`,
+      `match ${job.match_id}: annotation.json missing or unreadable ` +
+        `(HTTP ${resp.status}); cannot run preprocess`,
     );
   }
   return await resp.json();
 }
 
-/** True if a B2 object exists (Range probe on presigned GET). */
-async function b2ObjectExists(key: string): Promise<boolean> {
-  try {
-    const url = await presign(key, "GET");
-    const resp = await fetch(url, { headers: { Range: "bytes=0-0" } });
-    return resp.ok || resp.status === 206;
-  } catch {
-    return false;
-  }
-}
-
 /**
  * Stage routing table. normalize → detect; analyze slots in when ready.
  *
- * BWF contract: cleaned cut (court ∧ scoreboard) is written to
- * normalized.mp4 so detect always GETs that key. Compact frame_ranges.csv
- * is a side artifact. scores.csv is not produced.
+ * Worker route is /preprocess/sync (video-preprocess image).
+ * Artifacts: normalized.mp4 (multipart), thumbnail.jpg, preprocess-log.json.
  */
 const STAGES: Record<string, {
   route: string;
@@ -277,8 +263,8 @@ const STAGES: Record<string, {
   settle(job: DispatchedJob, body: CallbackBody, ok: boolean): Settlement;
 }> = {
   normalize: {
-    route: "/normalize/sync",
-    endpointEnv: "VAST_NORMALIZE_ENDPOINT_NAME",
+    route: "/preprocess/sync",
+    endpointEnv: "VAST_PREPROCESS_ENDPOINT_NAME",
 
     async buildEnvelope(job, token) {
       const prefix = job.b2_prefix;
@@ -292,49 +278,30 @@ const STAGES: Record<string, {
       // the job is already claimed as processing.
       const outputP = presignMultipart(`${prefix}normalized.mp4`);
       const thumbP = presign(`${prefix}thumbnail.jpg`, "PUT");
+      const logP = presign(`${prefix}preprocess-log.json`, "PUT");
+      const annP = loadAnnotation(job);
 
       // User-owned: original already in B2 as original.mp4 (matches-ingest).
-      // YouTube: prefer archived original.mkv on retry when present; else yt-dlp
-      // + multipart archive. System/backlog without URL: original.mp4 under prefix.
+      // YouTube: worker yt-dlps source_url → BWF court-cut path.
+      // System/backlog without YouTube URL: original.mp4 under prefix (user path).
       if (job.owner_id) {
         env.input_url = await presign(`${prefix}original.mp4`, "GET");
       } else if (isYoutubeUrl(job.source_url)) {
-        const mkvKey = `${prefix}original.mkv`;
-        if (await b2ObjectExists(mkvKey)) {
-          env.input_url = await presign(mkvKey, "GET");
-        } else {
-          env.input_url = job.source_url;
-          env.original_upload = await presignMultipart(mkvKey);
-        }
+        env.input_url = job.source_url;
       } else {
         env.input_url = await presign(`${prefix}original.mp4`, "GET");
       }
 
       env.output_upload = await outputP;
       env.thumbnail_upload_url = await thumbP;
-
-      // BWF / system: pass raw annotation.json + roster; worker maps to
-      // valid_frames_config (sole authority). Fail if annotation missing.
-      if (!job.owner_id) {
-        const [annotation, manifestUrl] = await Promise.all([
-          loadBwfAnnotation(job),
-          presign(`${prefix}frame_ranges.csv`, "PUT"),
-        ]);
-        env.annotation = annotation;
-        env.roster = {
-          team1_player1: job.team1_player1,
-          team1_player2: job.team1_player2,
-          team2_player1: job.team2_player1,
-          team2_player2: job.team2_player2,
-        };
-        env.manifest_upload_url = manifestUrl;
-      }
+      env.preprocess_log_upload_url = await logP;
+      env.annotation = await annP;
       return env;
     },
 
     settle(_job, body, ok) {
       // Advance to detect on success. Match stays processing until detect (or
-      // later analyze) finishes; probe fields land from the normalize result.
+      // later analyze) finishes; probe fields land from the preprocess result.
       const next = ok ? { stage: "detect" } : null;
       const match = ok
         ? {
@@ -357,8 +324,7 @@ const STAGES: Record<string, {
 
     async buildEnvelope(job, token) {
       const prefix = job.b2_prefix;
-      // Always normalized.mp4 — for BWF this is already the cleaned cut
-      // (court ∧ scoreboard). No separate valid.mp4 primary path.
+      // Always normalized.mp4 (BWF court cut or full user encode).
       // player_mask_url is accepted by the worker for exclusive ReID seeds but
       // not presigned yet — player_id stays null until mask upload is productized.
       return {
@@ -426,7 +392,8 @@ async function resolveEndpointKey(endpointName: string, accountKey: string): Pro
  * Resolve the vast serverless endpoint name for a stage.
  *
  * Prefer the stage-specific env (e.g. VAST_DETECT_ENDPOINT_NAME), then
- * VAST_NORMALIZE_ENDPOINT_NAME, then legacy VAST_ENDPOINT_NAME.
+ * VAST_PREPROCESS_ENDPOINT_NAME, then deprecated
+ * VAST_NORMALIZE_ENDPOINT_NAME / VAST_ENDPOINT_NAME.
  */
 function resolveVastEndpointName(endpointEnv?: string): {
   name: string | undefined;
@@ -437,15 +404,23 @@ function resolveVastEndpointName(endpointEnv?: string): {
     if (staged) return { name: staged, usedEnv: endpointEnv };
   }
 
+  const preprocess = Deno.env.get("VAST_PREPROCESS_ENDPOINT_NAME");
+  if (preprocess) {
+    return { name: preprocess, usedEnv: "VAST_PREPROCESS_ENDPOINT_NAME" };
+  }
+
   const normalize = Deno.env.get("VAST_NORMALIZE_ENDPOINT_NAME");
   if (normalize) {
+    console.warn(
+      "VAST_NORMALIZE_ENDPOINT_NAME is deprecated; set VAST_PREPROCESS_ENDPOINT_NAME",
+    );
     return { name: normalize, usedEnv: "VAST_NORMALIZE_ENDPOINT_NAME" };
   }
 
   const legacy = Deno.env.get("VAST_ENDPOINT_NAME");
   if (legacy) {
     console.warn(
-      "VAST_ENDPOINT_NAME is deprecated; set VAST_NORMALIZE_ENDPOINT_NAME " +
+      "VAST_ENDPOINT_NAME is deprecated; set VAST_PREPROCESS_ENDPOINT_NAME " +
         "(and VAST_DETECT_ENDPOINT_NAME for detect)",
     );
     return { name: legacy, usedEnv: "VAST_ENDPOINT_NAME" };
@@ -453,7 +428,7 @@ function resolveVastEndpointName(endpointEnv?: string): {
 
   return {
     name: undefined,
-    usedEnv: endpointEnv ?? "VAST_NORMALIZE_ENDPOINT_NAME",
+    usedEnv: endpointEnv ?? "VAST_PREPROCESS_ENDPOINT_NAME",
   };
 }
 
@@ -463,7 +438,7 @@ async function invokeVast(
   jobId: string,
   endpointEnv?: string,
 ): Promise<void> {
-  // Stage-specific name first; detect may fall back to the normalize endpoint
+  // Stage-specific name first; detect may fall back to the preprocess endpoint
   // so a single-endpoint local deploy still works.
   const { name: endpoint, usedEnv } = resolveVastEndpointName(endpointEnv);
   const accountKey = Deno.env.get("VAST_API_KEY");
