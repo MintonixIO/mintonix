@@ -25,13 +25,14 @@ def detect_ranges(
     width: int,
     height: int,
     out_fps: float | None = None,
+    codec: str | None = None,
 ) -> dict:
     """Run court-only detect; return ranges + frame_map + optional CSV path helper."""
     from bwf import detect as _detect  # lazy: cv2
 
     log.info("bwf.detect: %s fps=%.3f %dx%d", video_path, fps, width, height)
     ranges, n_src, detect_timings = _detect.detect_valid_ranges(
-        video_path, config, fps=fps, width=width, height=height,
+        video_path, config, fps=fps, width=width, height=height, codec=codec,
     )
     if out_fps is None:
         out_fps = delivery_fps(fps)

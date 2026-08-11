@@ -87,6 +87,7 @@ def run_preprocess_job(body: dict) -> dict:
             t = time.time()
             det = bwf.detect_ranges(
                 src, cfg, fps=fps, width=info["width"], height=info["height"],
+                codec=info.get("codec"),
             )
             mark("detect_sec", t)
             for k, v in (det.get("detect_timings") or {}).items():

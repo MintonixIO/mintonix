@@ -11,8 +11,6 @@ import subprocess
 log = logging.getLogger("video-preprocess.normalize")
 
 MAX_LONG, MAX_SHORT, MAX_FPS = 1920, 1080, 30
-# Skip span head/tail trim when the saved amount is tiny.
-_SPAN_MIN_SKIP_SEC = 1.0
 
 
 def _run(cmd: list[str]) -> None:
@@ -73,19 +71,30 @@ def delivery_fps(src_fps: float) -> float:
     return float(min(src_fps, MAX_FPS))
 
 
+_gpu_ok: bool | None = None
+
+
 def use_gpu() -> bool:
-    """True when an NVIDIA device exists and ffmpeg exposes h264_nvenc."""
+    """True when an NVIDIA device exists and ffmpeg exposes h264_nvenc.
+
+    Cached for the process lifetime — capability does not change mid-job.
+    """
+    global _gpu_ok
+    if _gpu_ok is not None:
+        return _gpu_ok
     import glob
     if not glob.glob("/dev/nvidia[0-9]*"):
+        _gpu_ok = False
         return False
     try:
         out = subprocess.run(
             ["ffmpeg", "-hide_banner", "-encoders"],
             capture_output=True, text=True, timeout=5,
         )
-        return "h264_nvenc" in out.stdout
+        _gpu_ok = "h264_nvenc" in out.stdout
     except Exception:
-        return False
+        _gpu_ok = False
+    return _gpu_ok
 
 
 def require_nvenc() -> None:
@@ -138,15 +147,19 @@ def _scale_vf(info: dict, force_cfr: bool) -> str:
 
 
 def _nvenc_args() -> list[str]:
+    # Default p4 matched baseline quality; override via NVENC_PRESET / NVENC_CQ.
+    preset = (os.environ.get("NVENC_PRESET") or "p4").strip() or "p4"
+    cq = (os.environ.get("NVENC_CQ") or "23").strip() or "23"
     return [
-        "-c:v", "h264_nvenc", "-preset", "p4", "-tune", "hq",
-        "-rc", "vbr", "-cq", "23", "-b:v", "0",
+        "-c:v", "h264_nvenc", "-preset", preset, "-tune", "hq",
+        "-rc", "vbr", "-cq", cq, "-b:v", "0",
     ]
 
 
 def _nvenc_cmd(
     src: str, dst: str, info: dict, *, force_cfr: bool, strip_audio: bool,
     ss: float | None = None, t: float | None = None,
+    faststart: bool = True,
 ) -> list[str]:
     """NVENC encode. Prefer input ``-ss`` so long AV1 prefixes skip decode."""
     cmd = [
@@ -168,7 +181,9 @@ def _nvenc_cmd(
         cmd += ["-an"]
     else:
         cmd += ["-c:a", "aac", "-b:a", "128k"]
-    cmd += ["-movflags", "+faststart", dst]
+    if faststart:
+        cmd += ["-movflags", "+faststart"]
+    cmd += [dst]
     return cmd
 
 
@@ -191,19 +206,54 @@ def encode_full(src: str, dst: str, src_info: dict | None = None) -> dict:
     return probe(dst)
 
 
-def select_expr(ranges: list[tuple[int, int]]) -> str:
-    """ffmpeg select expression: keep inclusive frame indices (stream-local n)."""
-    return "+".join(f"between(n\\,{a}\\,{b})" for a, b in ranges)
+def _concat_copy(paths: list[str], dst: str) -> None:
+    """Lossless concat of same-codec MP4 segments."""
+    import tempfile
+
+    if not paths:
+        raise RuntimeError("no segments to concat")
+    if len(paths) == 1:
+        import shutil
+        shutil.copyfile(paths[0], dst)
+        return
+    with tempfile.NamedTemporaryFile(
+        "w", suffix=".ffconcat", delete=False, encoding="utf-8",
+    ) as f:
+        f.write("ffconcat version 1.0\n")
+        for p in paths:
+            esc = p.replace("'", r"'\''")
+            f.write(f"file '{esc}'\n")
+        list_path = f.name
+    try:
+        _run([
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+            "-f", "concat", "-safe", "0", "-i", list_path,
+            "-c", "copy", "-movflags", "+faststart", dst,
+        ])
+    finally:
+        try:
+            os.unlink(list_path)
+        except OSError:
+            pass
 
 
-def span_window(
-    ranges: list[tuple[int, int]],
-) -> tuple[int, int, list[tuple[int, int]]]:
-    """Bounding window + ranges rebased so 0 == start_frame."""
-    start_f = min(a for a, _b in ranges)
-    end_f = max(b for _a, b in ranges)
-    rel = [(a - start_f, b - start_f) for a, b in ranges]
-    return start_f, end_f, rel
+def _encode_segment(
+    src: str,
+    dst: str,
+    a: int,
+    b: int,
+    info: dict,
+    *,
+    fps: float,
+    strip_audio: bool,
+    faststart: bool,
+) -> None:
+    """NVENC one keep-range via input seek (decode keep frames only)."""
+    log.info("encode_segment: frames=%d-%d (%.2fs)", a, b, (b - a + 1) / fps)
+    _run(_nvenc_cmd(
+        src, dst, info, force_cfr=True, strip_audio=strip_audio,
+        ss=a / fps, t=(b - a + 1) / fps, faststart=faststart,
+    ))
 
 
 def encode_ranges(
@@ -214,7 +264,13 @@ def encode_ranges(
     *,
     strip_audio: bool = True,
 ) -> dict:
-    """Encode keep ranges: one-range seek, else span-trim select + NVENC."""
+    """Encode keep ranges: one NVENC seek per range, then concat-copy.
+
+    Decodes only keep frames (no hole fill, no span-select). Multiple ranges
+    write temp segments without faststart; the final concat adds it once.
+    """
+    import tempfile
+
     info = dict(src_info or probe(src))
     require_nvenc()
     fps = float(info.get("fps") or MAX_FPS)
@@ -224,70 +280,26 @@ def encode_ranges(
     if not work:
         raise RuntimeError("no ranges to encode")
 
+    kept = sum(b - a + 1 for a, b in work)
+    log.info("encode_ranges: ranges=%d kept≈%d", len(work), kept)
+
     if len(work) == 1:
         a, b = work[0]
-        log.info("encode_ranges: single segment frames=%d-%d", a, b)
-        _run(_nvenc_cmd(
-            src, dst, info, force_cfr=True, strip_audio=strip_audio,
-            ss=a / fps, t=(b - a + 1) / fps,
-        ))
+        _encode_segment(
+            src, dst, a, b, info, fps=fps, strip_audio=strip_audio, faststart=True,
+        )
         return probe(dst)
 
-    out_fps = delivery_fps(fps)
-    start_f, end_f, rel_ranges = span_window(work)
-    src_dur = float(info.get("duration") or 0.0)
-    head_sec = start_f / fps
-    tail_sec = (
-        max(0.0, src_dur - (end_f + 1) / fps)
-        if src_dur > 0 else 0.0
-    )
-    use_span = head_sec >= _SPAN_MIN_SKIP_SEC or tail_sec >= _SPAN_MIN_SKIP_SEC
-
-    if use_span:
-        select_ranges = rel_ranges
-        ss = start_f / fps
-        t_dur = (end_f - start_f + 1) / fps
-    else:
-        select_ranges = work
-        ss = None
-        t_dur = None
-
-    parts = [
-        f"select='{select_expr(select_ranges)}'",
-        "setpts=N/FRAME_RATE/TB",
-    ]
-    scale_parts = _scale_parts(info, force_cfr=True, use_cuda_scale=False)
-    scale_parts = [p for p in scale_parts if not p.startswith("fps=")]
-    scale_parts.insert(0, f"fps={out_fps:g}")
-    parts.extend(scale_parts)
-    if not any(p.startswith("scale=") or p.startswith("format=") for p in parts):
-        parts.append("format=yuv420p")
-    vf = ",".join(parts)
-
-    cmd = [
-        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-threads", "0",
-    ]
-    if ss is not None and ss > 0:
-        cmd += ["-ss", f"{ss:.6f}"]
-    cmd += [
-        "-hwaccel", "cuda", "-hwaccel_device", "0",
-        "-i", src,
-    ]
-    if t_dur is not None:
-        cmd += ["-t", f"{t_dur:.6f}"]
-    cmd += ["-vf", vf, *_nvenc_args()]
-    if strip_audio or not info.get("audio_codec"):
-        cmd += ["-an"]
-    else:
-        cmd += ["-c:a", "aac", "-b:a", "128k"]
-    cmd += ["-movflags", "+faststart", dst]
-
-    kept = sum(b - a + 1 for a, b in work)
-    log.info(
-        "encode_ranges: span-select n_ranges=%d kept≈%d use_span=%s",
-        len(work), kept, use_span,
-    )
-    _run(cmd)
+    with tempfile.TemporaryDirectory(prefix="enc-seg-") as tmp:
+        parts: list[str] = []
+        for i, (a, b) in enumerate(work):
+            part = os.path.join(tmp, f"part_{i:04d}.mp4")
+            _encode_segment(
+                src, part, a, b, info, fps=fps, strip_audio=strip_audio,
+                faststart=False,
+            )
+            parts.append(part)
+        _concat_copy(parts, dst)
     return probe(dst)
 
 
