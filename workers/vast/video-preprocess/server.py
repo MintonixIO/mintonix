@@ -37,11 +37,22 @@ async def preprocess_sync(request: Request) -> JSONResponse:
     rid = body.get("request_id")
     cb_url, cb_tok = body.get("callback_url"), body.get("callback_token")
 
-    if not body.get("input_url") or not (
-        body.get("output_upload_url") or body.get("output_upload")
-    ):
+    missing = [
+        k for k in (
+            "input_url",
+            "output_upload",
+            "thumbnail_upload_url",
+            "preprocess_log_upload_url",
+            "annotation",
+        )
+        if body.get(k) is None or body.get(k) == ""
+    ]
+    if missing:
         return JSONResponse(
-            {"request_id": rid, "error": "input_url and output destination required"},
+            {
+                "request_id": rid,
+                "error": f"missing required fields: {', '.join(missing)}",
+            },
             status_code=422,
         )
     if cb_url and not callback.callback_allowed(cb_url):

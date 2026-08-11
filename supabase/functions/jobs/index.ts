@@ -29,10 +29,9 @@
  *   owner_id set      →  users/<owner_id>/<match_id>/
  *
  * Stages wired: normalize → detect. analyze lands when its worker contract
- * is pinned. For system/BWF matches, dispatch loads annotation.json; the
- * video-preprocess worker maps court.corners → court-only keep ranges and
- * writes a cleaned cut to normalized.mp4 (detect always reads that key).
- * Side artifacts: thumbnail.jpg, frame_ranges.csv (BWF). scores.csv deferred.
+ * is pinned. Normalize always loads annotation.json (corners + net poles).
+ * Path mode is URL-driven on the worker: YouTube → BWF court cut; B2/local →
+ * full encode. Both write normalized.mp4, thumbnail.jpg, preprocess-log.json.
  *
  * Secrets:
  *   PIPELINE_SERVICE_TOKEN  auth for /dispatch (shared with matches-ingest)
@@ -234,18 +233,17 @@ interface Settlement {
 }
 
 /**
- * Load raw annotation.json for system/BWF matches.
- * Mapping to valid_frames_config is **worker-owned** (annotation_map.py).
- * Throws when missing so the job fails instead of silently full-timeline
- * normalizing an uncleaned BWF master into detect.
+ * Load raw annotation.json for every normalize job.
+ * Worker validates court.corners[4] + court.net_poles[2].
+ * Throws when missing — annotation is required for both BWF and user paths.
  */
-async function loadBwfAnnotation(job: DispatchedJob): Promise<unknown> {
+async function loadAnnotation(job: DispatchedJob): Promise<unknown> {
   const url = await presign(`${job.b2_prefix}annotation.json`, "GET");
   const resp = await fetch(url);
   if (!resp.ok) {
     throw new Error(
-      `BWF match ${job.match_id}: annotation.json missing or unreadable ` +
-        `(HTTP ${resp.status}); cannot run valid-frames path`,
+      `match ${job.match_id}: annotation.json missing or unreadable ` +
+        `(HTTP ${resp.status}); cannot run preprocess`,
     );
   }
   return await resp.json();
@@ -254,9 +252,8 @@ async function loadBwfAnnotation(job: DispatchedJob): Promise<unknown> {
 /**
  * Stage routing table. normalize → detect; analyze slots in when ready.
  *
- * BWF contract: court-only cleaned cut is written to normalized.mp4 so detect
- * always GETs that key. Compact frame_ranges.csv is a side artifact.
  * Worker route is /preprocess/sync (video-preprocess image).
+ * Artifacts: normalized.mp4 (multipart), thumbnail.jpg, preprocess-log.json.
  */
 const STAGES: Record<string, {
   route: string;
@@ -281,10 +278,12 @@ const STAGES: Record<string, {
       // the job is already claimed as processing.
       const outputP = presignMultipart(`${prefix}normalized.mp4`);
       const thumbP = presign(`${prefix}thumbnail.jpg`, "PUT");
+      const logP = presign(`${prefix}preprocess-log.json`, "PUT");
+      const annP = loadAnnotation(job);
 
       // User-owned: original already in B2 as original.mp4 (matches-ingest).
-      // YouTube: worker yt-dlps source_url each run (no original.mkv archive).
-      // System/backlog without URL: original.mp4 under prefix.
+      // YouTube: worker yt-dlps source_url → BWF court-cut path.
+      // System/backlog without YouTube URL: original.mp4 under prefix (user path).
       if (job.owner_id) {
         env.input_url = await presign(`${prefix}original.mp4`, "GET");
       } else if (isYoutubeUrl(job.source_url)) {
@@ -295,16 +294,8 @@ const STAGES: Record<string, {
 
       env.output_upload = await outputP;
       env.thumbnail_upload_url = await thumbP;
-
-      // BWF / system: pass raw annotation.json; worker requires court.corners.
-      if (!job.owner_id) {
-        const [annotation, manifestUrl] = await Promise.all([
-          loadBwfAnnotation(job),
-          presign(`${prefix}frame_ranges.csv`, "PUT"),
-        ]);
-        env.annotation = annotation;
-        env.manifest_upload_url = manifestUrl;
-      }
+      env.preprocess_log_upload_url = await logP;
+      env.annotation = await annP;
       return env;
     },
 
@@ -333,8 +324,7 @@ const STAGES: Record<string, {
 
     async buildEnvelope(job, token) {
       const prefix = job.b2_prefix;
-      // Always normalized.mp4 — for BWF this is already the cleaned cut
-      // (court ∧ scoreboard). No separate valid.mp4 primary path.
+      // Always normalized.mp4 (BWF court cut or full user encode).
       // player_mask_url is accepted by the worker for exclusive ReID seeds but
       // not presigned yet — player_id stays null until mask upload is productized.
       return {

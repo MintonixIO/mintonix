@@ -1,14 +1,11 @@
 {
-  "description": "Canonical stage → B2 basenames for purge, dispatch, and ops. Live names first; legacy names retained for older buckets.",
+  "description": "Canonical stage → B2 basenames for purge, dispatch, and ops.",
   "stage_order": ["normalize", "detect", "analyze"],
   "outputs": {
     "normalize": [
       "normalized.mp4",
       "thumbnail.jpg",
-      "frame_ranges.csv",
-      "valid.mp4",
-      "frame_manifest.csv",
-      "scores.csv"
+      "preprocess-log.json"
     ],
     "detect": ["detections.json"],
     "analyze": ["analysis.json"]

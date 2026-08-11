@@ -3,7 +3,7 @@
 
 Not shipped in the production image (.dockerignore includes tools/).
 
-  python tools/debug.py /data/match.mp4
+  python tools/debug.py /data/match.mp4 --annotation ./annotation.json
   python tools/debug.py 'https://youtu.be/…' --annotation ./annotation.json
 """
 
@@ -171,26 +171,28 @@ def run_debug(
     input_spec: str,
     out_dir: str,
     *,
-    annotation: dict | None = None,
+    annotation: dict,
     sample_interval: float = 0.5,
 ) -> dict:
     os.makedirs(out_dir, exist_ok=True)
-    os.environ["ALLOW_FILE_URLS"] = "1"
     normalize.require_nvenc()
 
     body: dict[str, Any] = {
         "request_id": "debug",
         "input_url": _input_url(input_spec),
-        "output_upload_url": "file://" + os.path.join(out_dir, "normalized.mp4"),
+        "output_upload": "file://" + os.path.join(out_dir, "normalized.mp4"),
         "thumbnail_upload_url": "file://" + os.path.join(out_dir, "thumbnail.jpg"),
+        "preprocess_log_upload_url": "file://" + os.path.join(
+            out_dir, "preprocess-log.json",
+        ),
+        "annotation": annotation,
     }
-    if annotation is not None:
-        body["annotation"] = annotation
-        body["manifest_upload_url"] = (
-            "file://" + os.path.join(out_dir, "frame_ranges.csv")
-        )
 
-    log.info("pipeline: start (sample every %.2fs)", sample_interval)
+    log.info(
+        "pipeline: start path_mode=%s (sample every %.2fs)",
+        io_util.resolve_path_mode(body["input_url"]),
+        sample_interval,
+    )
     mon = ResourceMonitor(interval_sec=sample_interval)
     mon.start()
     try:
@@ -207,6 +209,7 @@ def run_debug(
         **result,
         "input": input_spec,
         "output_path": os.path.join(out_dir, "normalized.mp4"),
+        "preprocess_log_path": os.path.join(out_dir, "preprocess-log.json"),
         "resources": resources,
         "resources_series_path": series_path,
         "note": "local debug via job.py — no remote upload",
@@ -221,7 +224,10 @@ def run_debug(
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Local video-preprocess debug run")
     p.add_argument("input", help="YouTube URL, file://, or local path")
-    p.add_argument("--annotation", help="annotation.json for BWF (court.corners)")
+    p.add_argument(
+        "--annotation", required=True,
+        help="annotation.json (court.corners[4] + court.net_poles[2])",
+    )
     p.add_argument("--out", default="debug-out", help="output directory")
     p.add_argument("--sample-interval", type=float, default=0.5)
     args = p.parse_args(argv)
@@ -234,7 +240,7 @@ def main(argv: list[str] | None = None) -> int:
         result = run_debug(
             args.input,
             os.path.abspath(args.out),
-            annotation=_load_json(args.annotation) if args.annotation else None,
+            annotation=_load_json(args.annotation),
             sample_interval=args.sample_interval,
         )
     except Exception as e:

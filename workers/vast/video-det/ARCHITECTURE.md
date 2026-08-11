@@ -30,7 +30,7 @@ normalize  →  detect (this worker)  →  analyze (not wired yet)
 | **Dispatcher** | `supabase/functions/jobs` → `STAGES.detect` |
 
 Always feeds `normalized.mp4`. For BWF, normalize already writes the cleaned
-court∧scoreboard cut to that key (no separate `valid.mp4` primary). Optional
+court cut to that key when the preprocess path is BWF). Optional
 `player_mask_url` is accepted by the worker but not yet presigned by jobs
 (ReID `player_id` stays null until mask lands).
 

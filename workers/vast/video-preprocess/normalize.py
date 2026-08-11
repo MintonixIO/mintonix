@@ -262,7 +262,7 @@ def encode_ranges(
     ranges: list[tuple[int, int]],
     src_info: dict | None = None,
     *,
-    strip_audio: bool = True,
+    strip_audio: bool = False,
 ) -> dict:
     """Encode keep ranges: one NVENC seek per range, then concat-copy.
 

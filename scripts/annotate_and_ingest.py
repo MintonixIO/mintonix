@@ -101,8 +101,9 @@ STAGE_SECONDARY: dict[str, tuple[str, ...]] = {
     "detect": (),
     "analyze": (),
 }
-# BWF-only extras after normalize.
-BWF_NORMALIZE_EXTRA = ("frame_ranges.csv",)
+# Side artifacts after normalize (both lanes).
+NORMALIZE_EXTRA = ("preprocess-log.json",)
+BWF_NORMALIZE_EXTRA = NORMALIZE_EXTRA
 
 
 # ── secrets / HTTP ────────────────────────────────────────────────────────────
@@ -628,7 +629,10 @@ def put_file(url: str, path: str) -> None:
 
 def build_annotation_json(config: dict, labels: list[dict], labeled_by: str) -> dict:
     """Single B2 file shape from supabase/README.md (court + labels)."""
-    court: dict = {"corners": config["corners"]}
+    court: dict = {
+        "corners": config["corners"],
+        "net_poles": config["net_poles"],
+    }
     if config.get("scoreboard_crop") is not None:
         court["scoreboard_crop"] = config["scoreboard_crop"]
         court["score_sub_crop"] = config["score_sub_crop"]
@@ -655,9 +659,13 @@ def load_annotation_file(path: str) -> dict:
         obj = json.load(f)
     if not isinstance(obj, dict) or "court" not in obj:
         sys.exit(f"--annotation must be annotation.json with a court object: {path}")
-    corners = (obj.get("court") or {}).get("corners")
+    court = obj.get("court") or {}
+    corners = court.get("corners")
     if not (isinstance(corners, list) and len(corners) == 4):
         sys.exit(f"--annotation court.corners must be 4 points: {path}")
+    net_poles = court.get("net_poles")
+    if not (isinstance(net_poles, list) and len(net_poles) == 2):
+        sys.exit(f"--annotation court.net_poles must be 2 points: {path}")
     return obj
 
 
@@ -839,6 +847,14 @@ def annotate(source, sam: SlimSam, with_geometry: bool,
                     "bottom-right, bottom-left", closed=True)
                 if corners is None:
                     continue
+                net_poles = click_points(
+                    frame, 2, "NET POLES",
+                    "click the 2 net pole tops IN ORDER: left, right",
+                    closed=False)
+                if net_poles is None:
+                    continue
+            else:
+                net_poles = None
 
             fps = 30.0
             if isinstance(source, FrameSource):
@@ -851,6 +867,7 @@ def annotate(source, sam: SlimSam, with_geometry: bool,
             quad = {"x": 0, "y": 0, "w": qw, "h": qh}
             return {
                 "corners": corners,
+                "net_poles": net_poles,
                 "scoreboard_crop": dict(quad) if with_scoreboard else None,
                 "score_sub_crop": dict(quad) if with_scoreboard else None,
                 "row_split_y": qh // 2 if with_scoreboard else None,
@@ -1560,6 +1577,7 @@ def main(argv: list[str] | None = None) -> int:
             court = annotation.get("court") or {}
             config = {
                 "corners": court.get("corners"),
+                "net_poles": court.get("net_poles"),
                 "scoreboard_crop": court.get("scoreboard_crop"),
                 "score_sub_crop": court.get("score_sub_crop"),
                 "row_split_y": court.get("row_split_y"),

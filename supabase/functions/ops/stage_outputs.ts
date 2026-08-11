@@ -9,17 +9,12 @@
 export const STAGE_ORDER = ["normalize", "detect", "analyze"] as const;
 export type Stage = (typeof STAGE_ORDER)[number];
 
-/** Live + legacy basenames deleted when regressing to this stage (or later). */
+/** Basenames deleted when regressing to this stage (or later). */
 export const STAGE_OUTPUTS: Record<Stage, readonly string[]> = {
   normalize: [
     "normalized.mp4",
     "thumbnail.jpg",
-    // Live BWF compact range map (jobs + video-preprocess).
-    "frame_ranges.csv",
-    // Legacy / deferred names still possible in older buckets.
-    "valid.mp4",
-    "frame_manifest.csv",
-    "scores.csv",
+    "preprocess-log.json",
   ],
   detect: ["detections.json"],
   analyze: ["analysis.json"],

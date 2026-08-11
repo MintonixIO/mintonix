@@ -34,10 +34,20 @@ def request_parser(request: dict) -> dict:
 
 
 def benchmark_generator() -> dict:
+    # Local file destinations for vast SDK readiness probe (not production B2).
+    base = f"/tmp/benchmark_{uuid.uuid4().hex}"
     return {
         "request_id": "benchmark",
         "input_url": os.environ.get("BENCHMARK_INPUT_URL", "file:///app/sample.mp4"),
-        "output_upload_url": f"file:///tmp/benchmark_{uuid.uuid4().hex}.mp4",
+        "output_upload": f"file://{base}.mp4",
+        "thumbnail_upload_url": f"file://{base}.jpg",
+        "preprocess_log_upload_url": f"file://{base}-preprocess-log.json",
+        "annotation": {
+            "court": {
+                "corners": [[0, 0], [100, 0], [100, 100], [0, 100]],
+                "net_poles": [[40, 40], [60, 40]],
+            },
+        },
     }
 
 

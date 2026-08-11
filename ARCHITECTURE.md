@@ -108,9 +108,7 @@ bwf/<match_id>/                    # system-owned (BWF); readable to signed-in
   annotation.json         court geometry + player labels   (client / service)
   normalized.mp4          ≤1080p/30fps H.264/AAC; BWF: cleaned cut is primary (normalize)
   thumbnail.jpg                                            (normalize)
-  frame_ranges.csv        compact old→new range map        (normalize, BWF)
-  # scores.csv            NOT implemented (score timeline deferred)
-  # valid.mp4             legacy; BWF cleaned asset is normalized.mp4
+  preprocess-log.json     frame shifts + worker + timings  (normalize)
   detections.json         per-frame pose + shuttle tracks  (detect)
   analysis.json           3D positions, metrics, resolved  (analyze)
 ```
@@ -120,10 +118,11 @@ User-authored data is files under the match prefix via `cdn-access`
 unwritable by clients. Canonical shape is `annotation.json` (supabase/README.md):
 
 ```jsonc
-// annotation.json — court + labels (normalize valid-frames + analyze)
+// annotation.json — court + labels (normalize court detect + analyze)
 { "court": {
     "corners": [[x,y],[x,y],[x,y],[x,y]],          // TL → TR → BR → BL
-    "scoreboard_crop": {"x":…,"y":…,"w":…,"h":…},  // BWF optional
+    "net_poles": [[x,y],[x,y]],                    // left, right (net pole tops)
+    "scoreboard_crop": {"x":…,"y":…,"w":…,"h":…},  // optional
     "score_sub_crop":  {"x":…,"y":…,"w":…,"h":…},
     "row_split_y": …
   },
@@ -179,16 +178,16 @@ PyWorker may wrap as `{ input: env }`.
 ```jsonc
 {
   "request_id": "<job_id>",
-  "input_url": "<presigned GET | YouTube URL>",
+  "input_url": "<presigned GET | YouTube URL | file://…>",
   "output_upload": { "part_urls": […], "complete_url": "…", "abort_url": "…", "part_size": 67108864 },
-  // or output_upload_url for single PUT
   "thumbnail_upload_url": "<presigned PUT>",
-  "annotation": { /* raw annotation.json; BWF — court.corners required */ },
-  "manifest_upload_url": "<presigned PUT frame_ranges.csv>",  // BWF
+  "preprocess_log_upload_url": "<presigned PUT preprocess-log.json>",
+  "annotation": { /* court.corners[4] + court.net_poles[2] required */ },
   "callback_url": "https://<ref>.supabase.co/functions/v1/jobs/callback",
   "callback_token": "<HS256 JWT: job_id, match_id, stage, attempt; aud=jobs-callback; 12h>"
 }
 // Worker route: POST /preprocess/sync (video-preprocess)
+// Path mode: YouTube → BWF court cut; B2/local → full encode
 ```
 
 #### Worker → `jobs/callback` (Bearer `callback_token`)
@@ -225,13 +224,13 @@ Wire status is **`success` | `failed`**. The jobs function maps `success` → DB
 #### Stage artifacts (B2 basenames)
 
 Canonical stage → object basenames for purge, dispatch completeness probes, and
-ops. Live names first; legacy names retained for older buckets.
+ops.
 
 **Stage order:** `normalize` → `detect` → `analyze`
 
 | Stage | Outputs (delete when regressing *to* this stage or earlier) | Primary (completeness probe) |
 |---|---|---|
-| `normalize` | `normalized.mp4`, `thumbnail.jpg`, `frame_ranges.csv` (live BWF), plus legacy/deferred: `valid.mp4`, `frame_manifest.csv`, `scores.csv` | `normalized.mp4` |
+| `normalize` | `normalized.mp4`, `thumbnail.jpg`, `preprocess-log.json` | `normalized.mp4` |
 | `detect` | `detections.json` | `detections.json` |
 | `analyze` | `analysis.json` | `analysis.json` |
 
@@ -258,7 +257,7 @@ Regression *to* stage S deletes S outputs **and** every later stage's outputs.
 
 | Stage | Worker | Status | In | Out |
 |---|---|---|---|---|
-| `normalize` | `workers/vast/video-preprocess` (`POST /preprocess/sync`) | ✅ (scores.csv deferred) | original / YouTube URL (worker yt-dlp ✅); BWF: annotation.json (court corners) | normalized.mp4, thumbnail.jpg; BWF: + frame_ranges.csv |
+| `normalize` | `workers/vast/video-preprocess` (`POST /preprocess/sync`) | ✅ | original / YouTube URL (worker yt-dlp ✅); always annotation.json (corners + net poles). Path: YouTube→BWF court cut, B2/local→full encode | normalized.mp4, thumbnail.jpg, preprocess-log.json |
 | `detect` | `workers/vast/video-det` | 🚧 worker + `STAGES.detect` wired; analyze next; embedding module 📐 | normalized.mp4 (BWF cut already primary) | detections.json (pose + TrackNetV5 **top-K shuttle candidates** in **source-frame** UV [0,1] + optional exclusive ReID). `server.py` + `detect/` + `pose/` |
 | `analyze` | `workers/…/analysis` | 📐 | detections.json + annotation.json | analysis.json: 3D shuttle trajectory (physics fit), player ground-plane positions (homography), metrics (TBD) |
 
@@ -451,9 +450,10 @@ in `wrangler.toml`).
 1. **Analysis scope** — which metrics beyond 3D positions (rally segmentation,
    shot classification, player movement stats)? Drives whether `analyze` is
    one stage or several.
-2. **BWF video retention** — storing full normalized broadcasts in B2 vs only
-   `valid.mp4` cuts (storage cost vs reprocessing flexibility). Also confirm
-   the rights posture for storing YouTube-sourced footage.
+2. **BWF video retention** — storing full source under the match prefix vs
+   only the court cut as `normalized.mp4` (storage cost vs reprocessing
+   flexibility). Also confirm the rights posture for storing YouTube-sourced
+   footage.
 3. **Queue tech** — pgmq is the recommendation; if Supabase Queues proves
    limiting for priority/rate-caps, the fallback is a plain `jobs`-table
    dispatcher with `FOR UPDATE SKIP LOCKED`.

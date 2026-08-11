@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import tempfile
@@ -10,12 +11,29 @@ import time
 import bwf
 import io_util
 import normalize
+import worker_info
 
 log = logging.getLogger("video-preprocess.job")
 
+PREPROCESS_LOG_VERSION = 1
+
+
+def _require_str(body: dict, key: str) -> str:
+    val = body.get(key)
+    if not isinstance(val, str) or not val:
+        raise RuntimeError(f"{key} is required")
+    return val
+
+
+def _write_preprocess_log(path: str, payload: dict) -> int:
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, sort_keys=True)
+        f.write("\n")
+    return os.path.getsize(path)
+
 
 def run_preprocess_job(body: dict) -> dict:
-    """Returns delivery metadata. Uploads normalized.mp4 (+ thumb, BWF CSV)."""
+    """Returns delivery metadata. Uploads normalized.mp4 + thumb + preprocess-log."""
     t0 = time.time()
     timings: dict[str, float] = {}
 
@@ -25,35 +43,37 @@ def run_preprocess_job(body: dict) -> dict:
         log.info("job(timing): %s=%.2fs", name, dt)
 
     input_url = body.get("input_url")
-    if not input_url:
+    if not input_url or not isinstance(input_url, str):
         raise RuntimeError("input_url is required")
+
     output_upload = body.get("output_upload")
-    output_upload_url = body.get("output_upload_url")
-    if not output_upload and not output_upload_url:
-        raise RuntimeError("output_upload or output_upload_url is required")
-
-    thumbnail_upload_url = body.get("thumbnail_upload_url")
-    manifest_upload_url = body.get("manifest_upload_url")
-
-    if body.get("valid_frames_config") is not None and body.get("annotation") is None:
+    if output_upload is None:
         raise RuntimeError(
-            "BWF requires annotation; valid_frames_config alone is not accepted"
+            "output_upload is required "
+            "(multipart spec, or file:// for local debug)"
         )
 
-    annotation = body.get("annotation")
-    vf_cfg = None
-    if annotation is not None:
-        if not isinstance(annotation, dict):
-            raise RuntimeError("annotation must be an object")
-        vf_cfg = bwf.config_from_annotation(annotation)
-        if vf_cfg is None:
-            raise RuntimeError("annotation unusable (need court.corners)")
+    thumbnail_upload_url = _require_str(body, "thumbnail_upload_url")
+    preprocess_log_upload_url = _require_str(body, "preprocess_log_upload_url")
 
-    bwf_path = vf_cfg is not None
+    annotation = body.get("annotation")
+    if not isinstance(annotation, dict):
+        raise RuntimeError("annotation is required (object with court.corners + court.net_poles)")
+    vf_cfg = bwf.config_from_annotation(annotation)
+    if vf_cfg is None:
+        raise RuntimeError(
+            "annotation unusable (need court.corners[4] and court.net_poles[2])"
+        )
+
+    # Mode from input URL (not annotation presence).
+    path_mode = io_util.resolve_path_mode(input_url)
+    bwf_path = path_mode == "bwf"
+
     # GPU required for encode + BWF NVDEC trial path.
     normalize.require_nvenc()
+    worker = worker_info.collect_worker_info()
 
-    log.info("job(start): bwf=%s", bwf_path)
+    log.info("job(start): path=%s", path_mode)
 
     with tempfile.TemporaryDirectory(prefix="preprocess-") as tmp:
         t = time.time()
@@ -70,6 +90,7 @@ def run_preprocess_job(body: dict) -> dict:
 
         dst = os.path.join(tmp, "normalized.mp4")
         bwf_meta = None
+        frame_shifts: list[dict] | None = None
 
         if bwf_path:
             if normalize.is_vfr(info):
@@ -94,11 +115,13 @@ def run_preprocess_job(body: dict) -> dict:
                 timings[f"detect_{k}"] = v
 
             t = time.time()
+            # Keep source audio through the court cut.
             out = normalize.encode_ranges(
-                src, dst, det["ranges"], info, strip_audio=True,
+                src, dst, det["ranges"], info, strip_audio=False,
             )
             mark("encode_sec", t)
 
+            frame_shifts = det["frame_map"]
             bwf_meta = {
                 "num_ranges": len(det["ranges"]),
                 "source_frame_count": det["source_frame_count"],
@@ -106,50 +129,38 @@ def run_preprocess_job(body: dict) -> dict:
                 "frame_map": det["frame_map"],
                 "mode": "court_only",
             }
-
-            if manifest_upload_url:
-                t = time.time()
-                man_path = os.path.join(tmp, "frame_ranges.csv")
-                bwf.write_manifest_csv(det["frame_map"], man_path)
-                io_util.upload(man_path, manifest_upload_url)
-                mark("upload_manifest_sec", t)
         else:
             t = time.time()
             out = normalize.encode_full(src, dst, info)
             mark("encode_sec", t)
+            # Full-timeline encode: no court-driven frame shifts.
+            frame_shifts = []
 
         t = time.time()
-        io_util.put_object(dst, url=output_upload_url, multipart=output_upload)
+        io_util.put_object(dst, output_upload)
         mark("upload_sec", t)
 
-        thumb_info = None
-        if thumbnail_upload_url:
-            t = time.time()
-            try:
-                thumb_path = os.path.join(tmp, "thumbnail.jpg")
-                thumb_info = normalize.extract_thumbnail(
-                    dst, thumb_path, float(out.get("duration") or 0),
-                )
-                io_util.upload(thumb_path, thumbnail_upload_url)
-            except Exception as e:  # noqa: BLE001 — thumbnail is non-fatal
-                log.warning("thumbnail(failed): %s", io_util.sanitize_error(e))
-                thumb_info = None
-            mark("thumbnail_sec", t)
+        t = time.time()
+        thumb_path = os.path.join(tmp, "thumbnail.jpg")
+        thumb_info = normalize.extract_thumbnail(
+            dst, thumb_path, float(out.get("duration") or 0),
+        )
+        io_util.upload(thumb_path, thumbnail_upload_url)
+        mark("thumbnail_sec", t)
 
         timings["total_sec"] = round(time.time() - t0, 2)
 
-        result = {
+        preprocess_log = {
+            "version": PREPROCESS_LOG_VERSION,
             "request_id": body.get("request_id"),
-            "status": "ok",
-            "path": "bwf" if bwf_path else "user",
-            "width": out.get("width"),
-            "height": out.get("height"),
-            "fps": out.get("fps"),
-            "duration": out.get("duration"),
-            "codec": out.get("codec"),
-            "audio_codec": out.get("audio_codec"),
-            "pixel_fmt": out.get("pixel_fmt"),
-            "file_size": out.get("file_size"),
+            "path": path_mode,
+            "frame_shifts": frame_shifts,
+            "timings": timings,
+            "worker": worker,
+            "annotation": {
+                "court_corners": vf_cfg["court_corners"],
+                "net_poles": vf_cfg["net_poles"],
+            },
             "source": {
                 "width": info.get("width"),
                 "height": info.get("height"),
@@ -161,13 +172,56 @@ def run_preprocess_job(body: dict) -> dict:
                 "file_size": info.get("file_size"),
                 "is_vfr": info.get("is_vfr"),
             },
+            "delivery": {
+                "width": out.get("width"),
+                "height": out.get("height"),
+                "fps": out.get("fps"),
+                "duration": out.get("duration"),
+                "codec": out.get("codec"),
+                "audio_codec": out.get("audio_codec"),
+                "pixel_fmt": out.get("pixel_fmt"),
+                "file_size": out.get("file_size"),
+            },
+        }
+        if bwf_meta is not None:
+            preprocess_log["bwf"] = {
+                "num_ranges": bwf_meta["num_ranges"],
+                "source_frame_count": bwf_meta["source_frame_count"],
+                "kept_frames": bwf_meta["kept_frames"],
+                "mode": bwf_meta["mode"],
+            }
+
+        t = time.time()
+        log_path = os.path.join(tmp, "preprocess-log.json")
+        _write_preprocess_log(log_path, preprocess_log)
+        io_util.upload(log_path, preprocess_log_upload_url)
+        mark("upload_preprocess_log_sec", t)
+        timings["total_sec"] = round(time.time() - t0, 2)
+        preprocess_log["timings"] = timings
+
+        result = {
+            "request_id": body.get("request_id"),
+            "status": "ok",
+            "path": path_mode,
+            "width": out.get("width"),
+            "height": out.get("height"),
+            "fps": out.get("fps"),
+            "duration": out.get("duration"),
+            "codec": out.get("codec"),
+            "audio_codec": out.get("audio_codec"),
+            "pixel_fmt": out.get("pixel_fmt"),
+            "file_size": out.get("file_size"),
+            "source": preprocess_log["source"],
             "stage_timings": timings,
             "elapsed_sec": timings["total_sec"],
+            "thumbnail": thumb_info,
+            "preprocess_log": {
+                "version": PREPROCESS_LOG_VERSION,
+                "file_size": os.path.getsize(log_path),
+            },
         }
         if bwf_meta is not None:
             result["bwf"] = bwf_meta
-        if thumb_info is not None:
-            result["thumbnail"] = thumb_info
 
         log.info(
             "job(done): path=%s elapsed=%.2fs stages=%s",
@@ -177,7 +231,6 @@ def run_preprocess_job(body: dict) -> dict:
 
 
 if __name__ == "__main__":
-    import json
     import sys
 
     logging.basicConfig(level=logging.INFO)

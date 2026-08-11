@@ -49,20 +49,28 @@ def is_youtube_url(url: str) -> bool:
     return host in {"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"}
 
 
-def _allow_file(url: str) -> bool:
-    if os.environ.get("ALLOW_FILE_URLS", "0").lower() in ("1", "true", "yes"):
-        return True
-    path = urlparse(url).path or ""
-    if path == "/app/sample.mp4":
-        return True
-    base = os.path.basename(path)
-    return path.startswith("/tmp/") and base.startswith("benchmark_") and base.endswith(".mp4")
+def is_file_url(url: str) -> bool:
+    return isinstance(url, str) and url.startswith("file://")
+
+
+def is_local_input(url: str) -> bool:
+    """True for file:// inputs (local debug / sample paths)."""
+    return is_file_url(url)
+
+
+def resolve_path_mode(input_url: str) -> str:
+    """BWF vs user from input URL.
+
+    - YouTube → bwf (catalog court-cut path)
+    - B2 / other remote / local file → user (full-timeline encode)
+    """
+    if is_youtube_url(input_url):
+        return "bwf"
+    return "user"
 
 
 def download(url: str, dest: str) -> None:
     if url.startswith("file://"):
-        if not _allow_file(url):
-            raise RuntimeError("file:// disabled (set ALLOW_FILE_URLS=1)")
         src = urlparse(url).path
         log.info("download(file): %s", src)
         shutil.copy(src, dest)
@@ -130,10 +138,11 @@ def download_youtube(url: str, dest_dir: str) -> str:
 
 
 def upload(local_path: str, url: str) -> None:
-    """PUT with retries on 5xx/408/429/network. Other 4xx are terminal."""
+    """PUT with retries on 5xx/408/429/network. Other 4xx are terminal.
+
+    ``file://`` is always allowed (local debug / sample paths).
+    """
     if url.startswith("file://"):
-        if not _allow_file(url):
-            raise RuntimeError("file:// disabled (set ALLOW_FILE_URLS=1)")
         dst = urlparse(url).path
         os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
         shutil.copy(local_path, dst)
@@ -246,12 +255,19 @@ def upload_multipart(local_path: str, spec: dict) -> None:
         raise
 
 
-def put_object(
-    local_path: str, *, url: str | None = None, multipart: dict | None = None,
-) -> None:
-    if multipart:
-        upload_multipart(local_path, multipart)
-    elif url:
-        upload(local_path, url)
-    else:
-        raise RuntimeError("no upload destination")
+def put_object(local_path: str, dest: dict | str) -> None:
+    """Upload normalized delivery video.
+
+    Production: multipart dict ``{part_urls, complete_url, abort_url, part_size}``.
+    Local debug: ``file://…`` string (copy). Single-PUT HTTPS is not supported.
+    """
+    if isinstance(dest, dict):
+        upload_multipart(local_path, dest)
+        return
+    if isinstance(dest, str) and dest.startswith("file://"):
+        upload(local_path, dest)
+        return
+    raise RuntimeError(
+        "output_upload must be a multipart spec "
+        "({part_urls, complete_url, abort_url, part_size}) or a file:// path"
+    )
