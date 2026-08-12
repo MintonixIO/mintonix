@@ -324,14 +324,25 @@ async function handleSetStage(body: SetStageBody): Promise<Response> {
   });
 }
 
-/** Auth: PIPELINE_SERVICE_TOKEN via x-pipeline-token (same as matches-ingest). */
+/**
+ * Auth: x-pipeline-token must match PIPELINE_SERVICE_TOKEN and/or the service
+ * role key. CI uses GitHub `SUPABASE_SERVICE_KEY` (service role) with the same
+ * header; local tooling may still use a dedicated pipeline token. Either is
+ * accepted so both naming schemes work without dual edge secrets.
+ */
 async function authorizeOps(request: Request): Promise<Response | null> {
-  const expected = Deno.env.get("PIPELINE_SERVICE_TOKEN");
-  if (!expected) {
+  const pipeline = Deno.env.get("PIPELINE_SERVICE_TOKEN") ?? "";
+  const serviceRole = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+  if (!pipeline && !serviceRole) {
     return json(500, { error: "pipeline_token_not_configured", code: "config_error" });
   }
   const provided = request.headers.get("x-pipeline-token") ?? "";
-  if (!provided || !(await timingSafeEqual(provided, expected))) {
+  if (!provided) {
+    return json(401, { error: "bad_token", code: "unauthorized" });
+  }
+  const okPipeline = pipeline ? await timingSafeEqual(provided, pipeline) : false;
+  const okService = serviceRole ? await timingSafeEqual(provided, serviceRole) : false;
+  if (!okPipeline && !okService) {
     return json(401, { error: "bad_token", code: "unauthorized" });
   }
   return null;
