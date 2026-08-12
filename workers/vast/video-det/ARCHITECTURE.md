@@ -227,10 +227,13 @@ workers/vast/video-det/
   `pose/export_trt.py` / `tools/export_tracknet_trt.py` on a host matching the
   product image (`tensorrt:24.04-py3`) and target GPU arch.
 - **Model cache (baked into image):** CI mints CDN delivery URLs via Supabase
-  `ops/model-urls` (`PIPELINE_SERVICE_TOKEN`), downloads through Cloudflare
-  (free B2→CF egress), writes `models/` (`tools/fetch_models.sh` +
-  `models/MANIFEST.json`), then `Dockerfile` copies to `/app/models/`.
-  Runtime workers and GHA hold **no** B2 keys. See `models/README.md`.
+  `ops/model-urls` using GitHub Environment naming
+  (`vars.SUPABASE_PROJECT_REF` + `secrets.SUPABASE_SERVICE_KEY`; edge
+  `PIPELINE_SERVICE_TOKEN` is the same value as the service key), downloads
+  through Cloudflare (free B2→CF egress), writes `models/`
+  (`tools/fetch_models.sh` + `models/MANIFEST.json`), then `Dockerfile` copies
+  to `/app/models/`. Runtime workers and GHA hold **no** B2 keys. See
+  `models/README.md`.
 - Default paths under `/app/models/`:
   - `yolo26x-pose.engine` (`POSE_ENGINE`)
   - `tracknetv5.pt` (`SHUTTLE_CKPT`)

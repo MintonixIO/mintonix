@@ -43,15 +43,14 @@ on:
         required: false
         type: string
         default: ""
-    secrets:
-      SUPABASE_URL:
-        required: false
-      PIPELINE_SERVICE_TOKEN:
-        required: false
 
 jobs:
   build-test-push:
     runs-on: ubuntu-latest
+    # Same env selection as match-data / supabase: PR → dev, master → prod.
+    # Model bake reads vars.SUPABASE_PROJECT_REF + secrets.SUPABASE_SERVICE_KEY
+    # from that environment (no separate SUPABASE_URL / PIPELINE_SERVICE_TOKEN).
+    environment: ${{ github.event_name == 'pull_request' && 'dev' || 'prod' }}
     permissions:
       contents: read
       packages: write
@@ -86,8 +85,10 @@ jobs:
         if: ${{ inputs.fetch_models }}
         working-directory: ${{ inputs.directory }}
         env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          PIPELINE_SERVICE_TOKEN: ${{ secrets.PIPELINE_SERVICE_TOKEN }}
+          # Mirror match-data.yml naming: derive URL from project ref; auth with
+          # service key (edge PIPELINE_SERVICE_TOKEN is set to the same value).
+          SUPABASE_URL: https://${{ vars.SUPABASE_PROJECT_REF }}.supabase.co
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: bash tools/fetch_models.sh
 
       - name: Build

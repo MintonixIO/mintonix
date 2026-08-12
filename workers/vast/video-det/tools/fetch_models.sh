@@ -6,9 +6,12 @@
 #   2. GET each URL through Cloudflare data plane (B2 → CF free, edge-cached)
 #   3. Verify optional sha256/bytes from models/MANIFEST.json
 #
-# Required env:
+# Required env (CI naming matches match-data / GitHub Environments):
 #   SUPABASE_URL              e.g. https://xxxx.supabase.co
-#   PIPELINE_SERVICE_TOKEN    same as jobs/dispatch / matches-ingest
+#     — or SUPABASE_PROJECT_REF (URL becomes https://<ref>.supabase.co)
+#   SUPABASE_SERVICE_KEY      service role key; sent as x-pipeline-token
+#     — edge PIPELINE_SERVICE_TOKEN must be set to this same value
+#     — PIPELINE_SERVICE_TOKEN still accepted as a local alias
 #
 # Optional:
 #   MODEL_DIR                 default: <worker>/models
@@ -27,8 +30,16 @@ CURL_MAX_TIME="${CURL_MAX_TIME:-600}"
 die() { echo "fetch_models: ERROR: $*" >&2; exit 1; }
 
 [[ -f "$MANIFEST" ]] || die "missing $MANIFEST"
-[[ -n "${SUPABASE_URL:-}" ]] || die "SUPABASE_URL is not set"
-[[ -n "${PIPELINE_SERVICE_TOKEN:-}" ]] || die "PIPELINE_SERVICE_TOKEN is not set"
+
+if [[ -z "${SUPABASE_URL:-}" && -n "${SUPABASE_PROJECT_REF:-}" ]]; then
+  SUPABASE_URL="https://${SUPABASE_PROJECT_REF}.supabase.co"
+fi
+[[ -n "${SUPABASE_URL:-}" ]] || die "SUPABASE_URL (or SUPABASE_PROJECT_REF) is not set"
+
+# Prefer the GitHub/env name used across Mintonix CI; keep pipeline token alias.
+PIPELINE_AUTH_TOKEN="${SUPABASE_SERVICE_KEY:-${PIPELINE_SERVICE_TOKEN:-}}"
+[[ -n "${PIPELINE_AUTH_TOKEN}" ]] || die "SUPABASE_SERVICE_KEY (or PIPELINE_SERVICE_TOKEN) is not set"
+
 command -v curl >/dev/null || die "curl required"
 command -v python3 >/dev/null || die "python3 required"
 
@@ -51,7 +62,7 @@ echo "fetch_models: minting ${#KEYS[@]} CDN delivery URL(s) via $ENDPOINT"
 KEYS_JSON="$(python3 -c 'import json,sys; print(json.dumps({"keys": sys.argv[1:]}))' "${KEYS[@]}")"
 MINT_RESP="$(curl -sS -f -X POST "$ENDPOINT" \
   -H "Content-Type: application/json" \
-  -H "x-pipeline-token: ${PIPELINE_SERVICE_TOKEN}" \
+  -H "x-pipeline-token: ${PIPELINE_AUTH_TOKEN}" \
   -d "$KEYS_JSON")" || die "ops/model-urls request failed"
 
 # Parse urls map → download each file.

@@ -16,7 +16,7 @@ Canonical listing: **[MANIFEST.json](MANIFEST.json)**.
 
 | Path | Egress | Credentials on GHA |
 |------|--------|--------------------|
-| **CDN `GET /key?t=jwt`** (this design) | B2→CF free, cacheable | `PIPELINE_SERVICE_TOKEN` only |
+| **CDN `GET /key?t=jwt`** (this design) | B2→CF free, cacheable | `SUPABASE_SERVICE_KEY` only (same value as edge `PIPELINE_SERVICE_TOKEN`) |
 | Direct B2 S3 / `/presign` GET | Client→B2 (paid path) | B2 keys or presign service token |
 
 B2 credentials stay **only** on the Cloudflare CDN worker. GHA never holds them.
@@ -39,19 +39,23 @@ image / target GPU, then re-upload under `models/`.
 
 ## Local / CI download
 
+Same naming as match-data / GitHub Environments:
+
 ```bash
-export SUPABASE_URL=https://xxxx.supabase.co
-export PIPELINE_SERVICE_TOKEN=...   # same as jobs/dispatch
+export SUPABASE_URL=https://xxxx.supabase.co   # or SUPABASE_PROJECT_REF=xxxx
+export SUPABASE_SERVICE_KEY=...                # service role; edge PIPELINE_SERVICE_TOKEN = same value
 
 cd workers/vast/video-det
 bash tools/fetch_models.sh
 ```
 
+(`PIPELINE_SERVICE_TOKEN` is still accepted as a local alias for the service key.)
+
 This calls:
 
 ```http
 POST {SUPABASE_URL}/functions/v1/ops/model-urls
-x-pipeline-token: <PIPELINE_SERVICE_TOKEN>
+x-pipeline-token: <SUPABASE_SERVICE_KEY>
 { "keys": ["models/yolo26x-pose.engine", "models/tracknetv5.pt", "…"] }
 ```
 
@@ -73,12 +77,17 @@ bash tools/upload_models_to_b2.sh /path/to/engine/dir
 # paste printed sha256/bytes into MANIFEST.json; commit MANIFEST only
 ```
 
-## CI secrets (GitHub)
+## CI secrets (GitHub Environment — same as match-data)
 
-| Secret | Purpose |
-|--------|---------|
-| `SUPABASE_URL` | Edge project that runs `ops` + can mint CDN JWTs |
-| `PIPELINE_SERVICE_TOKEN` | Auth for `ops/model-urls` |
+| Name | Kind | Purpose |
+|------|------|---------|
+| `SUPABASE_PROJECT_REF` | variable | Derives `https://<ref>.supabase.co` for ops |
+| `SUPABASE_SERVICE_KEY` | secret | Auth for `ops/model-urls` (`x-pipeline-token`) |
+
+`video-det` CI selects **dev** on PR and **prod** on master (via
+`vast-worker.yml` `environment`), matching match-data / supabase workflows.
 
 Edge secrets already needed for mint: `CDN_JWT_PRIVATE_KEY`, `CDN_BASE_URL`
-(same as `cdn-access`). Optional: `MODELS_DELIVERY_TOKEN_TTL_SECONDS` (default 1800).
+(same as `cdn-access`), and **`PIPELINE_SERVICE_TOKEN` set to the service role
+key** (same bytes as `SUPABASE_SERVICE_KEY`). Optional:
+`MODELS_DELIVERY_TOKEN_TTL_SECONDS` (default 1800).
