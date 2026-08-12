@@ -1,8 +1,9 @@
 """HTTP / local file I/O for the detect job server.
 
 Simple contract: stream download, stream upload, callback POST.
-`file://` is only for local autoscaler benchmarks (ALLOW_FILE_URLS=1).
-Redirects are never followed — 3xx is a hard error (B2/S3 presigns do not redirect).
+`file://` is only for local autoscaler benchmarks (ALLOW_FILE_URLS=1,
+allowlisted roots only). Redirects are never followed — 3xx is a hard error
+(B2/S3 presigns are direct object URLs and do not redirect).
 """
 from __future__ import annotations
 

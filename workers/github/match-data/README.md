@@ -104,4 +104,4 @@ matches.id = sha256(utf-8 match_key).hexdigest()
 - [`supabase/README.md`](../../../supabase/README.md) — `matches` / RPCs
 - [`ARCHITECTURE.md`](../../../ARCHITECTURE.md) — ingest vs enqueue split
 - [`workers/cloudflare/cdn`](../../cloudflare/cdn/README.md) — storage delivery (not used by this worker)
-- [`workers/vast/video-normalization`](../../vast/video-normalization/README.md) — first GPU stage after enqueue
+- [`workers/vast/video-preprocess`](../../vast/video-preprocess/README.md) — first GPU stage after enqueue

@@ -10,7 +10,7 @@ narrowly path-scoped, so a merge that doesn't touch their paths won't trigger th
 | Workflow | Trigger (paths) | Does |
 |---|---|---|
 | [`.github/workflows/match-data.yml`](.github/workflows/match-data.yml) | `workers/github/match-data/**` + weekly cron | scrape BWF → load rows into the DB |
-| [`.github/workflows/video-normalization.yml`](.github/workflows/video-normalization.yml) | `workers/vast/video-normalization/**` | build + test + push the GHCR image |
+| [`.github/workflows/video-preprocess.yml`](.github/workflows/video-preprocess.yml) | `workers/vast/video-preprocess/**` | build + test + push the GHCR image |
 
 ## Manual deploy
 
@@ -83,7 +83,7 @@ supabase secrets set --project-ref <dev-ref> \
 ```
 
 The compute pathway (`jobs` dispatch/callback) additionally needs
-`JOB_TOKEN_SECRET`, `VAST_NORMALIZE_ENDPOINT_NAME`,
+`JOB_TOKEN_SECRET`, `VAST_PREPROCESS_ENDPOINT_NAME` (legacy `VAST_NORMALIZE_ENDPOINT_NAME`),
 `VAST_DETECT_ENDPOINT_NAME`, `VAST_API_KEY` — see
 `supabase/functions/jobs/index.ts` and `supabase/README.md`.
 

@@ -2,7 +2,7 @@
 # Container entrypoint (docker ENTRYPOINT launch mode on vast serverless).
 #
 # Two processes: FastAPI backend (server.py) + vast PyWorker via start_server.sh.
-# Same pattern as video-normalization/entrypoint.sh.
+# Same pattern as video-preprocess/entrypoint.sh.
 #
 # Models (startup vs health):
 #   - Default: weights are baked into the image at /app/models (B2 → CI → docker).

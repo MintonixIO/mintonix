@@ -29,8 +29,8 @@ normalize  →  detect (this worker)  →  analyze (not wired yet)
 | **Route** | `POST /detect/sync` |
 | **Dispatcher** | `supabase/functions/jobs` → `STAGES.detect` |
 
-Always feeds `normalized.mp4`. For BWF, normalize already writes the cleaned
-court∧scoreboard cut to that key. `player_id` in poses is always `null`
+Always feeds `normalized.mp4`. For BWF, preprocess already writes the cleaned
+court cut to that key. `player_id` in poses is always `null`
 (identity / ReID is not in the product path).
 
 ---
@@ -250,7 +250,8 @@ workers/vast/video-det/
   `import server, worker, detect` + `test_*.py` with CUDA stub and
   `ALLOW_MISSING_MODELS=1` (tests that exercise missing-model 503).
 - Env for jobs function: `VAST_DETECT_ENDPOINT_NAME` (optional fallback to
-  `VAST_NORMALIZE_ENDPOINT_NAME`, then legacy `VAST_ENDPOINT_NAME`).
+  `VAST_PREPROCESS_ENDPOINT_NAME`, then legacy `VAST_NORMALIZE_ENDPOINT_NAME` /
+  `VAST_ENDPOINT_NAME`).
 - Upload streams from disk (no full-file `read_bytes` into RAM). Exception
   text for callbacks/API is redacted (presigned query strings stripped).
 

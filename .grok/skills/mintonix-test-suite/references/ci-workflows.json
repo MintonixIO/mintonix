@@ -49,13 +49,13 @@
         "scripts/test_stage_outputs.py",
         "supabase/functions/ops/**",
         "supabase/functions/jobs/**",
-        "workers/vast/video-normalization/server.py",
+        "workers/vast/video-preprocess/server.py",
         "workers/vast/video-det/server.py"
       ]
     },
     {
-      "file": ".github/workflows/video-normalization.yml",
-      "name": "Video Normalization Worker",
+      "file": ".github/workflows/video-preprocess.yml",
+      "name": "Video Preprocess Worker",
       "jobs": [
         {
           "id": "image",
@@ -101,7 +101,7 @@
       "file": ".github/workflows/vast-worker.yml",
       "name": "Vast worker image (reusable)",
       "top_level_check": false,
-      "does": "workflow_call only — shared by video-normalization and video-det"
+      "does": "workflow_call only — shared by video-preprocess and video-det"
     }
   ],
   "gh_commands": {
