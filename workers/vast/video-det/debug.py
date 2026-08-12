@@ -11,7 +11,7 @@ baseline and detect wall time to source duration.
   python debug.py 'https://youtu.be/…' --out ./debug-yt
   python debug.py ./sample.mp4 --skip-speedtest
 
-Requires POSE_ENGINE + SHUTTLE_CKPT on disk (same env as the product server).
+Requires POSE_ENGINE + SHUTTLE_ENGINE on disk (same env as the product server).
 YouTube inputs need ``yt-dlp`` installed (``pip install yt-dlp``).
 """
 
@@ -510,11 +510,12 @@ def _require_models(cfg: DetectConfig) -> None:
     missing = []
     if not cfg.pose_engine.is_file():
         missing.append(f"POSE_ENGINE={cfg.pose_engine}")
-    if not cfg.shuttle_ckpt.is_file():
-        missing.append(f"SHUTTLE_CKPT={cfg.shuttle_ckpt}")
+    if not cfg.shuttle_engine.is_file():
+        missing.append(f"SHUTTLE_ENGINE={cfg.shuttle_engine}")
     if missing:
         raise RuntimeError(
-            "models missing (set POSE_ENGINE / SHUTTLE_CKPT): " + ", ".join(missing)
+            "engines missing (set POSE_ENGINE / SHUTTLE_ENGINE): "
+            + ", ".join(missing)
         )
 
 
@@ -633,9 +634,9 @@ def run_debug(
     cfg = DetectConfig.from_env()
     _require_models(cfg)
     log.info(
-        "models: pose=%s shuttle=%s conf=%s",
+        "engines: pose=%s shuttle=%s conf=%s",
         cfg.pose_engine,
-        cfg.shuttle_ckpt,
+        cfg.shuttle_engine,
         cfg.conf,
     )
 
@@ -680,7 +681,7 @@ def run_debug(
     result["pose_batch"] = detector.pose_batch
     result["config"] = {
         "pose_engine": str(cfg.pose_engine),
-        "shuttle_ckpt": str(cfg.shuttle_ckpt),
+        "shuttle_engine": str(cfg.shuttle_engine),
         "conf": cfg.conf,
     }
 

@@ -45,8 +45,7 @@ jobs:
       docker_run_args: >-
         -e ALLOW_MISSING_MODELS=1
         -e POSE_ENGINE=/nonexistent/pose.engine
-        -e SHUTTLE_CKPT=/nonexistent/shuttle.pt
-        -e SHUTTLE_ENGINE=
+        -e SHUTTLE_ENGINE=/nonexistent/shuttle.engine
       test_command: >-
         bash -c "ln -s /usr/local/cuda/lib64/stubs/libcuda.so
         /usr/local/lib/libcuda.so.1 && ldconfig &&

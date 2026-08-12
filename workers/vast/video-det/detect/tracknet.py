@@ -1,4 +1,8 @@
-"""TrackNetV5 shuttle-detection network (product weights: tracknetv5.pt).
+"""TrackNetV5 topology for **export tools only** (not product runtime).
+
+Product shuttle path uses TensorRT engines only (`SHUTTLE_ENGINE`). This module
+is kept so ``tools/export_tracknet_trt.py`` can still load ``.pt`` weights on
+an export host that has PyTorch.
 
 Flattened inference-only copy of the released TrackNetV5 topology
 (MDD → Backbone → Neck → R_STRHead). Input is three stacked RGB frames

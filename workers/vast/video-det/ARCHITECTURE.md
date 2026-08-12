@@ -195,7 +195,7 @@ workers/vast/video-det/
 ├── entrypoint.sh
 ├── start_server.sh
 ├── detect/             # VideoDetector, shuttle, types
-│   └── tracknet.py     # TrackNetV5 (loads tracknetv5.pt)
+│   └── tracknet.py     # TrackNetV5 topology (export tools only; not product)
 ├── pose/               # PoseEngine + TRT runner + export
 ├── tools/
 │   ├── visualize_detections.py
@@ -234,13 +234,12 @@ workers/vast/video-det/
   (`tools/fetch_models.sh` + `models/MANIFEST.json`), then `Dockerfile` copies
   to `/app/models/`. Runtime workers and GHA hold **no** B2 keys. See
   `models/README.md`.
-- Default paths under `/app/models/`:
+- Default paths under `/app/models/` (engines only — no `.pt`):
   - `yolo26x-pose.engine` (`POSE_ENGINE`)
-  - `tracknetv5.pt` (`SHUTTLE_CKPT`)
   - `tracknetv5_fp16_b48.engine` (`SHUTTLE_ENGINE`)
 - Detect env (see `detect/config.py` + Dockerfile): `POSE_ENGINE`,
-  `SHUTTLE_CKPT`, `SHUTTLE_ENGINE`, `POSE_CONF`, batching / overlap flags.
-  Startup **fails** if pose/shuttle weights are missing unless
+  `SHUTTLE_ENGINE`, `POSE_CONF`, batching / overlap flags.
+  Startup **fails** if engines are missing or fail to load unless
   `ALLOW_MISSING_MODELS=1` (CI unit tests). `/health` returns **503** when
   models are not loaded.
 - `ALLOW_FILE_URLS=1` required for `file://` benchmark I/O (set in Dockerfile for
@@ -260,8 +259,8 @@ workers/vast/video-det/
 
 ### CUDA stacks
 
-- Pose: TensorRT FP16 engine (CUDA graphs in product path)
-- Shuttle: TrackNetV5 TRT FP16 when `SHUTTLE_ENGINE` is set; torch `.pt` fallback
+- Pose: TensorRT engine (pycuda I/O; no PyTorch)
+- Shuttle: TrackNetV5 TRT engine only (`SHUTTLE_ENGINE` required; no `.pt`)
 
 ### Payload sizing (analyze consumers)
 

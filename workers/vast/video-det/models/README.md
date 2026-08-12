@@ -7,8 +7,9 @@ free B2→CF egress + edge cache), and the Dockerfile copies them into the image
 | File | Env | Role |
 |------|-----|------|
 | `yolo26x-pose.engine` | `POSE_ENGINE` | Pose TRT (FP16) |
-| `tracknetv5.pt` | `SHUTTLE_CKPT` | TrackNet checkpoint |
 | `tracknetv5_fp16_b48.engine` | `SHUTTLE_ENGINE` | TrackNet TRT (FP16, batch 48) |
+
+Product path is **engines only** — no PyTorch `.pt` fallback.
 
 Canonical listing: **[MANIFEST.json](MANIFEST.json)**.
 
@@ -27,7 +28,6 @@ Bucket is environment-specific (`mintonix-dev` or `mintonix-prod`). Keys are fla
 
 ```
 s3://mintonix-dev/models/yolo26x-pose.engine
-s3://mintonix-dev/models/tracknetv5.pt
 s3://mintonix-dev/models/tracknetv5_fp16_b48.engine
 
 s3://mintonix-prod/models/…
@@ -56,7 +56,7 @@ This calls:
 ```http
 POST {SUPABASE_URL}/functions/v1/ops/model-urls
 x-pipeline-token: <SUPABASE_SERVICE_KEY>
-{ "keys": ["models/yolo26x-pose.engine", "models/tracknetv5.pt", "…"] }
+{ "keys": ["models/yolo26x-pose.engine", "models/tracknetv5_fp16_b48.engine"] }
 ```
 
 → short-lived CDN URLs → `curl` each URL into `./models/`.

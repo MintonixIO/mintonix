@@ -26,8 +26,9 @@ Callback (from the job thread, Authorization: Bearer <callback_token>):
 
 No Realtime progress in MVP — re-add later if the UI needs it.
 
-Startup requires pose + shuttle weights on disk unless ALLOW_MISSING_MODELS=1
-(CI). Mount/download engines before server.py becomes healthy.
+Startup requires pose + shuttle TensorRT engines on disk unless
+ALLOW_MISSING_MODELS=1 (CI). There is no PyTorch /.pt fallback — missing or
+bad engines fail the job.
 """
 
 from __future__ import annotations
@@ -105,21 +106,26 @@ def _allow_missing_models() -> bool:
 
 
 async def _load_models() -> None:
-    """Load models at startup. Fail hard if weights missing unless ALLOW_MISSING_MODELS=1."""
+    """Load TRT engines at startup. Fail hard unless ALLOW_MISSING_MODELS=1."""
     global _detector
     cfg = DetectConfig.from_env()
     allow_missing = _allow_missing_models()
-    if not cfg.pose_engine.is_file() or not cfg.shuttle_ckpt.is_file():
+    if not cfg.pose_engine.is_file() or not cfg.shuttle_engine.is_file():
         msg = (
-            f"startup: models missing (pose={cfg.pose_engine} "
-            f"shuttle={cfg.shuttle_ckpt})"
+            f"startup: engines missing (pose={cfg.pose_engine} "
+            f"shuttle={cfg.shuttle_engine})"
         )
         if allow_missing:
             log.warning("%s — ALLOW_MISSING_MODELS=1; /health not ready", msg)
             return
         log.error("%s — refusing to start (set ALLOW_MISSING_MODELS=1 for CI)", msg)
         raise FileNotFoundError(msg)
-    _detector = VideoDetector.from_config(cfg)
+    try:
+        _detector = VideoDetector.from_config(cfg)
+    except Exception:
+        # Engine deserialize / CUDA init failure → job cannot run.
+        log.exception("startup: failed to load TRT engines")
+        raise
     log.info(
         "startup: VideoDetector loaded (batch=%d conf=%s)",
         _detector.pose_batch,

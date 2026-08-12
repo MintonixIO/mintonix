@@ -48,41 +48,20 @@ class TestFrameResultJson(unittest.TestCase):
         self.assertEqual(d["shuttle"][0]["x"], 0.4)
 
 
-class TestTrackNetTopology(unittest.TestCase):
-    def test_expected_parameter_names(self) -> None:
-        try:
-            import torch  # noqa: F401
-        except ImportError:
-            self.skipTest("torch not installed")
-
-        from detect.tracknet import TrackNetV5
-
-        m = TrackNetV5()
-        keys = set(m.state_dict().keys())
-        for required in (
-            "mdd.a",
-            "mdd.b",
-            "backbone.conv1.conv.0.weight",
-            "head.spatial_pos_embed",
-            "head.time_embed",
-            "head.draft_head.weight",
-        ):
-            self.assertIn(required, keys, msg=f"missing {required}")
-
-
 class TestDetectConfig(unittest.TestCase):
     def test_from_env_paths_and_conf(self) -> None:
         from detect.config import DetectConfig
 
         saved = {
             k: os.environ.pop(k, None)
-            for k in ("POSE_ENGINE", "SHUTTLE_CKPT", "POSE_CONF")
+            for k in ("POSE_ENGINE", "SHUTTLE_ENGINE", "SHUTTLE_CKPT", "POSE_CONF")
         }
         try:
             cfg = DetectConfig.from_env()
             self.assertTrue(str(cfg.pose_engine).endswith(".engine"))
-            self.assertTrue(str(cfg.shuttle_ckpt).endswith(".pt"))
+            self.assertTrue(str(cfg.shuttle_engine).endswith(".engine"))
             self.assertGreater(cfg.conf, 0.0)
+            self.assertFalse(hasattr(cfg, "shuttle_ckpt"))
             self.assertFalse(hasattr(cfg, "reid_engine"))
         finally:
             for k, v in saved.items():
@@ -156,66 +135,54 @@ class TestChunkSize(unittest.TestCase):
 
 
 class TestShuttleProcessFrames(unittest.TestCase):
-    def _make_det(self, torch):
+    def _make_det(self):
         from detect.shuttle import ShuttleDetector
 
         det = object.__new__(ShuttleDetector)
-        det.device = "cpu"
+        det.device = "cuda"
         det.top_k = 8
         det.min_conf = 0.05
         det.nms_radius = 3
         det.max_triplets = 10_000  # tests clamp via module ``_MAX_TRIPLETS``
-        det.trt = None  # force torch FakeModel path (``object.__new__`` skips __init__)
-        det.model = None
+        det.backend = "trt"
+        det.trt = MagicMock()
         return det
 
     def test_process_frames_sliding_window_and_batch_shape(self) -> None:
-        try:
-            import torch
-        except ImportError:
-            self.skipTest("torch not installed")
-
         from detect.shuttle import SHUTTLE_WIN
 
-        det = self._make_det(torch)
+        det = self._make_det()
         frames = [np.zeros((8, 8, 3), dtype=np.uint8) for _ in range(4)]
 
-        class FakeModel:
-            def __call__(self, x):
-                b = x.shape[0]
-                return torch.ones((b, SHUTTLE_WIN, 4, 4), dtype=torch.float32) * 0.5
+        def fake_forward(x):
+            b = x.shape[0]
+            return np.ones((b, SHUTTLE_WIN, 4, 4), dtype=np.float32) * 0.5
 
-        det.model = FakeModel()
-        det._preprocess_stack = lambda fs: torch.zeros(
-            (len(fs), 3, 4, 4), dtype=torch.float32
+        det.trt.forward = fake_forward
+        det._preprocess_stack = lambda fs: np.zeros(
+            (len(fs), 3, 4, 4), dtype=np.float32
         )
         out = det.process_frames(frames)
         self.assertEqual(len(out), 4)
 
     def test_edge_pad_and_center_heatmap_channel(self) -> None:
-        try:
-            import torch
-        except ImportError:
-            self.skipTest("torch not installed")
-
         from detect.shuttle import SHUTTLE_WIN
 
-        det = self._make_det(torch)
+        det = self._make_det()
         frames = [np.full((4, 4, 3), i, dtype=np.uint8) for i in range(3)]
         seen: list[tuple] = []
 
-        class FakeModel:
-            def __call__(self, x):
-                seen.append(tuple(x.shape))
-                b = x.shape[0]
-                hm = torch.zeros((b, SHUTTLE_WIN, 4, 4), dtype=torch.float32)
-                hm[:, 1, 2, 2] = 0.9
-                return hm
+        def fake_forward(x):
+            seen.append(tuple(x.shape))
+            b = x.shape[0]
+            hm = np.zeros((b, SHUTTLE_WIN, 4, 4), dtype=np.float32)
+            hm[:, 1, 2, 2] = 0.9
+            return hm
 
-        det.model = FakeModel()
+        det.trt.forward = fake_forward
 
         def stack_with_ids(fs):
-            t = torch.zeros((len(fs), 3, 4, 4), dtype=torch.float32)
+            t = np.zeros((len(fs), 3, 4, 4), dtype=np.float32)
             for i, f in enumerate(fs):
                 t[i, 0, 0, 0] = float(f[0, 0, 0])
             return t
@@ -232,29 +199,23 @@ class TestShuttleProcessFrames(unittest.TestCase):
         self.assertTrue(seen)
 
     def test_process_frames_micro_batch_and_bad_heatmap(self) -> None:
-        try:
-            import torch
-        except ImportError:
-            self.skipTest("torch not installed")
-
         from detect import shuttle as shuttle_mod
-        from detect.shuttle import SHUTTLE_WIN, ShuttleDetector
+        from detect.shuttle import SHUTTLE_WIN
 
-        det = self._make_det(torch)
+        det = self._make_det()
         frames = [np.zeros((8, 8, 3), dtype=np.uint8) for _ in range(20)]
 
         with patch.object(shuttle_mod, "_MAX_TRIPLETS", 4):
             batch_sizes: list[int] = []
 
-            class FakeModel:
-                def __call__(self, x):
-                    batch_sizes.append(int(x.shape[0]))
-                    b = x.shape[0]
-                    return torch.ones((b, SHUTTLE_WIN, 4, 4)) * 0.2
+            def fake_forward(x):
+                batch_sizes.append(int(x.shape[0]))
+                b = x.shape[0]
+                return np.ones((b, SHUTTLE_WIN, 4, 4), dtype=np.float32) * 0.2
 
-            det.model = FakeModel()
-            det._preprocess_stack = lambda fs: torch.zeros(
-                (len(fs), 3, 4, 4), dtype=torch.float32
+            det.trt.forward = fake_forward
+            det._preprocess_stack = lambda fs: np.zeros(
+                (len(fs), 3, 4, 4), dtype=np.float32
             )
             out = det.process_frames(frames)
             self.assertEqual(len(out), 20)
@@ -263,41 +224,32 @@ class TestShuttleProcessFrames(unittest.TestCase):
             out5 = det.process_frames(frames[:5])
             self.assertEqual(len(out5), 5)
 
-            class BadModel:
-                def __call__(self, x):
-                    return torch.ones((x.shape[0], 2, 4, 4))
+            def bad_forward(x):
+                return np.ones((x.shape[0], 2, 4, 4), dtype=np.float32)
 
-            det.model = BadModel()
+            det.trt.forward = bad_forward
             with self.assertRaises(RuntimeError) as ctx:
                 det.process_frames(frames[:3])
             self.assertIn("heatmap shape", str(ctx.exception).lower())
 
     def test_cross_chunk_matches_monolithic(self) -> None:
         """Two chunks with prev/next stitch must match one-shot process_frames."""
-        try:
-            import torch
-        except ImportError:
-            self.skipTest("torch not installed")
-
         from detect.shuttle import SHUTTLE_WIN
 
-        det = self._make_det(torch)
+        det = self._make_det()
         frames = [np.full((4, 4, 3), i, dtype=np.uint8) for i in range(5)]
 
-        class FakeModel:
-            def __call__(self, x):
-                b = x.shape[0]
-                # Encode center frame channel-0 corner into heatmap conf.
-                # x is (B, 9, H, W) = concat of prev/center/next RGB.
-                conf = x[:, 3, 0, 0]  # (B,) center RGB ch0
-                hm = torch.zeros((b, SHUTTLE_WIN, 4, 4), dtype=torch.float32)
-                hm[:, 1, 1, 1] = conf
-                return hm
+        def fake_forward(x):
+            b = x.shape[0]
+            conf = x[:, 3, 0, 0]  # (B,) center RGB ch0
+            hm = np.zeros((b, SHUTTLE_WIN, 4, 4), dtype=np.float32)
+            hm[:, 1, 1, 1] = conf
+            return hm
 
-        det.model = FakeModel()
+        det.trt.forward = fake_forward
 
         def stack_with_ids(fs):
-            t = torch.zeros((len(fs), 3, 4, 4), dtype=torch.float32)
+            t = np.zeros((len(fs), 3, 4, 4), dtype=np.float32)
             for i, f in enumerate(fs):
                 t[i, 0, 0, 0] = float(f[0, 0, 0])
             return t
@@ -323,18 +275,17 @@ class TestShuttleProcessFrames(unittest.TestCase):
         self.assertNotIn("def process_triplet", Path(shuttle_mod.__file__).read_text())
         self.assertNotIn("def _preprocess(", Path(shuttle_mod.__file__).read_text())
 
-    def test_cuda_required_by_default(self) -> None:
-        try:
-            import torch
-        except ImportError:
-            self.skipTest("torch not installed")
+    def test_engine_path_required(self) -> None:
+        import tempfile
 
         from detect.shuttle import ShuttleDetector
 
-        with patch.object(torch.cuda, "is_available", return_value=False):
-            with self.assertRaises(RuntimeError) as ctx:
-                ShuttleDetector("/nonexistent.pt")
-            self.assertIn("CUDA", str(ctx.exception))
+        with self.assertRaises(FileNotFoundError):
+            ShuttleDetector("/nonexistent/shuttle.engine")
+        with tempfile.NamedTemporaryFile(suffix=".pt") as tf:
+            with self.assertRaises(ValueError) as ctx:
+                ShuttleDetector(tf.name)
+            self.assertIn(".engine", str(ctx.exception))
 
 
 class TestVideoDetectorSinglePassMock(unittest.TestCase):
@@ -343,7 +294,7 @@ class TestVideoDetectorSinglePassMock(unittest.TestCase):
 
         return DetectConfig(
             pose_engine=Path("/x.engine"),
-            shuttle_ckpt=Path("/x.pt"),
+            shuttle_engine=Path("/y.engine"),
             conf=0.15,
         )
 

@@ -1,8 +1,7 @@
-"""TensorRT runtime for PoseEngine (product path).
+"""TensorRT runtime for PoseEngine (product path, no PyTorch).
 
-Owns engine deserialize (Ultralytics metadata strip) and a single CUDA-graph
-infer path used only by `PoseEngine.run_batch`. Multi-K research rings live
-under `tools/ffmpeg_pose_bench/` only.
+Owns engine deserialize (Ultralytics metadata strip) and a single-batch TRT
+infer path used by `PoseEngine.run_batch`. Uses pycuda for device buffers.
 """
 from __future__ import annotations
 
@@ -11,7 +10,6 @@ import struct
 from pathlib import Path
 
 import numpy as np
-import torch
 
 from .letterbox import IMGSZ
 
@@ -41,10 +39,22 @@ def load_engine(path: Path):
 
 
 class _TrtRunner:
-    """Pinned H2D + normalize + CUDA-graph inference for one host batch."""
+    """Host NHWC uint8 → TRT NCHW float → host float output (pycuda)."""
 
     def __init__(self, engine, batch: int, *, imgsz: int = IMGSZ) -> None:
+        import pycuda.driver as cuda
         import tensorrt as trt
+
+        try:
+            cuda.init()
+        except Exception:  # noqa: BLE001
+            pass
+        if not cuda.Device.count():
+            raise RuntimeError("PoseEngine requires a CUDA device")
+        try:
+            cuda.Context.get_current()
+        except cuda.LogicError:
+            cuda.Device(0).make_context()
 
         self.engine = engine
         self.batch = batch
@@ -62,54 +72,55 @@ class _TrtRunner:
             for n in names
             if engine.get_tensor_mode(n) == trt.TensorIOMode.OUTPUT
         )
-        out_shape = tuple(engine.get_tensor_shape(self.out_name))
+        # Fixed batch engines: set concrete input shape if needed.
+        try:
+            self.context.set_input_shape(
+                self.in_name, (batch, CHANNELS, self.imgsz, self.imgsz)
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        out_shape = tuple(self.context.get_tensor_shape(self.out_name))
+        if any(d < 0 for d in out_shape):
+            raise RuntimeError(f"unresolved TRT output shape: {out_shape}")
+        self.out_shape = out_shape
 
-        self.stream = torch.cuda.Stream()
-        self.pinned = torch.empty(
-            (batch, self.imgsz, self.imgsz, CHANNELS),
-            dtype=torch.uint8,
-            pin_memory=True,
-        )
-        self.staging = torch.empty(
-            (batch, self.imgsz, self.imgsz, CHANNELS),
-            dtype=torch.uint8,
-            device="cuda",
-        )
-        self.inp = torch.empty(
-            (batch, CHANNELS, self.imgsz, self.imgsz),
-            dtype=torch.float32,
-            device="cuda",
-        )
-        self.out = torch.empty(out_shape, dtype=torch.float32, device="cuda")
-        self.graph = None
-        self._capture()
+        in_shape = (batch, CHANNELS, self.imgsz, self.imgsz)
+        self._in_nbytes = int(np.prod(in_shape)) * 4
+        self._out_nbytes = int(np.prod(out_shape)) * 4
+        self.d_in = cuda.mem_alloc(self._in_nbytes)
+        self.d_out = cuda.mem_alloc(self._out_nbytes)
+        self.stream = cuda.Stream()
+        self.context.set_tensor_address(self.in_name, int(self.d_in))
+        self.context.set_tensor_address(self.out_name, int(self.d_out))
 
-    def _infer(self) -> None:
-        self.context.set_tensor_address(self.in_name, self.inp.data_ptr())
-        self.context.set_tensor_address(self.out_name, self.out.data_ptr())
-        self.context.execute_async_v3(torch.cuda.current_stream().cuda_stream)
-
-    def _capture(self) -> None:
-        with torch.cuda.stream(self.stream):
-            for _ in range(20):
-                self._infer()
-        torch.cuda.synchronize()
-        g = torch.cuda.CUDAGraph()
-        with torch.cuda.graph(g, stream=self.stream):
-            self._infer()
-        self.graph = g
-        torch.cuda.synchronize()
+        self.h_in = cuda.pagelocked_empty(in_shape, dtype=np.float32)
+        self.h_out = cuda.pagelocked_empty(out_shape, dtype=np.float32)
 
     def infer(self, host_arr: np.ndarray) -> np.ndarray:
         """Run one full batch: host NHWC uint8 → host float TRT output."""
-        self.pinned.copy_(torch.from_numpy(host_arr))
-        with torch.cuda.stream(self.stream):
-            self.staging.copy_(self.pinned, non_blocking=True)
-            self.inp.copy_(self.staging.permute(0, 3, 1, 2))
-            self.inp.div_(255.0)
-            self.graph.replay()
+        import pycuda.driver as cuda
+
+        arr = np.asarray(host_arr)
+        if arr.shape != (self.batch, self.imgsz, self.imgsz, CHANNELS):
+            raise ValueError(
+                f"expected host NHWC ({self.batch},{self.imgsz},{self.imgsz},3), "
+                f"got {arr.shape}"
+            )
+        # NHWC uint8 → NCHW float32 on host (letterbox already applied).
+        nchw = (
+            arr.astype(np.float32)
+            .transpose(0, 3, 1, 2)
+            .copy()
+            / 255.0
+        )
+        np.copyto(self.h_in, nchw)
+        cuda.memcpy_htod_async(self.d_in, self.h_in, self.stream)
+        ok = self.context.execute_async_v3(self.stream.handle)
+        if not ok:
+            raise RuntimeError("Pose TRT execute_async_v3 failed")
+        cuda.memcpy_dtoh_async(self.h_out, self.d_out, self.stream)
         self.stream.synchronize()
-        return self.out.detach().float().cpu().numpy()
+        return np.array(self.h_out, copy=True)
 
 
 # Back-compat alias for research tools / older imports.

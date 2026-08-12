@@ -71,38 +71,38 @@ class VideoDetector:
 
     def __init__(self, config: DetectConfig) -> None:
         # Defer heavy CUDA/TRT imports until construction (CI can import detect).
+        from pose.engine import PoseEngine
+
         from .shuttle import ShuttleDetector
 
         self.config = config
-        if not Path(config.pose_engine).is_file():
-            raise FileNotFoundError(f"pose weights/engine missing: {config.pose_engine}")
-        if not Path(config.shuttle_ckpt).is_file():
-            raise FileNotFoundError(f"shuttle checkpoint missing: {config.shuttle_ckpt}")
-
-        # .pt → Ultralytics PyTorch (bench / first timing). .engine → product TRT.
         pose_path = Path(config.pose_engine)
-        if pose_path.suffix.lower() == ".pt":
-            from pose.torch_engine import TorchPoseEngine
+        shuttle_path = Path(config.shuttle_engine)
+        if not pose_path.is_file():
+            raise FileNotFoundError(f"pose engine missing: {pose_path}")
+        if pose_path.suffix.lower() != ".engine":
+            raise ValueError(
+                f"pose must be a TensorRT .engine (got {pose_path.name}); "
+                "PyTorch .pt is not supported in product"
+            )
+        if not shuttle_path.is_file():
+            raise FileNotFoundError(f"shuttle engine missing: {shuttle_path}")
+        if shuttle_path.suffix.lower() != ".engine":
+            raise ValueError(
+                f"shuttle must be a TensorRT .engine (got {shuttle_path.name}); "
+                "PyTorch .pt is not supported in product"
+            )
 
-            self.pose = TorchPoseEngine(pose_path, conf=config.conf)
-            backend = "torch"
-        else:
-            from pose.engine import PoseEngine
-
-            self.pose = PoseEngine(pose_path, conf=config.conf)
-            backend = "trt"
-        eng = os.environ.get("SHUTTLE_ENGINE") or None
-        self.shuttle = ShuttleDetector(config.shuttle_ckpt, engine_path=eng)
+        self.pose = PoseEngine(pose_path, conf=config.conf)
+        self.shuttle = ShuttleDetector(shuttle_path)
         self.pose_batch = self.pose.batch_size
         self.overlap_decode = _env_flag("OVERLAP_DECODE")
         self.parallel_detect = _env_flag("PARALLEL_DETECT")
         self.stage_timers = _env_flag("DEBUG_STAGE_TIMERS")
         self.stage_secs = {"decode": 0.0, "pose": 0.0, "shuttle": 0.0, "other": 0.0}
         log.info(
-            "VideoDetector: pose=%s shuttle=%s batch=%d conf=%s "
+            "VideoDetector: pose=trt shuttle=trt batch=%d conf=%s "
             "overlap=%s parallel=%s",
-            backend,
-            getattr(self.shuttle, "backend", "?"),
             self.pose_batch,
             config.conf,
             self.overlap_decode,

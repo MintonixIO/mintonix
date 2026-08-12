@@ -1,13 +1,9 @@
 # TensorRT 24.04 base includes CUDA 12.4, cuDNN 9, TensorRT 10, Python 3.10
-# Product engines (POSE_ENGINE) must be built against this TRT stack / GPU arch.
+# Product engines must be built against this TRT stack / GPU arch.
+# Product path is TRT-only (no PyTorch wheel) to keep cold pulls reliable.
 FROM nvcr.io/nvidia/tensorrt:24.04-py3
 
 WORKDIR /app
-
-# PyTorch must be installed separately; pin to a CUDA 12.1-compatible wheel
-RUN pip install --no-cache-dir \
-    torch==2.3.1 torchvision==0.18.1 \
-    --index-url https://download.pytorch.org/whl/cu121
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
@@ -100,11 +96,9 @@ ENV MODEL_SERVER_PORT=18000 \
     BENCHMARK_INPUT_URL=file:///app/sample.mp4 \
     ALLOW_FILE_URLS=1 \
     POSE_ENGINE=/app/models/yolo26x-pose.engine \
-    SHUTTLE_CKPT=/app/models/tracknetv5.pt \
     SHUTTLE_ENGINE=/app/models/tracknetv5_fp16_b48.engine \
     SHUTTLE_TRT_BATCH=48 \
     SHUTTLE_MAX_TRIPLETS=48 \
-    SHUTTLE_COMPILE=0 \
     OVERLAP_DECODE=1 \
     PARALLEL_DETECT=1 \
     POSE_IMGSZ=640

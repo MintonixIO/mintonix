@@ -87,7 +87,7 @@ class TestServerHealthAndStartup(unittest.TestCase):
         prev_allow = os.environ.get("ALLOW_MISSING_MODELS")
         os.environ["ALLOW_MISSING_MODELS"] = "1"
         os.environ.setdefault("POSE_ENGINE", "/nonexistent/pose.engine")
-        os.environ.setdefault("SHUTTLE_CKPT", "/nonexistent/shuttle.pt")
+        os.environ.setdefault("SHUTTLE_ENGINE", "/nonexistent/shuttle.engine")
         try:
             with TestClient(server_mod.app, raise_server_exceptions=False) as client:
                 server_mod._detector = None
@@ -113,10 +113,10 @@ class TestServerHealthAndStartup(unittest.TestCase):
 
         async def _run():
             prev_pose = os.environ.get("POSE_ENGINE")
-            prev_shuttle = os.environ.get("SHUTTLE_CKPT")
+            prev_shuttle = os.environ.get("SHUTTLE_ENGINE")
             prev_allow = os.environ.get("ALLOW_MISSING_MODELS")
             os.environ["POSE_ENGINE"] = "/nonexistent/pose.engine"
-            os.environ["SHUTTLE_CKPT"] = "/nonexistent/shuttle.pt"
+            os.environ["SHUTTLE_ENGINE"] = "/nonexistent/shuttle.engine"
             try:
                 os.environ["ALLOW_MISSING_MODELS"] = "1"
                 server_mod._detector = None
@@ -129,7 +129,7 @@ class TestServerHealthAndStartup(unittest.TestCase):
             finally:
                 for key, prev in (
                     ("POSE_ENGINE", prev_pose),
-                    ("SHUTTLE_CKPT", prev_shuttle),
+                    ("SHUTTLE_ENGINE", prev_shuttle),
                     ("ALLOW_MISSING_MODELS", prev_allow),
                 ):
                     if prev is None:
@@ -181,7 +181,7 @@ class TestServerHealthAndStartup(unittest.TestCase):
         prev_allow = os.environ.get("ALLOW_MISSING_MODELS")
         os.environ["ALLOW_MISSING_MODELS"] = "1"
         os.environ.setdefault("POSE_ENGINE", "/nonexistent/pose.engine")
-        os.environ.setdefault("SHUTTLE_CKPT", "/nonexistent/shuttle.pt")
+        os.environ.setdefault("SHUTTLE_ENGINE", "/nonexistent/shuttle.engine")
         try:
             self.assertTrue(callable(server_mod.lifespan))
             self.assertIsNotNone(server_mod.app.router.lifespan_context)

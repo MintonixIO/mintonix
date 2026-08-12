@@ -5,8 +5,8 @@
 # Same pattern as video-preprocess/entrypoint.sh.
 #
 # Models (startup vs health):
-#   - Default: weights are baked into the image at /app/models (B2 → CI → docker).
-#     POSE_ENGINE / SHUTTLE_CKPT / SHUTTLE_ENGINE must exist when server.py starts;
+#   - Default: TRT engines baked into the image at /app/models (B2 → CI → docker).
+#     POSE_ENGINE + SHUTTLE_ENGINE must exist when server.py starts (no .pt fallback);
 #     otherwise startup raises and the process dies.
 #   - ALLOW_MISSING_MODELS=1 (CI only): server starts without loading models;
 #     GET /health then returns 503 {status:not_ready, models_loaded:false} and
@@ -23,7 +23,7 @@ mkdir -p "$(dirname "$MODEL_LOG")"
 : > "$MODEL_LOG"
 
 echo "entrypoint: starting backend (server.py) -> $MODEL_LOG"
-echo "entrypoint: models POSE_ENGINE=${POSE_ENGINE:-/app/models/yolo26x-pose.engine} SHUTTLE_CKPT=${SHUTTLE_CKPT:-/app/models/tracknetv5.pt} SHUTTLE_ENGINE=${SHUTTLE_ENGINE:-/app/models/tracknetv5_fp16_b48.engine}"
+echo "entrypoint: engines POSE_ENGINE=${POSE_ENGINE:-/app/models/yolo26x-pose.engine} SHUTTLE_ENGINE=${SHUTTLE_ENGINE:-/app/models/tracknetv5_fp16_b48.engine}"
 python -u /app/server.py >> "$MODEL_LOG" 2>&1 &
 
 tail -n +1 -F "$MODEL_LOG" &

@@ -88,7 +88,7 @@ GPU / TensorRT engine build and full e2e remain environment-specific (see
   [models/README.md](models/README.md).
 - Env knobs for models and batching live in `detect/config.py` /
   `DetectConfig.from_env()` and Dockerfile defaults (`POSE_ENGINE`,
-  `SHUTTLE_CKPT`, `SHUTTLE_ENGINE`, overlap / parallel flags).
+  `SHUTTLE_ENGINE`, overlap / parallel flags). Engines only — no `.pt`.
 
 ## See also
 
