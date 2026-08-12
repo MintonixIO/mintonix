@@ -1,6 +1,6 @@
 """Backend model server for the video-det PyWorker.
 
-Mirrors workers/vast/video-normalization/server.py: this is the HTTP service the
+Mirrors workers/vast/video-preprocess/server.py: this is the HTTP service the
 vast.ai PyWorker proxies to. It does the work; worker.py only reports load.
 
 Contract (request_parser unwraps {"input": {...}}; this server also accepts a
@@ -41,6 +41,7 @@ import tempfile
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import urlparse
 
 import cv2
 from fastapi import FastAPI, Request
@@ -55,6 +56,41 @@ from io_util import (
     safe_error_message,
     upload_file,
 )
+
+_DEFAULT_CALLBACK_PATH_SUFFIX = "/functions/v1/jobs/callback"
+
+
+def _callback_prefix() -> str:
+    return (
+        os.environ.get("CALLBACK_URL_PREFIX")
+        or os.environ.get("SUPABASE_URL")
+        or ""
+    ).rstrip("/")
+
+
+def _callback_url_allowed(url: str | None) -> bool:
+    """Same policy as video-preprocess: prefix-required, path suffix, fail-closed."""
+    if not url:
+        return True
+    if os.environ.get("ALLOW_UNSAFE_CALLBACK", "0").lower() in (
+        "1",
+        "true",
+        "yes",
+    ):
+        return True
+    prefix = _callback_prefix()
+    if not prefix:
+        return False
+    try:
+        parsed = urlparse(url)
+    except Exception:  # noqa: BLE001
+        return False
+    if parsed.scheme not in ("https", "http"):
+        return False
+    path = parsed.path or ""
+    if not path.endswith(_DEFAULT_CALLBACK_PATH_SUFFIX):
+        return False
+    return url.startswith(prefix + "/") or url.startswith(prefix + "?") or url == prefix
 
 logging.basicConfig(
     level=logging.INFO,
@@ -145,6 +181,17 @@ async def detect_sync(request: Request) -> JSONResponse:
             },
             status_code=422,
         )
+    if callback_url and not _callback_url_allowed(callback_url):
+        return JSONResponse(
+            {
+                "request_id": request_id,
+                "error": (
+                    "callback_url not allowed (must match CALLBACK_URL_PREFIX "
+                    "/ SUPABASE_URL and end with /functions/v1/jobs/callback)"
+                ),
+            },
+            status_code=422,
+        )
     if _detector is None:
         return JSONResponse(
             {"request_id": request_id, "error": "models not loaded"},
@@ -176,7 +223,7 @@ async def detect_sync(request: Request) -> JSONResponse:
             # Re-raise with redacted message so outer handler cannot leak secrets.
             raise RuntimeError(err) from None
         if callback_url:
-            post_callback(
+            code = post_callback(
                 callback_url,
                 callback_token,
                 {
@@ -185,6 +232,12 @@ async def detect_sync(request: Request) -> JSONResponse:
                     **result,
                 },
             )
+            # Do not claim HTTP success if settlement never reached jobs —
+            # otherwise the job can sit processing until VT reclaim.
+            if code is None or code >= 400:
+                raise RuntimeError(
+                    f"callback failed after successful detect (HTTP {code})"
+                )
         return result
 
     try:

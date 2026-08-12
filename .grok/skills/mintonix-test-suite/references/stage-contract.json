@@ -1,0 +1,107 @@
+{
+  "description": "Canonical stage → B2 basenames for purge, dispatch, and ops. Aligns with contracts/stage_artifacts.json, scripts/ops_stage.py, supabase/functions/ops/stage_outputs.ts.",
+  "stage_order": ["normalize", "detect", "analyze"],
+  "outputs": {
+    "normalize": [
+      "normalized.mp4",
+      "thumbnail.jpg",
+      "preprocess-log.json"
+    ],
+    "detect": ["detections.json"],
+    "analyze": ["analysis.json"]
+  },
+  "primary": {
+    "normalize": "normalized.mp4",
+    "detect": "detections.json",
+    "analyze": "analysis.json"
+  },
+  "keep_on_regress": [
+    "original.mp4",
+    "original.mov",
+    "original.mkv",
+    "annotation.json"
+  ],
+  "callback_wire_status": {
+    "success": "Worker → jobs/callback success",
+    "failed": "Worker → jobs/callback failure",
+    "db_complete": "jobs.row status after successful settle"
+  },
+  "live_normalize": {
+    "both": ["normalized.mp4", "thumbnail.jpg", "preprocess-log.json"],
+    "bwf_frame_map": "preprocess-log.json → frame_shifts[] (not frame_ranges.csv)",
+    "user_frame_map": "preprocess-log.json → frame_shifts: []",
+    "youtube_original_archive": false,
+    "legacy_not_written": [
+      "frame_ranges.csv",
+      "frame_manifest.csv",
+      "valid.mp4",
+      "scores.csv"
+    ],
+    "notes": {
+      "normalized.mp4_bwf": "Valid-frames cut only (court-visible keep-ranges via NCC on corners); not full broadcast",
+      "normalized.mp4_user": "Full video re-encode ≤1080p/30 H.264; audio kept when present (AAC)",
+      "preprocess-log.json": "SSOT for frame_shifts, timings, worker fingerprint, validated annotation (corners+net_poles), source/output probes",
+      "audio": "Kept on both paths when source has audio; never product-stripped",
+      "path_mode": "YouTube input_url → bwf court cut; otherwise → user full encode"
+    }
+  },
+  "annotation": {
+    "file": "annotation.json",
+    "required": [
+      "court.corners (exactly 4 points TL→TR→BR→BL)",
+      "court.net_poles (exactly 2 points left→right net-pole tops)"
+    ],
+    "optional": [
+      "scoreboard_crop / score_sub_crop / row_split_y (score OCR deferred; not used by live normalize)",
+      "labels[] click anchors + display_name (analyze identity later; not detect ReID today)",
+      "frame_width / frame_height / annotated_at_sec"
+    ],
+    "worker_gate": "Missing/unusable corners or net_poles → normalize job fails",
+    "not_used_by_detect_for_reid_today": true,
+    "corners_drive_bwf_ncc": true,
+    "net_poles_used_by_later_stages": true
+  },
+  "lanes": {
+    "bwf": {
+      "prefix": "bwf/<match_id>/",
+      "matches_row": "Already from match-data catalog; harness enqueues only (upsert=false)",
+      "source": "matches.source_url (yt-dlp each attempt) or staged original.mp4 for non-YouTube"
+    },
+    "user": {
+      "prefix": "users/<uid>/<match_id>/",
+      "matches_row": "Created at matches-ingest confirm after original.mp4 upload",
+      "source": "original.mp4 via cdn-access"
+    }
+  },
+  "mvp": {
+    "terminal_stage": "detect",
+    "analyze_wired": false,
+    "bwf_normalized_is_valid_cut": true,
+    "detect_content": "detections.json contains pose and shuttle for every frame of normalized.mp4",
+    "reid_from_annotation": false,
+    "player_mask_presigned_by_jobs": false,
+    "workers": "normalize and detect on vast.ai serverless; analyze not wired",
+    "after_normalize_success": {
+      "jobs.stage": "detect",
+      "jobs.status": "queued",
+      "matches.status": "processing"
+    },
+    "after_detect_success": {
+      "jobs.status": "complete",
+      "jobs.stage": "detect",
+      "matches.status": "ready"
+    }
+  },
+  "harness_soft_normalize": [
+    "thumbnail.jpg",
+    "preprocess-log.json"
+  ],
+  "failure_modes_to_distinguish": [
+    "missing net_poles / corners → normalize failed callback",
+    "no NVENC / no GPU → normalize fail",
+    "local_source|local_output_dir + callback_url → HTTP 422",
+    "callback wire success|failed vs DB complete|failed",
+    "B2 artifacts present but job still processing (callback settle failed)",
+    "YT BWF retries re-download source_url (do not require original.mkv on B2)"
+  ]
+}

@@ -20,7 +20,7 @@ edge cache; cache-fill from B2 costs nothing.
 
 B2 credentials live in **exactly one place — this Worker**. **No Vast/RunPod
 compute worker ever holds a credential** — they only receive presigned URLs,
-exactly as `workers/vast/video-normalization/normalize.py` already works.
+exactly as `workers/vast/video-preprocess/normalize.py` already works.
 
 | Component | Holds | Can it... |
 |---|---|---|
@@ -168,6 +168,12 @@ If it stays `MISS`, fall back to the Cache-API + full-object recipe (store a ful
 `200`, let `cache.match` slice ranges) instead of `cf.cacheEverything`.
 
 ## Notes / tradeoffs
+
+- Delivery responses use **`Cache-Control: private, max-age=…`** (short client
+  max-age; edge→B2 cache is separate and still JWT-gated every request).
+- JWT **must** include `exp`; Worker also caps remaining lifetime.
+- `/presign` accepts **Bearer service token only** (not `?t=`).
+- `LIST` requires a **non-empty prefix** (no whole-bucket list).
 - **TTL**: keep view-token TTL short (minutes). The *cached object* lives much
   longer (`CACHE_TTL_SECONDS`); the token only gates the initial fetch, so a
   short TTL doesn't hurt cache hit rate.
@@ -177,5 +183,13 @@ If it stays `MISS`, fall back to the Cache-API + full-object recipe (store a ful
   verifies under `wrangler dev` before relying on it.
 - **Invalidation**: if you overwrite an object key, purge it (`wrangler` /
   dashboard / cache API) or version the key (`.../v2/normalized.mp4`).
-- This Worker is **read delivery only**. Uploads stay on the orchestrator's
-  presigned-PUT path to the vast workers — unchanged.
+- Delivery is token-gated; **writes** go through `/presign` (orchestrator
+  service token → presigned PUT/DELETE/MULTIPART for workers and clients).
+
+## See also
+
+- [DATAFLOWS.md](DATAFLOWS.md) — request paths in detail
+- [DEPLOYMENT.md](DEPLOYMENT.md) — env / deploy checklist
+- [../../../ARCHITECTURE.md](../../../ARCHITECTURE.md) — trust model
+- [../../../supabase/README.md](../../../supabase/README.md) — `cdn-access` + key layout
+- [../../vast/video-preprocess/README.md](../../vast/video-preprocess/README.md) — first consumer of multipart presigns

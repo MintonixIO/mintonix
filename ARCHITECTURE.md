@@ -56,7 +56,7 @@ URLs out, and an HMAC-scoped callback.
 
 Every match, regardless of origin, converges to the same canonical form: **a
 row in `matches` + objects in B2 under that match's constructable prefix**
-(`bwf/<match_id>/` or `users/<uid>/<match_id>/`). Schema detail: **SUPABASE.md**.
+(`bwf/<match_id>/` or `users/<uid>/<match_id>/`). Schema detail: **supabase/README.md**.
 
 ### 2a. BWF broadcast footage ✅ (metadata) / 📐 (video ingest)
 
@@ -66,9 +66,9 @@ row in `matches` + objects in B2 under that match's constructable prefix**
   `source_url`). PRs apply to dev; master/schedule applies to prod. ✅
 - **Backlog** — existing footage is staged under `bwf/<match_id>/original.mp4`
   via service `/presign`, then `matches-ingest` enqueues normalize. 📐
-- **Steady state** — scraper sets `source_url` on `matches` and calls
-  `matches-ingest`; normalize fetches YouTube (yt-dlp ✅) and archives to B2.
-  (enqueue intentional ✅ / dispatch cron ✅)
+- **Steady state** — scraper sets `source_url` on `matches` only (catalog).
+  Pipeline enqueue is separate (`matches-ingest` / ops); normalize then fetches
+  YouTube (yt-dlp ✅) and archives to B2. (dispatch cron ✅)
 
 **Rule: B2 is canonical.** A YouTube URL is fetched exactly once, at
 normalize time; the normalized output lands in B2 and no later stage ever
@@ -88,7 +88,7 @@ touches YouTube again.
 ### 2c. Court annotation & player labeling ✅ (inference) / 📐 (persistence)
 
 Before (or after) processing, the user annotates into a single B2 file
-`annotation.json` under the match prefix (shape: SUPABASE.md):
+`annotation.json` under the match prefix (shape: supabase/README.md):
 
 - **Court corners** — 4 points. Required for BWF valid-frame extraction and
   for the 3D analysis stage (homography). Optional scoreboard crops for BWF.
@@ -105,7 +105,7 @@ that materializes `annotation.json` under `bwf/<match_id>/`.
 
 ## 3. Storage layout (B2)
 
-Two namespaces, one shape (see SUPABASE.md for full layout):
+Two namespaces, one shape (see supabase/README.md for full layout):
 
 ```
 users/<uid>/<match_id>/            # user-owned; RLS = owner
@@ -114,22 +114,21 @@ bwf/<match_id>/                    # system-owned (BWF); readable to signed-in
   annotation.json         court geometry + player labels   (client / service)
   normalized.mp4          ≤1080p/30fps H.264/AAC; BWF: cleaned cut is primary (normalize)
   thumbnail.jpg                                            (normalize)
-  frame_ranges.csv        compact old→new range map        (normalize, BWF)
-  # scores.csv            NOT implemented (score timeline deferred)
-  # valid.mp4             legacy; BWF cleaned asset is normalized.mp4
+  preprocess-log.json     frame shifts + worker + timings  (normalize)
   detections.json         per-frame pose + shuttle tracks  (detect)
   analysis.json           3D positions, metrics, resolved  (analyze)
 ```
 
 User-authored data is files under the match prefix via `cdn-access`
 (`users/<uid>/…` prefix rule + upload basename allowlist). `bwf/…` is
-unwritable by clients. Canonical shape is `annotation.json` (SUPABASE.md):
+unwritable by clients. Canonical shape is `annotation.json` (supabase/README.md):
 
 ```jsonc
-// annotation.json — court + labels (normalize valid-frames + analyze)
+// annotation.json — court + labels (normalize court detect + analyze)
 { "court": {
     "corners": [[x,y],[x,y],[x,y],[x,y]],          // TL → TR → BR → BL
-    "scoreboard_crop": {"x":…,"y":…,"w":…,"h":…},  // BWF optional
+    "net_poles": [[x,y],[x,y]],                    // left, right (net pole tops)
+    "scoreboard_crop": {"x":…,"y":…,"w":…,"h":…},  // optional
     "score_sub_crop":  {"x":…,"y":…,"w":…,"h":…},
     "row_split_y": …
   },
@@ -149,7 +148,7 @@ the CDN cache.
 
 ## 4. The job pipeline
 
-### Queue 📐
+### Queue ✅
 
 A Postgres-backed queue in Supabase (**pgmq via Supabase Queues**) plus a
 `jobs` state table. **Enqueue is intentional only** (upload confirm /
@@ -164,48 +163,109 @@ preempt backlog), retries with visibility timeout, rate/cost caps on GPU
 spend, and a single place to observe pipeline state. Two queues (or a priority
 column): `interactive` (user-initiated) and `bulk` (backlog/scraper).
 
-### One job contract for every stage 📐 (generalizes what normalize ✅ does)
+### One job contract for every stage ✅ (live wire format)
 
-All stages speak the same envelope — this is the existing `normalize-video`
-pattern promoted to a standard:
+Stages share one **flat** envelope style (not a nested generic `source`/`outputs`
+map). This section is the **SSOT for wire shapes and stage basenames** (callback
+bodies, B2 object names for purge/dispatch/ops). Live code mirrors it by hand:
+
+| Concern | TypeScript | Python |
+|---|---|---|
+| Stage → basenames, purge set | `supabase/functions/ops/stage_outputs.ts` | `scripts/ops_stage.py` (`STAGE_*`) |
+| Callback settle | `supabase/functions/jobs` (`success` → DB `complete`) | workers POST callback |
+
+There is no runtime `contracts/` package; a contract change must update this
+section **and** the mirrors (and any worker parser tests) together.
+
+#### Dispatcher → worker (normalize example)
+
+PyWorker may wrap as `{ input: env }`.
 
 ```jsonc
-// dispatcher → worker
-{ "input": {
-    "job_id": "…",
-    "source":       { "kind": "b2", "url": "<presigned GET>" }   // or
-                 // { "kind": "youtube", "url": "https://youtu.be/…" },
-    "outputs":      { "<asset kind>": "<presigned PUT or multipart set>", … },
-    "params":       { /* stage-specific: valid_frames_config, court corners… */ },
-    "callback_url": "https://<ref>.supabase.co/functions/v1/jobs/callback",
-    "callback_token": "<HMAC(job_id, attempt…), aud=jobs-callback>",
-    "realtime_channel": "job:<job_id>"   // stages that stream progress
-} }
-// worker → callback (Bearer callback_token)
-{ "job_id": "…", "status": "complete" | "failed",
-  "assets": { "<kind>": { "sha256": "…", "meta": { … } } }, "error?": "…" }
+{
+  "request_id": "<job_id>",
+  "input_url": "<presigned GET | YouTube URL>",
+  "output_upload": { "part_urls": […], "complete_url": "…", "abort_url": "…", "part_size": 67108864 },
+  "thumbnail_upload_url": "<presigned PUT>",
+  "preprocess_log_upload_url": "<presigned PUT preprocess-log.json>",
+  "annotation": { /* court.corners[4] + court.net_poles[2] required */ },
+  "callback_url": "https://<ref>.supabase.co/functions/v1/jobs/callback",
+  "callback_token": "<HS256 JWT: job_id, match_id, stage, attempt; aud=jobs-callback; 12h>"
+}
+// Worker route: POST /preprocess/sync (video-preprocess)
+// Path mode: YouTube → BWF court cut; B2/CDN → full encode
+// file:// not supported; frame_shifts live only in preprocess-log.json
 ```
 
-- Workers hold no credentials; the callback token is the only authorization
-  and is bound to one job (single-use: the callback marks the job terminal on
-  first valid call).
-- Progress Realtime (worker → `job:<job_id>`) is optional UX; **MVP detect
-  omits mid-job streaming** and reports only via `jobs/callback` (same as
-  normalize). Re-add progress later if the client needs a progress bar.
-- The jobs function's `/callback` route records assets, then **enqueues the
-  next stage** (normalize → detect → analyze), making the pipeline a chain of
-  queue messages rather than a long-lived orchestrator. Dispatch and callback
-  live in ONE function (`jobs`) because they share what must never drift: the
-  stage routing table, the token mint/verify pair, the queue semantics.
-  Workers POST the callback from inside their own job thread — the
-  dispatching edge function disconnects long before a real job finishes.
+#### Worker → `jobs/callback` (Bearer `callback_token`)
+
+Wire status is **`success` | `failed`**. The jobs function maps `success` → DB
+`jobs.status = complete` (and advances/requeues); `failed` → DB `failed`.
+
+**Success** (optional stage probe fields allowed on success):
+
+```json
+{
+  "request_id": "00000000-0000-4000-8000-000000000001",
+  "status": "success",
+  "frame_count": 1,
+  "elapsed_sec": 0.1
+}
+```
+
+**Failed:**
+
+```json
+{
+  "request_id": "00000000-0000-4000-8000-000000000001",
+  "status": "failed",
+  "error": "example failure"
+}
+```
+
+| Wire (`callback` body) | Meaning | DB after settle |
+|---|---|---|
+| `success` | Worker → jobs/callback success | `complete` |
+| `failed` | Worker → jobs/callback failure | `failed` |
+
+#### Stage artifacts (B2 basenames)
+
+Canonical stage → object basenames for purge, dispatch completeness probes, and
+ops.
+
+**Stage order:** `normalize` → `detect` → `analyze`
+
+| Stage | Outputs (delete when regressing *to* this stage or earlier) | Primary (completeness probe) |
+|---|---|---|
+| `normalize` | `normalized.mp4`, `thumbnail.jpg`, `preprocess-log.json` | `normalized.mp4` |
+| `detect` | `detections.json` | `detections.json` |
+| `analyze` | `analysis.json` | `analysis.json` |
+
+**Never purge on stage regress** (`keep_on_regress`):
+
+- `original.mp4`, `original.mov`, `original.mkv`
+- `annotation.json`
+
+Regression *to* stage S deletes S outputs **and** every later stage's outputs.
+`outputsToPurge` / `outputs_to_purge` implement that set from the map above.
+
+- Workers hold no credentials; the callback token is the only authorization.
+  Single-use is state-machine based (`processing` + attempt/stage CAS), not a
+  jti store.
+- Progress Realtime is optional UX; **MVP detect/normalize omit mid-job
+  streaming** and report only via `jobs/callback`.
+- The jobs function's `/callback` route settles via `complete_job`, then
+  **advances or requeues** (normalize → detect; analyze not wired). Dispatch
+  and callback live in ONE function (`jobs`) because they share what must never
+  drift: the stage routing table, the token mint/verify pair, the queue
+  semantics.
 
 ### Stages
 
 | Stage | Worker | Status | In | Out |
 |---|---|---|---|---|
-| `normalize` | `workers/vast/video-normalization` | ✅ (scores.csv deferred) | original / YouTube URL (worker yt-dlps ✅); BWF: annotation.json → valid_frames_config | normalized.mp4 (full or BWF cleaned cut), thumbnail.jpg; youtube: + original.mkv; BWF: + frame_ranges.csv |
-| `detect` | `workers/vast/video-det` | 🚧 worker + `STAGES.detect` wired; analyze next; embedding module 📐 | normalized.mp4 (BWF cut already primary) | detections.json (pose + TrackNetV5 **top-K shuttle candidates** per frame for high recall + optional exclusive ReID). `server.py` + `detect/` + `pose/` |
+| `normalize` | `workers/vast/video-preprocess` (`POST /preprocess/sync`) | ✅ | original / YouTube URL (worker yt-dlp ✅); always annotation.json (corners + net poles for later stages). Path: YouTube→BWF court cut, B2/CDN→full encode; `file://` not supported | normalized.mp4, thumbnail.jpg, preprocess-log.json |
+| `detect` | `workers/vast/video-det` | 🚧 worker + `STAGES.detect` wired; analyze next; embedding module 📐 | normalized.mp4 (BWF cut already primary) | detections.json (pose + TrackNetV5 **top-K shuttle candidates** in **source-frame** UV [0,1] + optional exclusive ReID). `server.py` + `detect/` + `pose/` |
 | `analyze` | `workers/…/analysis` | 📐 | detections.json + annotation.json | analysis.json: 3D shuttle trajectory (physics fit), player ground-plane positions (homography), metrics (TBD) |
 
 `analyze` is CPU-dominant (geometry + curve fitting, no NN inference) — it can
@@ -230,7 +290,7 @@ BWF vs user is **not** a different pipeline — it's the same chain. BWF may
 carry a thin `valid_frames_config` from `annotation.json` (court corners +
 player names; scoreboard crops only if stored) and roster names on
 `matches.team*_player*`; the worker fills missing scoreboard geometry after
-probe. User jobs typically normalize without valid-frames. See SUPABASE.md.
+probe. User jobs typically normalize without valid-frames. See supabase/README.md.
 
 ## 5. Supabase: auth, tables, RLS
 
@@ -244,7 +304,7 @@ inside edge functions and the match-data loader.
 
 ### Tables
 
-**Canonical schema: SUPABASE.md** (migration
+**Canonical schema: supabase/README.md** (migration
 `supabase/migrations/20260712000000_init_match_pipeline.sql`).
 
 ```
@@ -257,7 +317,7 @@ jobs      one pipeline run per match; stage advances in place
 
 No `videos`, `video_assets`, or players graph. B2 paths are constructable;
 court geometry + labels live in `annotation.json` under the match prefix (§3 /
-SUPABASE.md). Clients never write the DB — user files go through `cdn-access`;
+supabase/README.md). Clients never write the DB — user files go through `cdn-access`;
 DB writes are service_role via `ingest_match` / `complete_job`.
 
 ### RLS sketch
@@ -300,7 +360,8 @@ mintonix/
 ├── packages/
 │   └── shared/                types + schemas 📐
 ├── supabase/
-│   ├── migrations/            match + jobs pipeline (SUPABASE.md) ✅
+│   ├── README.md              schema + RPCs + edge functions SSOT ✅
+│   ├── migrations/            match + jobs pipeline ✅
 │   ├── config.toml
 │   └── functions/
 │       ├── cdn-access/        ✅ delivery tokens + upload presign
@@ -309,11 +370,12 @@ mintonix/
 │       │                         / advance stage in place)
 │       └── ops/               ✅ /set-stage (manual stage + optional B2 purge)
 ├── workers/
-│   ├── cloudflare/cdn/        ✅ B2 delivery + /presign control plane
-│   ├── github/match-data/     ✅ weekly scrape → Supabase
+│   ├── README.md              worker index
+│   ├── cloudflare/cdn/        ✅ B2 delivery + /presign (README + DATAFLOWS)
+│   ├── github/match-data/     ✅ weekly scrape → Supabase (README + schema.md)
 │   └── vast/
-│       ├── video-normalization/  ✅ + valid-frames extraction
-│       ├── video-det/            🚧 detect stage (server/detect/pose); STAGES.detect wired
+│       ├── video-preprocess/     ✅ README (normalize + BWF court detect)
+│       ├── video-det/            🚧 README + ARCHITECTURE (detect)
 │       └── analysis/             📐 3D + metrics
 └── .github/workflows/
 ```
@@ -323,7 +385,7 @@ Pipeline RPCs (`ingest_match`, `dispatch_next_job`, `complete_job`,
 policy, RPCs make the writes atomic (a match that needs processing never
 exists without its queue message; stage advance re-queues the same job row).
 Ops is service-token only (same `PIPELINE_SERVICE_TOKEN` as ingest/dispatch)
-for operator stage control — see SUPABASE.md.
+for operator stage control — see supabase/README.md.
 
 ## 8. CI/CD
 
@@ -351,10 +413,11 @@ callback body, `court_annotation.json` shape) cross pipelines. Two mitigations:
 
 - Every workflow that depends on `packages/shared` includes
   `packages/shared/**` in its `paths:` filter (the silent-skip monorepo trap).
-- Python workers can't import zod schemas, so contracts are pinned by
-  **fixture files** (`packages/shared/fixtures/*.json`): canonical envelopes /
-  callbacks, validated against zod on the TS side and against each worker's
-  parser in its own tests. A contract change turns every affected pipeline red.
+- Python workers can't import zod schemas, so wire contracts are pinned in
+  **ARCHITECTURE.md § One job contract** (envelope, callback bodies, stage
+  basenames) and mirrored in `stage_outputs.ts` / `ops_stage.py` / worker
+  parser tests. A contract change must update the doc and every affected
+  pipeline test.
 
 ### The workflows
 
@@ -366,7 +429,7 @@ in `wrangler.toml`).
 |---|---|---|---|---|
 | `match-data.yml` | `workers/github/match-data/**` | scrape + apply to dev DB | apply to prod (+ weekly cron) | ✅ |
 | `vast-worker.yml` | (reusable, `workflow_call`) | build + test + push SHA-tagged image to GHCR | promote the tested digest | ✅ |
-| `video-normalization.yml` | `workers/vast/video-normalization/**` | → `vast-worker.yml` (contract/unit + remux e2e; transcode is GPU-only and self-skips on the GPU-less runner — a bad host fails the job and the queue retries) | 〃 | ✅ |
+| `video-preprocess.yml` | `workers/vast/video-preprocess/**` | → `vast-worker.yml` (unit/contract in image; encode + BWF NVDEC are GPU-only and run on vast — a bad host fails the job and the queue retries) | 〃 | ✅ |
 | `video-det.yml` | `workers/vast/video-det/**` | → `vast-worker.yml` (CPU-safe tests; TensorRT engine build stays a documented manual step) | 〃 | ✅ |
 | `cloudflare-cdn.yml` | `workers/cloudflare/cdn/**` | tests + `wrangler deploy --env dev` | `wrangler deploy --env prod` | ✅ |
 | `supabase.yml` | `supabase/**`, `packages/shared/**` | `db push` → `functions deploy` to dev project | same, to prod | ✅ |
@@ -394,9 +457,10 @@ in `wrangler.toml`).
 1. **Analysis scope** — which metrics beyond 3D positions (rally segmentation,
    shot classification, player movement stats)? Drives whether `analyze` is
    one stage or several.
-2. **BWF video retention** — storing full normalized broadcasts in B2 vs only
-   `valid.mp4` cuts (storage cost vs reprocessing flexibility). Also confirm
-   the rights posture for storing YouTube-sourced footage.
+2. **BWF video retention** — storing full source under the match prefix vs
+   only the court cut as `normalized.mp4` (storage cost vs reprocessing
+   flexibility). Also confirm the rights posture for storing YouTube-sourced
+   footage.
 3. **Queue tech** — pgmq is the recommendation; if Supabase Queues proves
    limiting for priority/rate-caps, the fallback is a plain `jobs`-table
    dispatcher with `FOR UPDATE SKIP LOCKED`.

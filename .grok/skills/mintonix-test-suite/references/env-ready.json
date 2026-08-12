@@ -1,0 +1,123 @@
+{
+  "description": "Environment readiness checklist for Mintonix DEV or PROD. Report ready | ready_with_warnings | not_ready. Never print secret values.",
+  "profiles": {
+    "dev": {
+      "label": "DEV",
+      "project_ref": "xaxyuytvgcdbdnndhgwj",
+      "secrets_file": "~/.mintonix/dev-secrets.env",
+      "default_supabase_url": "https://xaxyuytvgcdbdnndhgwj.supabase.co",
+      "default_cdn_presign": "https://mintonix-cdn-dev.peterouyang14.workers.dev/presign",
+      "expected_vast_endpoint_names": [
+        "Normalization-DEV",
+        "Detection-DEV"
+      ],
+      "github_environment": "dev",
+      "default_e2e_allowed": true
+    },
+    "prod": {
+      "label": "PROD",
+      "project_ref": "grkaepnplgotsxdudlfn",
+      "secrets_file": "~/.mintonix/prod-secrets.env",
+      "default_supabase_url": "https://grkaepnplgotsxdudlfn.supabase.co",
+      "default_cdn_presign": "https://mintonix-cdn.peterouyang14.workers.dev/presign",
+      "expected_vast_endpoint_names": null,
+      "github_environment": "prod",
+      "default_e2e_allowed": false,
+      "notes": "Only run readiness or E2E when user explicitly targets prod."
+    }
+  },
+  "local_required_keys": [
+    "PIPELINE_SERVICE_TOKEN",
+    "PRESIGN_SERVICE_TOKEN",
+    "SUPABASE_SERVICE_ROLE_KEY|SUPABASE_SERVICE_KEY"
+  ],
+  "local_optional_keys": {
+    "user_upload_lane": [
+      "SUPABASE_ANON_KEY",
+      "SUPABASE_TEST_EMAIL",
+      "SUPABASE_TEST_PASSWORD"
+    ],
+    "overrides": ["SUPABASE_URL", "CDN_PRESIGN_URL"],
+    "infra": ["VAST_API_KEY", "SUPABASE_DB_PASSWORD", "CLOUDFLARE_API_TOKEN"]
+  },
+  "project_secrets_required_names": [
+    "PIPELINE_SERVICE_TOKEN",
+    "JOB_TOKEN_SECRET",
+    "PRESIGN_SERVICE_TOKEN",
+    "CDN_PRESIGN_URL",
+    "VAST_API_KEY",
+    "VAST_PREPROCESS_ENDPOINT_NAME"
+  ],
+  "project_secrets_recommended_names": [
+    "VAST_DETECT_ENDPOINT_NAME",
+    "VAST_TLS_CA"
+  ],
+  "project_secrets_legacy_aliases": {
+    "VAST_NORMALIZE_ENDPOINT_NAME": "Legacy alias for VAST_PREPROCESS_ENDPOINT_NAME — warn if only legacy is set",
+    "VAST_ENDPOINT_NAME": "Deprecated alias for VAST_PREPROCESS_ENDPOINT_NAME — warn if only legacy is set"
+  },
+  "edge_functions_expected": [
+    "jobs",
+    "matches-ingest",
+    "ops",
+    "cdn-access"
+  ],
+  "blocking_checks": [
+    {
+      "id": "local_secrets_file",
+      "severity": true
+    },
+    {
+      "id": "local_required_keys",
+      "severity": true
+    },
+    {
+      "id": "supabase_rest_matches",
+      "blocking": true,
+      "probe": "GET /rest/v1/matches?select=id&limit=1 with service role → 200"
+    },
+    {
+      "id": "jobs_dispatch_auth",
+      "blocking": true,
+      "probe": "POST /functions/v1/jobs/dispatch without valid token → 401"
+    },
+    {
+      "id": "cdn_presign_reachable",
+      "blocking": true,
+      "probe": "POST CDN_PRESIGN_URL with PRESIGN_SERVICE_TOKEN; expect worker JSON not CF 1010; set User-Agent"
+    },
+    {
+      "id": "project_secrets_required",
+      "blocking": true,
+      "probe": "supabase secrets list --project-ref — required names present (digests only)"
+    },
+    {
+      "id": "migrations_no_orphan_remote",
+      "blocking": true,
+      "probe": "supabase migration list — no remote versions missing from local migrations for maintained branch",
+      "notes": "Remote-only history blocks CI migrate and branch maintainability"
+    }
+  ],
+  "warning_checks": [
+    "user_upload_local_keys",
+    "vast_detect_endpoint_set",
+    "vast_endpoints_listable",
+    "vast_endpoint_names_match_expected_dev",
+    "edge_functions_listed",
+    "bwf_catalog_nonempty",
+    "recent_ci_success_for_env",
+    "legacy_VAST_ENDPOINT_NAME_only"
+  ],
+  "optional_deep": [
+    "dispatch_empty_queue_with_valid_token",
+    "dev_e2e_annotate_and_ingest",
+    "prod_e2e_only_if_user_explicit"
+  ],
+  "verdicts": ["ready", "ready_with_warnings", "not_ready"],
+  "safety": [
+    "Never print secret values or full JWTs",
+    "Default env is dev",
+    "Prod: confirm user intent; no destructive ops as readiness",
+    "Cold vast workers (0 ready) is not a failure"
+  ]
+}

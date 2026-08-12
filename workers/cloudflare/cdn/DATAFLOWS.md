@@ -90,12 +90,12 @@ sequenceDiagram
 ```
 
 Objects live at `users/<uid>/<match_id>/{original.mp4, normalized.mp4,
-thumbnail.jpg, annotation.json, …}` (see SUPABASE.md). Access control is a
+thumbnail.jpg, annotation.json, …}` (see supabase/README.md). Access control is a
 **prefix check**, no DB lookup.
 
 ---
 
-## 3. Video normalization  (compute pathway, credential-free worker)
+## 3. Video preprocess  (compute pathway, credential-free worker)
 
 Kicks off a GPU transcode on a Vast worker that holds **no credentials** — it
 gets presigned URLs + an HMAC callback token in the job envelope.
@@ -111,12 +111,12 @@ sequenceDiagram
   Cron->>Cron: dispatch_next_job RPC → claim job
   Note over Cron: prefix = bwf/<match_id>/ or users/<uid>/<match_id>/
   Cron->>W: /presign GET + MULTIPART + PUT
-  W-->>Cron: input_url, output_upload (parts), thumbnail_upload_url
+  W-->>Cron: input_url, output_upload (parts), thumbnail + preprocess-log PUTs
   Note over Cron: mint HMAC job token<br/>{job_id,match_id,stage,attempt} aud=jobs-callback
-  Cron->>V: POST /normalize/sync envelope
-  V->>B: GET input_url (parallel Range) → NVDEC/nvenc
+  Cron->>V: POST /preprocess/sync envelope
+  V->>B: GET input_url (or yt-dlp) → NVDEC/nvenc
   V->>B: multipart part PUTs → Complete normalized.mp4
-  V->>B: PUT thumbnail.jpg (single)
+  V->>B: PUT thumbnail.jpg + preprocess-log.json
   V->>K: POST result Bearer callback_token
   Note over K: verify token + complete_job RPC
   K-->>V: 200 ack

@@ -8,7 +8,7 @@
 --   jobs_dispatch_url       full URL …/functions/v1/jobs/dispatch
 --   pipeline_service_token  same value as edge PIPELINE_SERVICE_TOKEN
 -- Until both exist, the cron no-ops with a WARNING (safe after db push).
--- Setup: SUPABASE.md § Cron (dispatch drain).
+-- Setup: supabase/README.md § Cron (dispatch drain).
 
 create extension if not exists pg_net with schema extensions;
 create extension if not exists pg_cron with schema pg_catalog;
@@ -40,7 +40,7 @@ begin
   if v_url is null or btrim(v_url) = ''
      or v_token is null or btrim(v_token) = '' then
     raise warning
-      'jobs-dispatch cron skipped: set vault secrets jobs_dispatch_url and pipeline_service_token (see SUPABASE.md § Cron)';
+      'jobs-dispatch cron skipped: set vault secrets jobs_dispatch_url and pipeline_service_token (see supabase/README.md § Cron)';
     return null;
   end if;
 

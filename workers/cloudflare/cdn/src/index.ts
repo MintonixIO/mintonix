@@ -18,13 +18,12 @@
  *   - Vast / RunPod compute workers hold NO credentials (unchanged).
  *   - The orchestrator (Supabase fn) holds NO B2 credentials — only the JWT
  *     *private* key (mints view tokens) and the service token to call /presign.
- *   - This Worker holds the only B2 key (read+write+delete, needed to presign
- *     PUTs/DELETEs) plus the JWT *public* key (verify view tokens, can't mint).
+ *   - This Worker holds the only B2 key (list+read+write+delete) plus the JWT
+ *     *public* key (verify view tokens, can't mint).
  *
  * View-token claims (EdDSA, minted by the orchestrator):
- *   { "key": "videos/<id>/normalized.mp4", "exp": <unix s>, "iat": <unix s> }
- * The Worker enforces `claims.key === <objectKey from the path>`, so a token
- * leaked for one object cannot be replayed against another.
+ *   { "key": "…", "exp": <unix s>, "iat": <unix s> }
+ * The Worker requires `exp` and enforces `claims.key === <objectKey>`.
  */
 
 import { AwsClient } from "aws4fetch";
@@ -34,24 +33,33 @@ export interface Env {
   B2_S3_ENDPOINT: string;
   B2_REGION: string;
   B2_BUCKET: string;
-  B2_ACCESS_KEY_ID: string; // secret — read+write app key
+  B2_ACCESS_KEY_ID: string; // secret — list+read+write+delete app key
   B2_SECRET_ACCESS_KEY: string; // secret
   CDN_JWT_PUBLIC_KEY: string; // SPKI PEM
   PRESIGN_SERVICE_TOKEN: string; // secret — shared with the Supabase orchestrator
+  /** Edge→B2 cache TTL for full 200 responses (seconds). Default 86400. */
   CACHE_TTL_SECONDS?: string;
+  /**
+   * Client-visible Cache-Control max-age for successful delivery (seconds).
+   * Always `private` — tokens are short-lived. Default 300.
+   */
+  CLIENT_CACHE_MAX_AGE_SECONDS?: string;
   CORS_ALLOW_ORIGIN?: string;
   PRESIGN_MAX_EXPIRY_SECONDS?: string;
+  /** Hard cap on remaining view-token lifetime (seconds). Default 3600. */
+  MAX_VIEW_TOKEN_SECONDS?: string;
 }
 
 // Module-scoped caches so we parse the PEM / build the signer once per isolate.
-let cachedPublicKey: KeyLike | undefined;
+let cachedPublicKey: { pem: string; key: KeyLike } | undefined;
 let cachedAws: { client: AwsClient; id: string } | undefined;
 
 async function getPublicKey(env: Env): Promise<KeyLike> {
-  if (!cachedPublicKey) {
-    cachedPublicKey = await importSPKI(env.CDN_JWT_PUBLIC_KEY, "EdDSA");
+  const pem = env.CDN_JWT_PUBLIC_KEY;
+  if (!cachedPublicKey || cachedPublicKey.pem !== pem) {
+    cachedPublicKey = { pem, key: await importSPKI(pem, "EdDSA") };
   }
-  return cachedPublicKey;
+  return cachedPublicKey.key;
 }
 
 function getAws(env: Env): AwsClient {
@@ -87,10 +95,28 @@ function deny(status: number, message: string, env: Env): Response {
   });
 }
 
-function extractToken(request: Request, url: URL): string | null {
+function json(status: number, body: unknown, env: Env): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json", ...corsHeaders(env) },
+  });
+}
+
+/** Delivery tokens: Bearer or ?t= (short-lived view JWTs). */
+function extractViewToken(request: Request, url: URL): string | null {
   const auth = request.headers.get("Authorization");
   if (auth?.startsWith("Bearer ")) return auth.slice(7).trim();
   return url.searchParams.get("t");
+}
+
+/**
+ * Control-plane service token: Authorization Bearer only.
+ * Never accept long-lived secrets via ?t= (logs / Referer).
+ */
+function extractServiceToken(request: Request): string | null {
+  const auth = request.headers.get("Authorization");
+  if (auth?.startsWith("Bearer ")) return auth.slice(7).trim();
+  return null;
 }
 
 // Reject path traversal / absolute keys before they reach a signature or cache
@@ -102,11 +128,14 @@ function isValidKey(key: string): boolean {
 }
 
 // Constant-time string compare so the service-token check can't be timed.
-function timingSafeEqual(a: string, b: string): boolean {
+// Hash both sides first so length is not an oracle on the raw secret.
+async function timingSafeEqual(a: string, b: string): Promise<boolean> {
   const enc = new TextEncoder();
-  const ab = enc.encode(a);
-  const bb = enc.encode(b);
-  if (ab.length !== bb.length) return false;
+  const digests = await Promise.all(
+    [a, b].map((s) => crypto.subtle.digest("SHA-256", enc.encode(s))),
+  );
+  const ab = new Uint8Array(digests[0]);
+  const bb = new Uint8Array(digests[1]);
   let diff = 0;
   for (let i = 0; i < ab.length; i++) diff |= ab[i] ^ bb[i];
   return diff === 0;
@@ -123,7 +152,9 @@ function unescapeXml(s: string): string {
 }
 
 function presignExpirySeconds(bodyExpiresIn: number | undefined, env: Env): number {
-  const maxExpiry = Number(env.PRESIGN_MAX_EXPIRY_SECONDS ?? "3600");
+  // Default max must be >= jobs default (14400) so a missing wrangler var
+  // does not silently clip pipeline multiparts.
+  const maxExpiry = Number(env.PRESIGN_MAX_EXPIRY_SECONDS ?? "14400");
   return Math.min(Math.max(Number(bodyExpiresIn) || 900, 60), maxExpiry);
 }
 
@@ -131,28 +162,16 @@ function presignExpirySeconds(bodyExpiresIn: number | undefined, env: Env): numb
  * Control plane: mint a presigned B2 URL (or list keys / multipart session)
  * for the orchestrator.
  *
- * Auth: `Authorization: Bearer <PRESIGN_SERVICE_TOKEN>` (server-to-server).
- * Body:
- *   { "key": string, "op": "GET" | "PUT" | "DELETE", "expiresIn"?: number }
- *   { "key": string, "op": "MULTIPART", "parts"?: number, "partSize"?: number,
- *     "expiresIn"?: number }
- *   { "op": "LIST", "prefix": string, "maxKeys"?: number, "continuationToken"?: string }
- *
- * GET/PUT/DELETE/part presigns are scoped to exactly `key`, so one call can't
- * grant access to arbitrary objects. Content-Type is intentionally NOT signed:
- * only `host` is, so the uploading client can set any Content-Type without
- * breaking the signature (signing it would force a byte-exact echo and yield
- * SignatureDoesNotMatch on most browser PUTs).
- *
- * LIST and CreateMultipartUpload run in-Worker (need credentials / UploadId).
- * The B2 app key needs listFiles + writeFiles (+ deleteFiles for abort/LIST
- * cleanup) for these.
+ * Auth: `Authorization: Bearer <PRESIGN_SERVICE_TOKEN>` only.
  */
 async function handlePresign(request: Request, env: Env): Promise<Response> {
   if (request.method !== "POST") return deny(405, "Method not allowed", env);
 
-  const provided = extractToken(request, new URL(request.url));
-  if (!provided || !timingSafeEqual(provided, env.PRESIGN_SERVICE_TOKEN)) {
+  const provided = extractServiceToken(request);
+  if (
+    !provided ||
+    !(await timingSafeEqual(provided, env.PRESIGN_SERVICE_TOKEN))
+  ) {
     return deny(401, "Bad service token", env);
   }
 
@@ -197,24 +216,20 @@ async function handlePresign(request: Request, env: Env): Promise<Response> {
     aws: { signQuery: true },
   });
 
-  return new Response(
-    JSON.stringify({
+  return json(
+    200,
+    {
       url: signed.url,
       method: op,
       key,
       expiresAt: new Date(Date.now() + expiresIn * 1000).toISOString(),
-    }),
-    { status: 200, headers: { "Content-Type": "application/json", ...corsHeaders(env) } },
+    },
+    env,
   );
 }
 
 /**
  * Start an S3 multipart upload and return presigned part/complete/abort URLs.
- *
- * Orchestrator (jobs) calls this once per large output; the GPU worker holds no
- * B2 credentials — only the returned URLs. `parts` is the max part count
- * (default 256 × 64 MiB ≈ 16 GiB headroom). The worker uses only as many part
- * URLs as the final file needs.
  */
 async function handleMultipart(
   body: { key?: string; expiresIn?: number; parts?: number; partSize?: number },
@@ -224,9 +239,9 @@ async function handleMultipart(
   if (!isValidKey(key)) return deny(400, "Invalid or missing key", env);
 
   const expiresIn = presignExpirySeconds(body.expiresIn, env);
-  // S3 allows up to 10_000 parts. Default covers multi-hour 1080p30 masters.
-  const parts = Math.min(Math.max(Number(body.parts) || 256, 1), 10_000);
-  // S3 minimum part size (except last) is 5 MiB; cap at 128 MiB for parallelism.
+  // Product cap: 1024 × 64 MiB ≈ 64 GiB — enough for masters, avoids Worker
+  // CPU/response-size blowups at S3's theoretical 10_000 max.
+  const parts = Math.min(Math.max(Number(body.parts) || 256, 1), 1024);
   const partSize = Math.min(
     Math.max(Number(body.partSize) || 64 * 1024 * 1024, 5 * 1024 * 1024),
     128 * 1024 * 1024,
@@ -235,7 +250,6 @@ async function handleMultipart(
   const objectUrl = `${env.B2_S3_ENDPOINT}/${env.B2_BUCKET}/${encodeURI(key)}`;
   const aws = getAws(env);
 
-  // CreateMultipartUpload — must execute (returns uploadId).
   const createUrl = new URL(objectUrl);
   createUrl.searchParams.set("uploads", "");
   const createSigned = await aws.sign(createUrl.toString(), {
@@ -258,66 +272,85 @@ async function handleMultipart(
   }
   const uploadId = unescapeXml(uploadIdMatch[1]);
 
-  const part_urls: string[] = [];
-  for (let n = 1; n <= parts; n++) {
-    const partUrl = new URL(objectUrl);
-    partUrl.searchParams.set("partNumber", String(n));
-    partUrl.searchParams.set("uploadId", uploadId);
-    partUrl.searchParams.set("X-Amz-Expires", String(expiresIn));
-    const signed = await aws.sign(partUrl.toString(), {
-      method: "PUT",
+  try {
+    const part_urls: string[] = [];
+    for (let n = 1; n <= parts; n++) {
+      const partUrl = new URL(objectUrl);
+      partUrl.searchParams.set("partNumber", String(n));
+      partUrl.searchParams.set("uploadId", uploadId);
+      partUrl.searchParams.set("X-Amz-Expires", String(expiresIn));
+      const signed = await aws.sign(partUrl.toString(), {
+        method: "PUT",
+        aws: { signQuery: true },
+      });
+      part_urls.push(signed.url);
+    }
+
+    const completeUrl = new URL(objectUrl);
+    completeUrl.searchParams.set("uploadId", uploadId);
+    completeUrl.searchParams.set("X-Amz-Expires", String(expiresIn));
+    const completeSigned = await aws.sign(completeUrl.toString(), {
+      method: "POST",
       aws: { signQuery: true },
     });
-    part_urls.push(signed.url);
+
+    const abortUrl = new URL(objectUrl);
+    abortUrl.searchParams.set("uploadId", uploadId);
+    abortUrl.searchParams.set("X-Amz-Expires", String(expiresIn));
+    const abortSigned = await aws.sign(abortUrl.toString(), {
+      method: "DELETE",
+      aws: { signQuery: true },
+    });
+
+    return json(
+      200,
+      {
+        op: "MULTIPART",
+        key,
+        uploadId,
+        part_urls,
+        complete_url: completeSigned.url,
+        abort_url: abortSigned.url,
+        part_size: partSize,
+        parts,
+        expiresAt: new Date(Date.now() + expiresIn * 1000).toISOString(),
+      },
+      env,
+    );
+  } catch (e) {
+    // Best-effort abort so a mid-presign failure does not leave an open MPU.
+    try {
+      const abortUrl = new URL(objectUrl);
+      abortUrl.searchParams.set("uploadId", uploadId);
+      abortUrl.searchParams.set("X-Amz-Expires", "300");
+      const abortSigned = await aws.sign(abortUrl.toString(), {
+        method: "DELETE",
+        aws: { signQuery: true },
+      });
+      await fetch(abortSigned.url, { method: "DELETE" });
+    } catch {
+      /* ignore abort errors */
+    }
+    const msg = e instanceof Error ? e.message : String(e);
+    return deny(502, `Multipart presign failed: ${msg.slice(0, 200)}`, env);
   }
-
-  const completeUrl = new URL(objectUrl);
-  completeUrl.searchParams.set("uploadId", uploadId);
-  completeUrl.searchParams.set("X-Amz-Expires", String(expiresIn));
-  const completeSigned = await aws.sign(completeUrl.toString(), {
-    method: "POST",
-    aws: { signQuery: true },
-  });
-
-  const abortUrl = new URL(objectUrl);
-  abortUrl.searchParams.set("uploadId", uploadId);
-  abortUrl.searchParams.set("X-Amz-Expires", String(expiresIn));
-  const abortSigned = await aws.sign(abortUrl.toString(), {
-    method: "DELETE",
-    aws: { signQuery: true },
-  });
-
-  return new Response(
-    JSON.stringify({
-      op: "MULTIPART",
-      key,
-      uploadId,
-      part_urls,
-      complete_url: completeSigned.url,
-      abort_url: abortSigned.url,
-      part_size: partSize,
-      parts,
-      expiresAt: new Date(Date.now() + expiresIn * 1000).toISOString(),
-    }),
-    {
-      status: 200,
-      headers: { "Content-Type": "application/json", ...corsHeaders(env) },
-    },
-  );
 }
 
-/** S3 ListObjectsV2 under a prefix; service-token only (via handlePresign). */
+/** S3 ListObjectsV2 under a non-empty prefix; service-token only. */
 async function handleList(
   body: { prefix?: string; maxKeys?: number; continuationToken?: string },
   env: Env,
 ): Promise<Response> {
   const prefix = body.prefix ?? "";
-  // Prefixes often end with `/` (match folder). Empty prefix = whole bucket (ops only).
+  // Reject empty prefix — whole-bucket list is too wide for a shared secret.
+  if (!prefix) {
+    return deny(400, "LIST requires a non-empty prefix", env);
+  }
   if (
     prefix.length > 1024 ||
     prefix.startsWith("/") ||
     prefix.includes("..") ||
-    (prefix !== "" && !/^[A-Za-z0-9!_.*'()/\-]+$/.test(prefix))
+    !/^[A-Za-z0-9!_.*'()/\-]+$/.test(prefix)
   ) {
     return deny(400, "Invalid prefix", env);
   }
@@ -345,20 +378,21 @@ async function handleList(
     unescapeXml(m[1]),
   );
   const truncated = /<IsTruncated>\s*true\s*<\/IsTruncated>/i.test(xml);
-  const nextMatch = xml.match(/<NextContinuationToken>([^<]*)<\/NextContinuationToken>/);
-  const nextContinuationToken = nextMatch
-    ? unescapeXml(nextMatch[1])
-    : null;
+  const nextMatch = xml.match(
+    /<NextContinuationToken>([^<]*)<\/NextContinuationToken>/,
+  );
+  const nextContinuationToken = nextMatch ? unescapeXml(nextMatch[1]) : null;
 
-  return new Response(
-    JSON.stringify({
+  return json(
+    200,
+    {
       op: "LIST",
       prefix,
       keys,
       isTruncated: truncated,
       nextContinuationToken,
-    }),
-    { status: 200, headers: { "Content-Type": "application/json", ...corsHeaders(env) } },
+    },
+    env,
   );
 }
 
@@ -369,81 +403,105 @@ async function serveDelivery(request: Request, env: Env): Promise<Response> {
   }
 
   const url = new URL(request.url);
-  const objectKey = decodeURIComponent(url.pathname.replace(/^\/+/, ""));
+  let objectKey: string;
+  try {
+    objectKey = decodeURIComponent(url.pathname.replace(/^\/+/, ""));
+  } catch {
+    return deny(400, "Bad path encoding", env);
+  }
   if (!isValidKey(objectKey)) return deny(404, "Not found", env);
 
-  // --- 1. Verify the view token -------------------------------------------
-    const token = extractToken(request, url);
-    if (!token) return deny(401, "Missing view token", env);
+  const token = extractViewToken(request, url);
+  if (!token) return deny(401, "Missing view token", env);
 
-    let claims: { key?: string };
-    try {
-      const publicKey = await getPublicKey(env);
-      const result = await jwtVerify(token, publicKey, { algorithms: ["EdDSA"] });
-      claims = result.payload as { key?: string };
-    } catch {
+  let objectClaim: string;
+  let exp: number;
+  try {
+    const publicKey = await getPublicKey(env);
+    const result = await jwtVerify(token, publicKey, { algorithms: ["EdDSA"] });
+    const payload = result.payload;
+    if (typeof payload.key !== "string" || !payload.key) {
       return deny(403, "Invalid or expired token", env);
     }
-    // Bind the token to this exact object so it can't be replayed elsewhere.
-    if (claims.key !== objectKey) {
-      return deny(403, "Token does not grant this object", env);
+    if (typeof payload.exp !== "number") {
+      return deny(403, "Invalid or expired token", env);
     }
-
-    // --- 2. Serve from Cloudflare's edge cache or sign a read to B2 ----------
-    // Canonical cache key: the clean path, WITHOUT the per-user token. All
-    // viewers of the same object therefore share one cached copy, and the SigV4
-    // signature never pollutes the cache key. Method is folded in so a bodyless
-    // HEAD entry can't be served to a later GET.
-    const cacheKey = `${url.origin}/${objectKey}#${request.method}`;
-    const ttl = Number(env.CACHE_TTL_SECONDS ?? "86400");
-
-    const b2Url = `${env.B2_S3_ENDPOINT}/${env.B2_BUCKET}/${encodeURI(objectKey)}`;
-
-    // Sign with the signature in the QUERY string (signQuery) rather than the
-    // Authorization header: a request carrying `Authorization` is treated as
-    // private and bypasses Cloudflare's cache. Query-signed requests cache fine,
-    // and we override the cache key so the volatile signature is ignored.
-    const aws = getAws(env);
-    const signed = await aws.sign(b2Url, {
-      method: request.method,
-      aws: { signQuery: true },
-    });
-
-    const originRequest = new Request(signed.url, { method: request.method });
-    // Forward Range so the player can seek; Cloudflare satisfies byte ranges
-    // from the cached full object once it's warm.
-    const range = request.headers.get("Range");
-    if (range) originRequest.headers.set("Range", range);
-
-    const originResponse = await fetch(originRequest, {
-      cf: {
-        cacheKey,
-        cacheEverything: true,
-        cacheTtl: ttl,
-      },
-    });
-
-    if (originResponse.status === 403 || originResponse.status === 401) {
-      // B2 rejected our credentials — surface as a server error, not a 403 to
-      // the client (their token was already validated above).
-      return deny(502, "Upstream storage auth failed", env);
+    const maxLife = Number(env.MAX_VIEW_TOKEN_SECONDS ?? "3600");
+    const now = Math.floor(Date.now() / 1000);
+    if (payload.exp - now > maxLife) {
+      return deny(403, "Invalid or expired token", env);
     }
-    if (originResponse.status === 404) return deny(404, "Not found", env);
+    objectClaim = payload.key;
+    exp = payload.exp;
+  } catch {
+    return deny(403, "Invalid or expired token", env);
+  }
 
-    // Re-wrap so we can attach CORS + a sane public Cache-Control header.
-    const headers = new Headers(originResponse.headers);
-    headers.set("Cache-Control", `public, max-age=${ttl}`);
-    headers.set("Accept-Ranges", "bytes");
-    for (const [k, v] of Object.entries(corsHeaders(env))) headers.set(k, v);
-    // Strip storage-specific noise.
-    headers.delete("x-amz-request-id");
-    headers.delete("x-amz-id-2");
+  if (objectClaim !== objectKey) {
+    return deny(403, "Token does not grant this object", env);
+  }
 
-    return new Response(request.method === "HEAD" ? null : originResponse.body, {
-      status: originResponse.status,
-      statusText: originResponse.statusText,
-      headers,
-    });
+  // Canonical cache key: clean path without token. Method folded in so HEAD
+  // cannot poison GET. Range requests skip edge cache write (see below).
+  const cacheKey = `${url.origin}/${objectKey}#${request.method}`;
+  const edgeTtl = Number(env.CACHE_TTL_SECONDS ?? "86400");
+  const clientMaxAge = Math.min(
+    Number(env.CLIENT_CACHE_MAX_AGE_SECONDS ?? "300"),
+    Math.max(0, exp - Math.floor(Date.now() / 1000)),
+  );
+
+  const b2Url = `${env.B2_S3_ENDPOINT}/${env.B2_BUCKET}/${encodeURI(objectKey)}`;
+  const aws = getAws(env);
+  const signed = await aws.sign(b2Url, {
+    method: request.method,
+    aws: { signQuery: true },
+  });
+
+  const originRequest = new Request(signed.url, { method: request.method });
+  const range = request.headers.get("Range");
+  if (range) originRequest.headers.set("Range", range);
+
+  // Range: do not populate edge cache with partial 206s (key ignores Range).
+  // Full GET/HEAD: cache only 2xx; never sticky-cache 404/5xx.
+  const originResponse = await fetch(originRequest, {
+    cf: range
+      ? undefined
+      : {
+          cacheKey,
+          cacheEverything: true,
+          cacheTtlByStatus: {
+            "200-299": edgeTtl,
+            "400-499": 0,
+            "500-599": 0,
+          },
+        },
+  });
+
+  if (originResponse.status === 403 || originResponse.status === 401) {
+    return deny(502, "Upstream storage auth failed", env);
+  }
+  if (originResponse.status === 404) return deny(404, "Not found", env);
+
+  const headers = new Headers(originResponse.headers);
+  // Private media: browser must revalidate with a token; never public.
+  if (originResponse.status >= 200 && originResponse.status < 300) {
+    headers.set(
+      "Cache-Control",
+      `private, max-age=${clientMaxAge}`,
+    );
+  } else {
+    headers.set("Cache-Control", "private, no-store");
+  }
+  headers.set("Accept-Ranges", "bytes");
+  for (const [k, v] of Object.entries(corsHeaders(env))) headers.set(k, v);
+  headers.delete("x-amz-request-id");
+  headers.delete("x-amz-id-2");
+
+  return new Response(request.method === "HEAD" ? null : originResponse.body, {
+    status: originResponse.status,
+    statusText: originResponse.statusText,
+    headers,
+  });
 }
 
 export default {

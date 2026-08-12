@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.DS_Store
+.idea/
+venv/
+.env
+*.md
+tools/
+testdata/
+debug.py

@@ -1,6 +1,6 @@
 """Vast.ai PyWorker for the video-det endpoint.
 
-Mirrors workers/vast/video-normalization/worker.py — thin HTTP proxy the
+Mirrors workers/vast/video-preprocess/worker.py — thin HTTP proxy the
 autoscaler runs in front of the backend model server (server.py). Does not do
 detection itself.
 
@@ -17,7 +17,7 @@ import aiohttp.web
 
 from vastai import Worker, WorkerConfig, HandlerConfig, LogActionConfig, BenchmarkConfig
 
-# Same patch as the normalization worker: SDK AppRunner(handler_cancellation=True)
+# Same patch as the video-preprocess worker: SDK AppRunner(handler_cancellation=True)
 # turns a dispatcher disconnect into a cancel, which zeroes reported load and
 # lets the autoscaler stop the instance mid-job. Jobs report via callback; keep
 # the request (and load accounting) alive until the job finishes.

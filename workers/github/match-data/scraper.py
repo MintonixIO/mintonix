@@ -40,6 +40,8 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
+from match_key import match_key_from_scraped, normalize_player_name
+
 USER_AGENT = "MintonixScraper/0.1 (research)"
 CACHE_DIR = "/tmp/mintonix_cache"
 CACHE_TTL_SEC = 24 * 3600  # 24h default; use --refresh / --no-cache to override
@@ -664,6 +666,10 @@ def parse_tournament_page(page_title, wikitext, season):
             ))
 
     assign_unique_match_idx(matches)
+    # Emit stable match_key once so finder/loader cannot diverge.
+    tournament_title = page_title
+    for m in matches:
+        m["match_key"] = match_key_from_scraped(season, tournament_title, m)
 
     return {
         "page": page_title,
@@ -677,12 +683,14 @@ def _roster_anchor(m):
 
     A player belongs to at most one match per (discipline, section, round), so
     the combined roster uniquely identifies a match within that group regardless
-    of where it sits in the wikitable.
+    of where it sits in the wikitable. Names are NFKC-normalized and
+    parentheticals stripped so minor wiki display churn does not re-key.
     """
     names = []
     for tk in ("team1", "team2"):
         for p in (m.get(tk) or {}).get("players", []) or []:
-            n = (p.get("wiki_name") or p.get("display_name") or "").strip().lower()
+            raw = p.get("wiki_name") or p.get("display_name") or ""
+            n = normalize_player_name(raw)
             # Skip empties, unrendered template residue ("{{flagicon|}}"), and
             # bare punctuation ("/") from TBD/placeholder cells in unplayed
             # draws — those aren't real players, so a match made only of them has

@@ -1,17 +1,21 @@
 # `cdn-access` edge function — CDN orchestrator
 
-Authenticates a Supabase user, then issues access to private B2 objects. It
-holds **no B2 credentials**: delivery URLs are minted locally with the Ed25519
-signing key; uploads are presigned by the Cloudflare Worker's `/presign` route.
+Issues access to B2 objects without holding B2 credentials: delivery URLs are
+minted locally with the Ed25519 signing key; uploads/deletes are presigned by
+the Cloudflare Worker's `/presign` route.
 
 See `workers/cloudflare/cdn/README.md` for the full trust boundary.
 
 ## API
 
-`POST /functions/v1/cdn-access` with the user's `Authorization: Bearer <supabase jwt>`.
+`POST /functions/v1/cdn-access`
 
 ```jsonc
-// Delivery — stream a normalized video through the cached CDN
+// Public BWF delivery — no auth required
+{ "op": "delivery", "key": "bwf/<match_id>/normalized.mp4" }
+// → short-lived CDN URL (?t= JWT). Anyone may mint view tokens for bwf/.
+
+// User delivery / upload / delete — Authorization: Bearer <supabase jwt>
 { "op": "delivery", "key": "users/<uid>/<match_id>/normalized.mp4" }
 // → { "op":"delivery", "url":"https://cdn.mintonix.com/users/…/normalized.mp4?t=…",
 //     "expiresAt":"…" }
@@ -41,22 +45,15 @@ unaffected.
 
 ## Authorization
 
-Two checks, both required:
+| op | `bwf/…` | `users/<uid>/…` |
+|----|---------|-----------------|
+| **delivery** | **Public** (no JWT) | Logged-in user + own namespace |
+| **upload** | Forbidden | User JWT + own namespace + basename allowlist (`original.mp4`, `annotation.json`) |
+| **delete** | Forbidden | User JWT + own namespace (any basename under match) |
 
-1. **Authn** — `getUser()` must resolve a logged-in user (else `401`).
-2. **Namespace** — `key` must start with `users/<user.id>/` (else `403`).
-3. **Upload basename allowlist** — `op: "upload"` only allows `original.mp4` and
-   `annotation.json` under `users/<uid>/<match_id>/…`. Pipeline outputs
-   (`normalized.mp4`, etc.) are service-presigned by the job dispatcher, not
-   clients.
-4. **Delete** — `op: "delete"` allows any basename under
-   `users/<uid>/<match_id>/…` (no allowlist) so a user can remove pipeline
-   outputs when deleting a match. Still namespace-scoped.
-
-Every user object lives under `users/<uid>/<match_id>/…` (see SUPABASE.md).
-Access control is a prefix check with no DB lookup. System/BWF keys under
-`bwf/<match_id>/` are not writable here (admin/BWF cleanup uses the CDN
-Worker `/presign` with the service token, e.g. via `scripts/manage.py delete`).
+BWF media is publicly viewable via short-lived CDN tokens; B2 remains private.
+User objects stay namespace-scoped. Admin/BWF cleanup uses CDN `/presign` with
+the service token (e.g. `scripts/manage.py`).
 
 Compute-worker outputs (`normalized.mp4`, `thumbnail.jpg`) are **not** minted
 here — the service-authed job dispatcher writes them into the owner's prefix.

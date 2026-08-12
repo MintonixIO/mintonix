@@ -1,6 +1,7 @@
 """Stage control helpers + ops edge HTTP client.
 
-Keep STAGE_OUTPUTS in sync with supabase/functions/ops/stage_outputs.ts and SUPABASE.md.
+Keep STAGE_OUTPUTS in sync with supabase/functions/ops/stage_outputs.ts and
+ARCHITECTURE.md § One job contract / Stage artifacts.
 """
 
 from __future__ import annotations
@@ -10,14 +11,18 @@ import urllib.error
 import urllib.request
 from typing import Any
 
+# macOS python.org CA fix for urllib (no-op when certs already present).
+import ssl_certs  # noqa: F401
+
 # Stage ↔ B2 artifact map.
 # Regression *to* stage S deletes S outputs and every later stage's outputs.
 # original.* and annotation.json are never purged by stage control.
 STAGE_ORDER = ("normalize", "detect", "analyze")
 STAGE_OUTPUTS: dict[str, tuple[str, ...]] = {
     "normalize": (
-        "normalized.mp4", "thumbnail.jpg",
-        "valid.mp4", "frame_manifest.csv", "scores.csv",
+        "normalized.mp4",
+        "thumbnail.jpg",
+        "preprocess-log.json",
     ),
     "detect": ("detections.json",),
     "analyze": ("analysis.json",),

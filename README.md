@@ -18,7 +18,7 @@ four user-clicked court corners.
   Tour match metadata and broadcast footage; users upload their own match
   videos via presigned direct-to-storage PUTs. Both converge to the same
   canonical form and processing chain.
-- **Video normalization** — every source is transcoded to a standard
+- **Video preprocess** — every source is transcoded to a standard
   ≤1080p/30fps H.264 form, with thumbnails; BWF broadcasts additionally get
   a valid-frames-only cut (dead time removed) and an OCR score timeline.
 - **Shuttle detection & tracking** — TrackNet-based per-frame shuttle
@@ -49,11 +49,14 @@ four user-clicked court corners.
 # Architecture summary
 
 Condensed reference; full detail in [ARCHITECTURE.md](ARCHITECTURE.md),
-[SUPABASE.md](SUPABASE.md), and
-[workers/vast/video-det/ARCHITECTURE.md](workers/vast/video-det/ARCHITECTURE.md).
+[supabase/README.md](supabase/README.md), and per-worker docs under
+[`workers/`](workers/) (e.g.
+[video-det](workers/vast/video-det/README.md),
+[video-preprocess](workers/vast/video-preprocess/README.md),
+[cdn](workers/cloudflare/cdn/README.md),
+[match-data](workers/github/match-data/README.md)).
 Code organization for agents/contributors: [AGENTS.md](AGENTS.md).
 Marketing + BWF ship checklist: [MARKETING_BWF_CHECKLIST.md](MARKETING_BWF_CHECKLIST.md).
-Review findings originated in [CODE_REVIEW_ISSUES.md](CODE_REVIEW_ISSUES.md).
 
 Status legend: ✅ built · 🚧 partially built · 📐 designed, not built.
 
@@ -118,15 +121,15 @@ Move fixed items to the module's *Resolved* list with the fixing commit.
       catalog (BWF) content has no working path through `cdn-access` as
       documented. Enable BWF read access or re-scope MVP to user-upload-only.
 - [ ] **P1** `matches-ingest` has no CORS headers — browser clients can't call it.
-- [ ] **P1** Shared contracts missing — the promised `packages/shared` fixtures
-      don't exist; envelope/callback parsers are duplicated across TS and Python.
+- [ ] **P1** Shared contracts not packaged — wire shapes live in ARCHITECTURE.md
+      § One job contract and are mirrored by hand in TS/Python (no packages/shared).
 
 **Resolved:**
 - Dispatch auto-drain — `20260726020000_jobs_dispatch_cron.sql` schedules
   `jobs-dispatch` (every minute) → `invoke_jobs_dispatch` → `/jobs/dispatch`.
   Enqueue stays intentional (ingest / ops / stage-advance only). Requires
   Vault secrets `jobs_dispatch_url` + `pipeline_service_token` per project
-  (SUPABASE.md § Cron).
+  (supabase/README.md § Cron).
 
 ### workers/cloudflare/cdn — B2 delivery + `/presign` control plane ✅
 
@@ -146,14 +149,12 @@ Move fixed items to the module's *Resolved* list with the fixing commit.
 
 **Resolved:** —
 
-### workers/vast/video-normalization — normalize stage ✅
+### workers/vast/video-preprocess — normalize stage ✅
 
-- [ ] **P0** No upload retry — after a long encode, a single failed B2 upload
-      forces a full re-download and re-encode. Port detect's retry/backoff.
-- [ ] **P1** Missing GPU-scale support fails mid-job after download instead of
-      failing fast at accept time.
-- [ ] **P1** Huge single module — needs structural split (no behavior change).
-- [x] **P2** Score-timeline (`scores.csv`) — **deferred / not implemented** (BWF cleaned path is court∧scoreboard cut → `normalized.mp4` + `frame_ranges.csv`).
+- [x] **P0** Upload retries on single PUT and multipart parts/complete.
+- [x] **P1** Fail fast without NVENC before download (GPU required for encode + BWF NVDEC).
+- [x] **P1** Span-trim select encode for BWF court ranges (single best multi-range path).
+- [x] **P2** Score-timeline / scoreboard OCR — **deferred** (BWF is court-only → `normalized.mp4` + `preprocess-log.json`).
 
 **Resolved:** —
 

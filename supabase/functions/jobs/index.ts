@@ -29,19 +29,20 @@
  *   owner_id set      →  users/<owner_id>/<match_id>/
  *
  * Stages wired: normalize → detect. analyze lands when its worker contract
- * is pinned. For system/BWF matches, dispatch loads annotation.json into a
- * thin valid_frames_config (corners + names + stored crops only; worker
- * defaults missing scoreboard geometry after probe) so normalize writes a
- * cleaned cut to normalized.mp4 (detect always reads that key). scores.csv
- * is not produced (deferred).
+ * is pinned. Normalize always loads annotation.json (corners + net poles).
+ * Path mode is URL-driven on the worker: YouTube → BWF court cut; B2/CDN →
+ * full encode. Both write normalized.mp4, thumbnail.jpg, preprocess-log.json.
  *
  * Secrets:
  *   PIPELINE_SERVICE_TOKEN  auth for /dispatch (shared with matches-ingest)
  *   JOB_TOKEN_SECRET        HMAC secret for the callback token
  *   CDN_PRESIGN_URL         CDN Worker control plane (e.g. https://…/presign)
  *   PRESIGN_SERVICE_TOKEN   auth for /presign (shared with cdn-access)
- *   VAST_ENDPOINT_NAME      default vast serverless endpoint (normalize)
- *   VAST_DETECT_ENDPOINT_NAME  optional; detect endpoint (falls back to VAST_ENDPOINT_NAME)
+ *   VAST_PREPROCESS_ENDPOINT_NAME  vast serverless endpoint for preprocess
+ *   VAST_NORMALIZE_ENDPOINT_NAME   deprecated alias for preprocess endpoint
+ *   VAST_DETECT_ENDPOINT_NAME      vast serverless endpoint for detect
+ *                                  (falls back to preprocess endpoint if unset)
+ *   VAST_ENDPOINT_NAME      deprecated alias for preprocess endpoint
  *   VAST_API_KEY            vast ACCOUNT API key
  *   VAST_AUTOSCALER_URL     optional, default https://run.vast.ai
  *   VAST_TLS_CA             optional PEM: vast's self-signed worker CA
@@ -102,7 +103,7 @@ function isYoutubeUrl(raw: string | null | undefined): boolean {
 
 // ---------------------------------------------------------------- presign
 
-/** Worker multipart upload shape (matches video-normalization upload_multipart). */
+/** Worker multipart upload shape (matches video-preprocess multipart upload). */
 export interface MultipartUploadSpec {
   part_urls: string[];
   complete_url: string;
@@ -136,7 +137,7 @@ async function presign(key: string, op: "GET" | "PUT"): Promise<string> {
 
 /**
  * Create a B2 multipart upload session and return presigned part/complete/abort
- * URLs for large pipeline outputs (normalized.mp4, original.mkv). Small objects
+ * URLs for large pipeline outputs (normalized.mp4). Small objects
  * (thumbnail, CSV, JSON) stay on single PUT via presign(..., "PUT").
  */
 async function presignMultipart(key: string): Promise<MultipartUploadSpec> {
@@ -232,138 +233,38 @@ interface Settlement {
 }
 
 /**
- * Thin map of B2 annotation.json → worker valid_frames_config.
- * Field renames only: court.corners → court_corners; labels[].display_name
- * (or match roster) → player_names. Passes scoreboard_crop / score_sub_crop /
- * row_split_y through **only if present** — does not invent geometry.
- * Worker is sole defaulting authority: after probe, apply_valid_frames_defaults
- * fills missing scoreboard geometry (top-left quadrant convention).
- *
- * Returns null when annotation is absent/unusable (fail-closed for BWF).
+ * Load raw annotation.json for every normalize job.
+ * Worker validates court.corners[4] + court.net_poles[2].
+ * Throws when missing — annotation is required for both BWF and user paths.
  */
-export function annotationToValidFramesConfig(
-  annotation: unknown,
-  roster: {
-    team1_player1?: string | null;
-    team1_player2?: string | null;
-    team2_player1?: string | null;
-    team2_player2?: string | null;
-  },
-): Record<string, unknown> | null {
-  if (!annotation || typeof annotation !== "object") return null;
-  const ann = annotation as Record<string, unknown>;
-  const court = ann.court;
-  if (!court || typeof court !== "object") return null;
-  const c = court as Record<string, unknown>;
-  const corners = c.corners;
-  if (
-    !Array.isArray(corners) || corners.length !== 4 ||
-    !corners.every((p) =>
-      Array.isArray(p) && p.length === 2 &&
-      typeof p[0] === "number" && typeof p[1] === "number"
-    )
-  ) {
-    return null;
-  }
-
-  const names: string[] = [];
-  const labels = ann.labels;
-  if (Array.isArray(labels)) {
-    for (const lab of labels) {
-      if (lab && typeof lab === "object") {
-        const n = (lab as Record<string, unknown>).display_name;
-        if (typeof n === "string" && n.trim()) names.push(n.trim());
-      }
-    }
-  }
-  if (names.length === 0) {
-    for (const key of [
-      "team1_player1",
-      "team1_player2",
-      "team2_player1",
-      "team2_player2",
-    ] as const) {
-      const n = roster[key];
-      if (typeof n === "string" && n.trim()) names.push(n.trim());
-    }
-  }
-  if (names.length === 0) return null;
-
-  const cfg: Record<string, unknown> = {
-    court_corners: corners,
-    player_names: names,
-  };
-
-  const asCrop = (obj: unknown): Record<string, number> | null => {
-    if (!obj || typeof obj !== "object") return null;
-    const o = obj as Record<string, unknown>;
-    const keys = ["x", "y", "w", "h"] as const;
-    if (!keys.every((k) => typeof o[k] === "number")) return null;
-    return {
-      x: o.x as number,
-      y: o.y as number,
-      w: o.w as number,
-      h: o.h as number,
-    };
-  };
-  const crop = asCrop(c.scoreboard_crop);
-  if (crop) cfg.scoreboard_crop = crop;
-  const sub = asCrop(c.score_sub_crop);
-  if (sub) cfg.score_sub_crop = sub;
-  if (typeof c.row_split_y === "number") cfg.row_split_y = c.row_split_y;
-
-  return cfg;
-}
-
-/**
- * Load annotation.json for system/BWF matches.
- * Throws when missing/unusable so the job fails instead of silently
- * full-timeline normalizing an uncleaned BWF master into detect.
- */
-async function loadBwfValidFramesConfig(
-  job: DispatchedJob,
-): Promise<Record<string, unknown>> {
+async function loadAnnotation(job: DispatchedJob): Promise<unknown> {
   const url = await presign(`${job.b2_prefix}annotation.json`, "GET");
   const resp = await fetch(url);
   if (!resp.ok) {
     throw new Error(
-      `BWF match ${job.match_id}: annotation.json missing or unreadable ` +
-        `(HTTP ${resp.status}); cannot build valid_frames_config`,
+      `match ${job.match_id}: annotation.json missing or unreadable ` +
+        `(HTTP ${resp.status}); cannot run preprocess`,
     );
   }
-  const annotation = await resp.json();
-  const cfg = annotationToValidFramesConfig(annotation, {
-    team1_player1: job.team1_player1,
-    team1_player2: job.team1_player2,
-    team2_player1: job.team2_player1,
-    team2_player2: job.team2_player2,
-  });
-  if (!cfg) {
-    throw new Error(
-      `BWF match ${job.match_id}: annotation.json unusable ` +
-        `(need court.corners + player names/labels or roster)`,
-    );
-  }
-  return cfg;
+  return await resp.json();
 }
 
 /**
  * Stage routing table. normalize → detect; analyze slots in when ready.
  *
- * BWF contract: cleaned cut (court ∧ scoreboard) is written to
- * normalized.mp4 so detect always GETs that key. Compact frame_ranges.csv
- * is a side artifact. scores.csv is not produced.
+ * Worker route is /preprocess/sync (video-preprocess image).
+ * Artifacts: normalized.mp4 (multipart), thumbnail.jpg, preprocess-log.json.
  */
 const STAGES: Record<string, {
   route: string;
-  /** Env var for vast endpoint name; defaults to VAST_ENDPOINT_NAME. */
+  /** Env var for this stage's vast endpoint name (see resolveVastEndpointName). */
   endpointEnv?: string;
   buildEnvelope(job: DispatchedJob, token: string): Promise<Record<string, unknown>>;
   settle(job: DispatchedJob, body: CallbackBody, ok: boolean): Settlement;
 }> = {
   normalize: {
-    route: "/normalize/sync",
-    endpointEnv: "VAST_ENDPOINT_NAME",
+    route: "/preprocess/sync",
+    endpointEnv: "VAST_PREPROCESS_ENDPOINT_NAME",
 
     async buildEnvelope(job, token) {
       const prefix = job.b2_prefix;
@@ -373,40 +274,34 @@ const STAGES: Record<string, {
         callback_token: token,
       };
 
+      // Independent presigns in parallel to shrink dispatch latency while
+      // the job is already claimed as processing.
+      const outputP = presignMultipart(`${prefix}normalized.mp4`);
+      const thumbP = presign(`${prefix}thumbnail.jpg`, "PUT");
+      const logP = presign(`${prefix}preprocess-log.json`, "PUT");
+      const annP = loadAnnotation(job);
+
       // User-owned: original already in B2 as original.mp4 (matches-ingest).
-      // System/BWF with YouTube: always yt-dlp + multipart archive. Retries must
-      // not be B2-only — if original.mkv never landed, a GET would hard-fail.
-      // (Worker overwrites the same key on successful archive.)
-      // System/backlog without URL: original already under the prefix as mp4.
-      // Downloads use parallel byte-ranges on the presigned GET (worker DL_CONNECTIONS).
+      // YouTube: worker yt-dlps source_url → BWF court-cut path.
+      // System/backlog without YouTube URL: original.mp4 under prefix (user path).
       if (job.owner_id) {
         env.input_url = await presign(`${prefix}original.mp4`, "GET");
       } else if (isYoutubeUrl(job.source_url)) {
         env.input_url = job.source_url;
-        env.original_upload = await presignMultipart(`${prefix}original.mkv`);
       } else {
         env.input_url = await presign(`${prefix}original.mp4`, "GET");
       }
 
-      // Primary cleaned deliverable (BWF cut or full normalize) — multipart so
-      // multi-GB uploads hit line rate (worker UL_CONNECTIONS).
-      env.output_upload = await presignMultipart(`${prefix}normalized.mp4`);
-      // Small side assets: single PUT is enough.
-      env.thumbnail_upload_url = await presign(`${prefix}thumbnail.jpg`, "PUT");
-
-      // BWF / system: require annotation.json → valid_frames_config; fail the
-      // job if missing (no silent full-timeline fallback). Worker does
-      // detect-then-single-encode into normalized.mp4.
-      if (!job.owner_id) {
-        env.valid_frames_config = await loadBwfValidFramesConfig(job);
-        env.manifest_upload_url = await presign(`${prefix}frame_ranges.csv`, "PUT");
-      }
+      env.output_upload = await outputP;
+      env.thumbnail_upload_url = await thumbP;
+      env.preprocess_log_upload_url = await logP;
+      env.annotation = await annP;
       return env;
     },
 
     settle(_job, body, ok) {
       // Advance to detect on success. Match stays processing until detect (or
-      // later analyze) finishes; probe fields land from the normalize result.
+      // later analyze) finishes; probe fields land from the preprocess result.
       const next = ok ? { stage: "detect" } : null;
       const match = ok
         ? {
@@ -423,14 +318,13 @@ const STAGES: Record<string, {
 
   detect: {
     route: "/detect/sync",
-    // Separate GPU image/endpoint from normalize; falls back to VAST_ENDPOINT_NAME
-    // in invokeVast if unset (useful for single-endpoint local wiring).
+    // Separate GPU image/endpoint from normalize; falls back to the normalize
+    // endpoint name in invokeVast if unset (single-endpoint local wiring).
     endpointEnv: "VAST_DETECT_ENDPOINT_NAME",
 
     async buildEnvelope(job, token) {
       const prefix = job.b2_prefix;
-      // Always normalized.mp4 — for BWF this is already the cleaned cut
-      // (court ∧ scoreboard). No separate valid.mp4 primary path.
+      // Always normalized.mp4 (BWF court cut or full user encode).
       // player_mask_url is accepted by the worker for exclusive ReID seeds but
       // not presigned yet — player_id stays null until mask upload is productized.
       return {
@@ -494,21 +388,63 @@ async function resolveEndpointKey(endpointName: string, accountKey: string): Pro
   return match.api_key;
 }
 
+/**
+ * Resolve the vast serverless endpoint name for a stage.
+ *
+ * Prefer the stage-specific env (e.g. VAST_DETECT_ENDPOINT_NAME), then
+ * VAST_PREPROCESS_ENDPOINT_NAME, then deprecated
+ * VAST_NORMALIZE_ENDPOINT_NAME / VAST_ENDPOINT_NAME.
+ */
+function resolveVastEndpointName(endpointEnv?: string): {
+  name: string | undefined;
+  usedEnv: string;
+} {
+  if (endpointEnv) {
+    const staged = Deno.env.get(endpointEnv);
+    if (staged) return { name: staged, usedEnv: endpointEnv };
+  }
+
+  const preprocess = Deno.env.get("VAST_PREPROCESS_ENDPOINT_NAME");
+  if (preprocess) {
+    return { name: preprocess, usedEnv: "VAST_PREPROCESS_ENDPOINT_NAME" };
+  }
+
+  const normalize = Deno.env.get("VAST_NORMALIZE_ENDPOINT_NAME");
+  if (normalize) {
+    console.warn(
+      "VAST_NORMALIZE_ENDPOINT_NAME is deprecated; set VAST_PREPROCESS_ENDPOINT_NAME",
+    );
+    return { name: normalize, usedEnv: "VAST_NORMALIZE_ENDPOINT_NAME" };
+  }
+
+  const legacy = Deno.env.get("VAST_ENDPOINT_NAME");
+  if (legacy) {
+    console.warn(
+      "VAST_ENDPOINT_NAME is deprecated; set VAST_PREPROCESS_ENDPOINT_NAME " +
+        "(and VAST_DETECT_ENDPOINT_NAME for detect)",
+    );
+    return { name: legacy, usedEnv: "VAST_ENDPOINT_NAME" };
+  }
+
+  return {
+    name: undefined,
+    usedEnv: endpointEnv ?? "VAST_PREPROCESS_ENDPOINT_NAME",
+  };
+}
+
 async function invokeVast(
   route: string,
   envelope: Record<string, unknown>,
   jobId: string,
   endpointEnv?: string,
 ): Promise<void> {
-  // Stage-specific endpoint (e.g. VAST_DETECT_ENDPOINT_NAME) with fallback to
-  // the default normalize endpoint so a single-endpoint deploy still works.
-  const endpoint =
-    (endpointEnv ? Deno.env.get(endpointEnv) : undefined) ||
-    Deno.env.get("VAST_ENDPOINT_NAME");
+  // Stage-specific name first; detect may fall back to the preprocess endpoint
+  // so a single-endpoint local deploy still works.
+  const { name: endpoint, usedEnv } = resolveVastEndpointName(endpointEnv);
   const accountKey = Deno.env.get("VAST_API_KEY");
   if (!endpoint || !accountKey) {
     throw new Error(
-      `${endpointEnv ?? "VAST_ENDPOINT_NAME"} / VAST_API_KEY not configured`,
+      `${usedEnv} / VAST_API_KEY not configured`,
     );
   }
   const apiKey = await resolveEndpointKey(endpoint, accountKey);
@@ -640,7 +576,21 @@ async function handleDispatch(request: Request): Promise<Response> {
 
     const spec = STAGES[job.stage];
     try {
-      if (!spec) throw new Error(`no dispatcher for stage '${job.stage}'`);
+      if (!spec) {
+        // Unwired stages (e.g. analyze): terminal fail — retry cannot help.
+        await failJob(
+          service,
+          job,
+          `no dispatcher for stage '${job.stage}' (not implemented)`,
+          false,
+        );
+        dispatched.push({
+          job_id: job.job_id,
+          stage: job.stage,
+          error: "stage not implemented",
+        });
+        continue;
+      }
       const token = await mintJobToken({
         job_id: job.job_id,
         match_id: job.match_id,
@@ -662,8 +612,15 @@ async function handleDispatch(request: Request): Promise<Response> {
         // Re-queue (or terminal-fail) so the job does not sit processing forever.
         await failJob(service, job, `invoke: ${e}`, job.attempt < MAX_ATTEMPTS);
       });
+      // Fail closed if waitUntil is unavailable: await invoke so the job
+      // cannot be left processing with no background work scheduled.
       // deno-lint-ignore no-explicit-any
-      (globalThis as any).EdgeRuntime?.waitUntil?.(invocation);
+      const edgeRt = (globalThis as any).EdgeRuntime;
+      if (edgeRt?.waitUntil) {
+        edgeRt.waitUntil(invocation);
+      } else {
+        await invocation;
+      }
       dispatched.push({ job_id: job.job_id, stage: job.stage, attempt: job.attempt });
     } catch (e) {
       await failJob(service, job, `dispatch: ${e}`, job.attempt < MAX_ATTEMPTS);
@@ -686,7 +643,20 @@ async function handleCallback(request: Request): Promise<Response> {
       audience: TOKEN_AUD,
       algorithms: ["HS256"],
     });
-    claims = payload as unknown as JobClaims;
+    if (
+      typeof payload.job_id !== "string" ||
+      typeof payload.match_id !== "string" ||
+      typeof payload.stage !== "string" ||
+      typeof payload.attempt !== "number"
+    ) {
+      return json(401, { error: "Job token missing required claims" });
+    }
+    claims = {
+      job_id: payload.job_id,
+      match_id: payload.match_id,
+      stage: payload.stage,
+      attempt: payload.attempt,
+    };
   } catch {
     return json(403, { error: "Invalid or expired job token" });
   }

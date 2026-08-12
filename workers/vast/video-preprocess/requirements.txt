@@ -1,0 +1,9 @@
+# Backend + pipeline. Installed into /opt/worker-env at image build.
+fastapi==0.141.1
+uvicorn==0.52.1
+requests==2.34.2
+vastai==1.5.1
+yt-dlp
+# BWF detect (court NCC only)
+opencv-python-headless
+numpy

@@ -1,0 +1,110 @@
+{
+  "court": {
+    "corners": [
+      [
+        584,
+        536
+      ],
+      [
+        1333,
+        535
+      ],
+      [
+        1563,
+        1005
+      ],
+      [
+        359,
+        1009
+      ]
+    ],
+    "net_poles": [
+      [
+        800,
+        480
+      ],
+      [
+        1120,
+        480
+      ]
+    ],
+    "scoreboard_crop": {
+      "x": 0,
+      "y": 0,
+      "w": 960,
+      "h": 540
+    },
+    "score_sub_crop": {
+      "x": 0,
+      "y": 0,
+      "w": 960,
+      "h": 540
+    },
+    "row_split_y": 270
+  },
+  "labels": [
+    {
+      "frame_idx": 27000,
+      "anchor": {
+        "x": 894,
+        "y": 466,
+        "bbox": [
+          827,
+          403,
+          117,
+          172
+        ]
+      },
+      "display_name": "P1",
+      "labeled_by": "annotate_and_ingest.py"
+    },
+    {
+      "frame_idx": 27000,
+      "anchor": {
+        "x": 1159,
+        "y": 451,
+        "bbox": [
+          1067,
+          418,
+          164,
+          152
+        ]
+      },
+      "display_name": "P2",
+      "labeled_by": "annotate_and_ingest.py"
+    },
+    {
+      "frame_idx": 27000,
+      "anchor": {
+        "x": 1119,
+        "y": 683,
+        "bbox": [
+          999,
+          583,
+          221,
+          413
+        ]
+      },
+      "display_name": "P3",
+      "labeled_by": "annotate_and_ingest.py"
+    },
+    {
+      "frame_idx": 27000,
+      "anchor": {
+        "x": 1035,
+        "y": 784,
+        "bbox": [
+          993,
+          641,
+          208,
+          361
+        ]
+      },
+      "display_name": "P4",
+      "labeled_by": "annotate_and_ingest.py"
+    }
+  ],
+  "frame_width": 1920,
+  "frame_height": 1080,
+  "annotated_at_sec": 900.0
+}

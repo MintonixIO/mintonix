@@ -1,0 +1,127 @@
+{
+  "description": "GitHub Actions map for Mintonix pipeline PR/branch verification. Prefer gh CLI. Path filters apply — only matching workflows run.",
+  "repo": "MintonixIO/mintonix",
+  "environments": {
+    "pull_request": "dev",
+    "push_master": "prod"
+  },
+  "workflows": [
+    {
+      "file": ".github/workflows/supabase.yml",
+      "name": "Supabase — migrations + edge functions",
+      "jobs": [
+        {
+          "id": "migrate",
+          "check_name": "migrate",
+          "does": "supabase db push against env project"
+        },
+        {
+          "id": "unit",
+          "check_name": "unit",
+          "does": "deno ops stage_outputs_test + python scripts/test_stage_outputs.py"
+        },
+        {
+          "id": "functions",
+          "check_name": "functions",
+          "needs": ["migrate", "unit"],
+          "does": "supabase functions deploy (all under supabase/functions)"
+        }
+      ],
+      "notes": [
+        "Edge secrets (VAST_* endpoint names, tokens) are project supabase secrets, not set by this workflow",
+        "functions skipped if migrate or unit fails",
+        "Known flake: supabase/setup-cli rate limit when resolving latest CLI — re-run failed jobs"
+      ]
+    },
+    {
+      "file": ".github/workflows/contracts.yml",
+      "name": "Contracts",
+      "jobs": [
+        {
+          "id": "stage-artifacts",
+          "check_name": "stage-artifacts",
+          "does": "Assert contracts/stage_artifacts.json + callback fixtures match Python/TS STAGE_OUTPUTS"
+        }
+      ],
+      "requires_paths": [
+        "contracts/**",
+        "scripts/ops_stage.py",
+        "scripts/test_stage_outputs.py",
+        "supabase/functions/ops/**",
+        "supabase/functions/jobs/**",
+        "workers/vast/video-preprocess/server.py",
+        "workers/vast/video-det/server.py"
+      ]
+    },
+    {
+      "file": ".github/workflows/video-preprocess.yml",
+      "name": "Video Preprocess Worker",
+      "jobs": [
+        {
+          "id": "image",
+          "check_names": ["image / build-test-push", "image / promote"],
+          "does": "Build/test/push GHCR image via vast-worker.yml reusable workflow"
+        }
+      ]
+    },
+    {
+      "file": ".github/workflows/video-det.yml",
+      "name": "Video Detection Worker",
+      "jobs": [
+        {
+          "id": "image",
+          "check_names": ["image / build-test-push", "image / promote"],
+          "does": "Build/test/push detect GPU image (free_disk_space for TensorRT base)"
+        }
+      ]
+    },
+    {
+      "file": ".github/workflows/cloudflare-cdn.yml",
+      "name": "Cloudflare CDN Worker",
+      "jobs": [
+        {
+          "id": "deploy",
+          "check_name": "deploy",
+          "does": "pnpm typecheck + wrangler deploy for workers/cloudflare/cdn"
+        }
+      ]
+    },
+    {
+      "file": ".github/workflows/match-data.yml",
+      "name": "Match data — scrape & load to Supabase",
+      "jobs": [
+        {
+          "id": "scrape-and-load",
+          "check_name": "scrape-and-load",
+          "does": "Scrape BWF catalog + load matches rows; never enqueues GPU jobs"
+        }
+      ]
+    },
+    {
+      "file": ".github/workflows/vast-worker.yml",
+      "name": "Vast worker image (reusable)",
+      "top_level_check": false,
+      "does": "workflow_call only — shared by video-preprocess and video-det"
+    }
+  ],
+  "gh_commands": {
+    "pr_checks": "gh pr checks <N> --repo <owner/repo>",
+    "run_list": "gh run list --repo <owner/repo> --branch <branch> --limit 12",
+    "log_failed": "gh run view <run_id> --repo <owner/repo> --log-failed",
+    "rerun_failed": "gh run rerun <run_id> --repo <owner/repo> --failed"
+  },
+  "layers": [
+    "contracts_unit",
+    "migrate_functions",
+    "worker_images",
+    "cdn_deploy",
+    "match_data_catalog",
+    "runtime_e2e_dual_truth"
+  ],
+  "not_covered_by_ci": [
+    "vast runtime job success for a real match",
+    "detections.json content quality",
+    "B2 dual-truth for a specific match_id",
+    "setting VAST_NORMALIZE_ENDPOINT_NAME / VAST_DETECT_ENDPOINT_NAME secrets"
+  ]
+}

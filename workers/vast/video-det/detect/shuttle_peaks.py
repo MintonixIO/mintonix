@@ -32,6 +32,7 @@ def top_candidates(
             break
         peak = int(hm.argmax())
         py, px = divmod(peak, w)
+        # Pure-stretch inverse: network UV == source-frame UV (see types.py).
         out.append(
             ShuttleCandidate(
                 x=(px + 0.5) / w,
