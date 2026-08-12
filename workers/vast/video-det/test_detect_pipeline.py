@@ -165,6 +165,8 @@ class TestShuttleProcessFrames(unittest.TestCase):
         det.min_conf = 0.05
         det.nms_radius = 3
         det.max_triplets = 10_000  # tests clamp via module ``_MAX_TRIPLETS``
+        det.trt = None  # force torch FakeModel path (``object.__new__`` skips __init__)
+        det.model = None
         return det
 
     def test_process_frames_sliding_window_and_batch_shape(self) -> None:
