@@ -15,7 +15,7 @@
  *     }
  *
  *   POST /functions/v1/ops/model-urls
- *     Body: { keys: string[] }   // each key must be under models/video-det/
+ *     Body: { keys: string[] }   // each key must be under models/<file>
  *     -> 200 {
  *       urls: { [key]: "https://cdn…/<key>?t=<jwt>" },
  *       expiresAt: iso
@@ -368,7 +368,7 @@ interface ModelUrlsBody {
 
 /**
  * Mint CDN data-plane delivery URLs for product model weights.
- * Keys must pass isModelCacheKey (models/video-det/<version>/<file>).
+ * Keys must pass isModelCacheKey (models/<filename>).
  */
 async function handleModelUrls(body: ModelUrlsBody): Promise<Response> {
   const keys = body.keys;
@@ -385,7 +385,7 @@ async function handleModelUrls(body: ModelUrlsBody): Promise<Response> {
   const bad = keys.filter((k) => typeof k !== "string" || !isModelCacheKey(k));
   if (bad.length) {
     return json(403, {
-      error: `keys must be under ${MODEL_CACHE_PREFIX}<version>/<file>`,
+      error: `keys must be under ${MODEL_CACHE_PREFIX}<filename>`,
       code: "forbidden_key",
       rejected: bad.slice(0, 8),
     });

@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
-# Upload a directory of product detect weights to B2 and print MANIFEST fields.
+# Upload a directory of product detect weights to B2 under models/ and print MANIFEST fields.
 #
 # Usage:
-#   export B2_*  (same as fetch_models_from_b2.sh)
-#   export MODEL_VERSION=2026-08-11-fp16   # optional; default from MANIFEST or date
+#   export B2_*  (S3-compatible credentials)
 #   bash tools/upload_models_to_b2.sh /path/to/dir/with/engines
 #
-# Uploads to s3://$B2_BUCKET/models/video-det/$MODEL_VERSION/
+# Uploads to s3://$B2_BUCKET/models/<filename>
 # Prints sha256/bytes for pasting into models/MANIFEST.json.
 set -euo pipefail
 
@@ -28,17 +27,12 @@ export AWS_SECRET_ACCESS_KEY="$B2_SECRET_ACCESS_KEY"
 export AWS_DEFAULT_REGION="$B2_REGION"
 unset AWS_SESSION_TOKEN || true
 
-VERSION="${MODEL_VERSION:-}"
-if [[ -z "$VERSION" ]]; then
-  VERSION="$(python3 - <<'PY' "$MANIFEST"
+PREFIX="$(python3 - <<'PY' "$MANIFEST"
 import json, sys
 m = json.load(open(sys.argv[1]))
-print(m.get("version") or "")
+print(m.get("b2_prefix", "models").strip("/"))
 PY
 )"
-fi
-[[ -n "$VERSION" ]] || VERSION="$(date -u +%Y-%m-%d)"
-PREFIX="models/video-det/${VERSION}"
 
 mapfile -t FILES < <(python3 - <<'PY' "$MANIFEST"
 import json, sys
@@ -50,7 +44,6 @@ PY
 
 echo "upload_models: ${SRC} → s3://${B2_BUCKET}/${PREFIX}/"
 echo "--- MANIFEST snippets (paste into models/MANIFEST.json) ---"
-echo "  \"version\": \"${VERSION}\","
 echo "  \"b2_prefix\": \"${PREFIX}\","
 echo "  \"files\": ["
 

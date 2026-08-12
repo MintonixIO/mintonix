@@ -586,7 +586,7 @@ access.
 | `cdn-access` | User JWT → upload/delivery tokens; `users/<uid>/` prefix + upload basename allowlist |
 | `matches-ingest` | Front door: create/upsert match + enqueue job (service token or user JWT) |
 | `jobs` | `/dispatch` (pipeline token) + `/callback` (job HMAC bound to job_id/match_id/stage/attempt) |
-| `ops` | `/set-stage` (stage control + optional B2 purge) and `/model-urls` (CDN delivery mint for `models/video-det/*`, CI model bake) — both `PIPELINE_SERVICE_TOKEN` / `x-pipeline-token` |
+| `ops` | `/set-stage` (stage control + optional B2 purge) and `/model-urls` (CDN delivery mint for `models/*`, CI model bake) — both `PIPELINE_SERVICE_TOKEN` / `x-pipeline-token` |
 
 CDN worker remains the only holder of B2 credentials (`/presign` + delivery).
 `/presign` supports `GET` | `PUT` | `DELETE` | `MULTIPART` | `LIST`. Normalize
@@ -600,12 +600,13 @@ for MVP.
 **`POST /functions/v1/ops/model-urls` body** (CI model bake — CDN data plane, not B2 presign):
 
 ```jsonc
-{ "keys": ["models/video-det/<version>/yolo26x-pose.engine", "..."] }
+{ "keys": ["models/yolo26x-pose.engine", "models/tracknetv5.pt", "..."] }
 // → { "urls": { "<key>": "https://cdn…/<key>?t=<jwt>" }, "expiresAt", "ttl_sec" }
 ```
 
-Keys must be under `models/video-det/<version>/<file>`. Requires edge secrets
-`CDN_JWT_PRIVATE_KEY` + `CDN_BASE_URL` (same as `cdn-access`). Optional
+Keys must be flat under `models/<filename>` (bucket is `mintonix-dev` or
+`mintonix-prod` via CDN config). Requires edge secrets `CDN_JWT_PRIVATE_KEY` +
+`CDN_BASE_URL` (same as `cdn-access`). Optional
 `MODELS_DELIVERY_TOKEN_TTL_SECONDS` (default 1800).
 
 **`POST /functions/v1/ops/set-stage` body:**

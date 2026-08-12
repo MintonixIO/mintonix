@@ -10,7 +10,7 @@ free B2→CF egress + edge cache), and the Dockerfile copies them into the image
 | `tracknetv5.pt` | `SHUTTLE_CKPT` | TrackNet checkpoint |
 | `tracknetv5_fp16_b48.engine` | `SHUTTLE_ENGINE` | TrackNet TRT (FP16, batch 48) |
 
-Canonical listing + object prefix: **[MANIFEST.json](MANIFEST.json)**.
+Canonical listing: **[MANIFEST.json](MANIFEST.json)**.
 
 ## Why CDN delivery (not B2 keys / not `/presign` GET)
 
@@ -23,19 +23,19 @@ B2 credentials stay **only** on the Cloudflare CDN worker. GHA never holds them.
 
 ## Object layout (B2 keys)
 
+Bucket is environment-specific (`mintonix-dev` or `mintonix-prod`). Keys are flat:
+
 ```
-models/video-det/<version>/
-  yolo26x-pose.engine
-  tracknetv5.pt
-  tracknetv5_fp16_b48.engine
+s3://mintonix-dev/models/yolo26x-pose.engine
+s3://mintonix-dev/models/tracknetv5.pt
+s3://mintonix-dev/models/tracknetv5_fp16_b48.engine
+
+s3://mintonix-prod/models/…
 ```
 
-`<version>` matches `b2_prefix` in `MANIFEST.json` (e.g.
-`models/video-det/2026-08-11-fp16`).
-
-Engines are **TensorRT + GPU arch specific**. Export on a host that matches the
-product image base (`nvcr.io/nvidia/tensorrt:24.04-py3`) and the vast GPU
-family, upload a new versioned prefix, update `MANIFEST.json`.
+`MANIFEST.json` `b2_prefix` is `models` (no version folder). Engines are
+**TensorRT + GPU arch specific**. Export on a host that matches the product
+image / target GPU, then re-upload under `models/`.
 
 ## Local / CI download
 
@@ -52,7 +52,7 @@ This calls:
 ```http
 POST {SUPABASE_URL}/functions/v1/ops/model-urls
 x-pipeline-token: <PIPELINE_SERVICE_TOKEN>
-{ "keys": ["models/video-det/<ver>/yolo26x-pose.engine", ...] }
+{ "keys": ["models/yolo26x-pose.engine", "models/tracknetv5.pt", "…"] }
 ```
 
 → short-lived CDN URLs → `curl` each URL into `./models/`.
@@ -63,9 +63,12 @@ Still need write access to the private bucket (ops machine or `/presign` PUT).
 Helper that uses B2 S3 API (ops-only keys, not for CI):
 
 ```bash
-export B2_S3_ENDPOINT=... B2_REGION=... B2_BUCKET=...
-export B2_ACCESS_KEY_ID=... B2_SECRET_ACCESS_KEY=...
-export MODEL_VERSION=2026-08-11-fp16
+export B2_S3_ENDPOINT=https://s3.us-east-005.backblazeb2.com
+export B2_REGION=us-east-005
+export B2_BUCKET=mintonix-dev   # or mintonix-prod
+export B2_ACCESS_KEY_ID=...
+export B2_SECRET_ACCESS_KEY=...
+
 bash tools/upload_models_to_b2.sh /path/to/engine/dir
 # paste printed sha256/bytes into MANIFEST.json; commit MANIFEST only
 ```
