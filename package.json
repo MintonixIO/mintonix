@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "npm run test --prefix apps/web",
     "dev": "npm run dev --prefix apps/web",
     "build": "npm run build --prefix apps/web",
     "start": "npm run start --prefix apps/web",

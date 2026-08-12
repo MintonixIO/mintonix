@@ -23,7 +23,7 @@ export const REELS: Reel[] = [
     dur: "1:40",
     status: "ready",
     match: "Axelsen vs Momota · Final",
-    glow: "rgba(54,147,255,0.14)",
+    glow: "rgba(255,255,255,0.045)",
   },
   {
     id: "r2",
@@ -43,7 +43,7 @@ export const REELS: Reel[] = [
     dur: "1:12",
     status: "draft",
     match: "Tai Tzu-ying vs Sindhu · Group B",
-    glow: "rgba(251,191,36,0.12)",
+    glow: "rgba(139,156,255,0.12)",
   },
   {
     id: "r5",

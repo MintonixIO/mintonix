@@ -67,14 +67,14 @@ export function ReplayCameraDemo() {
   const current = VIEWS[view];
 
   return (
-    <div className="overflow-hidden rounded-[18px] border border-[var(--border)] bg-[linear-gradient(160deg,#0c1426,#070d1a)] shadow-[var(--shadow-xl),0_0_0_1px_rgba(80,222,255,0.1)]">
+    <div aria-label="Product illustration — not the live product" className="overflow-hidden rounded-[18px] border border-[var(--border)] bg-[linear-gradient(160deg,#0c1426,#070d1a)] shadow-[var(--shadow-xl),0_0_0_1px_rgba(80,222,255,0.1)]">
       <div className="flex items-center gap-2 border-b border-[var(--border-subtle)] px-4 py-3">
-        <span className="h-2 w-2 rounded-full bg-[var(--cyan-500,#50deff)] shadow-[0_0_8px_rgba(80,222,255,0.8)]" />
+        <span className="h-2 w-2 rounded-full bg-[var(--live)] shadow-[0_0_8px_rgba(80,222,255,0.8)]" />
         <span className="font-mono text-[11px] uppercase tracking-wide text-[var(--text-muted)]">
           3D replay · rally 22
         </span>
         <div className="flex-1" />
-        <span className="font-mono text-[11px] text-[var(--cyan-500,#50deff)]">
+        <span className="font-mono text-[11px] text-[var(--live)]">
           {current.name}
         </span>
       </div>
@@ -104,7 +104,7 @@ export function ReplayCameraDemo() {
             transformStyle: "preserve-3d",
           }}
         >
-          <div className="absolute inset-0 rounded border-2 border-[rgba(80,222,255,0.55)] bg-[linear-gradient(180deg,rgba(80,222,255,0.1),rgba(54,147,255,0.05))] shadow-[inset_0_0_30px_rgba(80,222,255,0.12)]" />
+          <div className="absolute inset-0 rounded border-2 border-[rgba(80,222,255,0.55)] bg-[linear-gradient(180deg,rgba(80,222,255,0.1),rgba(255,255,255,0.04))] shadow-[inset_0_0_30px_rgba(80,222,255,0.12)]" />
           <div className="absolute left-[8%] right-[8%] top-1/2 border-t border-dashed border-white/30" />
           <div className="absolute left-0 right-0 top-[26%] border-t border-[rgba(80,222,255,0.3)]" />
           <div className="absolute left-0 right-0 top-[74%] border-t border-[rgba(80,222,255,0.3)]" />
@@ -125,7 +125,7 @@ export function ReplayCameraDemo() {
               onClick={() => setView(i)}
               className={
                 i === view
-                  ? "shrink-0 rounded-full bg-[var(--cyan-500,#50deff)] px-2.5 py-1 text-[11px] font-medium text-[#04141b]"
+                  ? "shrink-0 rounded-full bg-[var(--live)] px-2.5 py-1 text-[11px] font-medium text-[var(--ink-950)]"
                   : "shrink-0 rounded-full px-2.5 py-1 text-[11px] text-[var(--text-secondary)] hover:text-[var(--text-strong)]"
               }
             >

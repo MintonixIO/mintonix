@@ -14,18 +14,16 @@ export const footerColumns = [
   {
     heading: "Product",
     links: [
-      { label: "Video analysis", href: "/features/video-analysis" },
-      { label: "Highlights", href: "/features/highlights" },
-      { label: "Dashboard", href: "/features/dashboard" },
-      { label: "BWF library", href: "/features/bwf" },
-      { label: "Replay", href: "/features/replay" },
+      { label: "BWF catalog", href: "/bwf" },
+      { label: "Matches", href: "/bwf/matches" },
+      { label: "Players", href: "/bwf/players" },
+      { label: "Head-to-head", href: "/bwf/h2h" },
     ],
   },
   {
     heading: "Resources",
     links: [
       { label: "Blog", href: "/blog" },
-      { label: "Documentation", href: "/docs" },
       { label: "Pricing", href: "/pricing" },
       { label: "Changelog", href: "/changelog" },
     ],
@@ -35,21 +33,15 @@ export const footerColumns = [
     links: [
       { label: "About", href: "/about" },
       { label: "Contact", href: "/about#contact" },
-      { label: "Careers", href: "#" },
     ],
   },
 ];
 
-export const footerSocial = [
-  { type: "x" as const, href: "#" },
-  { type: "youtube" as const, href: "#" },
-  { type: "github" as const, href: "#" },
-];
+export const footerSocial = [] as { type: "x" | "youtube" | "github"; href: string }[];
 
 export const footerLegal = [
   { label: "Privacy", href: "/privacy" },
   { label: "Terms", href: "/terms" },
-  { label: "Status", href: "#" },
 ];
 
 export const appSidebarSections: {

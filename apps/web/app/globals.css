@@ -40,8 +40,9 @@
 }
 
 :root {
-  --accent: var(--blue-500);
-  --accent-soft: rgba(54, 147, 255, 0.16);
+  /* Ice lab: steel chrome for UI chrome; logo blue only via --brand CTAs */
+  --accent: var(--steel);
+  --accent-soft: var(--steel-soft);
   --glow-op: 0;
   color-scheme: dark;
 }
@@ -63,23 +64,25 @@ body {
   font-family: var(--font-display);
 }
 
-/* Reveal animation helper */
+/* Reveal: visible by default (no FOUC); .will-reveal only when JS enhances */
 [data-reveal] {
-  opacity: 0;
-  transform: translateY(26px);
-  transition:
-    opacity 720ms var(--ease-out),
-    transform 720ms var(--ease-out);
-  will-change: opacity, transform;
+  opacity: 1;
+  transform: none;
 }
-
-[data-reveal].is-visible {
+[data-reveal].will-reveal {
+  opacity: 0;
+  transform: translateY(12px);
+  transition:
+    opacity 220ms var(--ease-out),
+    transform 220ms var(--ease-out);
+}
+[data-reveal].will-reveal.is-visible {
   opacity: 1;
   transform: none;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  [data-reveal] {
+  [data-reveal].will-reveal {
     opacity: 1;
     transform: none;
     transition: none;
@@ -105,14 +108,22 @@ body {
   transition:
     background var(--dur-base) var(--ease-out),
     color var(--dur-base) var(--ease-out),
-    border-color var(--dur-base) var(--ease-out),
-    transform var(--dur-base) var(--ease-spring);
+    border-color var(--dur-base) var(--ease-out);
 }
 .mx-pillar:hover .mx-pillar-icon {
-  background: var(--accent);
-  color: #fff;
-  border-color: var(--accent);
-  transform: scale(1.08) rotate(-3deg);
+  background: var(--brand);
+  color: var(--text-on-blue, #fff);
+  border-color: var(--brand);
+}
+.mx-pillar[data-tone="success"]:hover .mx-pillar-icon {
+  background: var(--success-500);
+  color: #042018;
+  border-color: var(--success-500);
+}
+.mx-pillar[data-tone="player-b"]:hover .mx-pillar-icon {
+  background: var(--player-b);
+  color: var(--ink-950);
+  border-color: var(--player-b);
 }
 
 @keyframes mx-pulse {
@@ -239,4 +250,13 @@ body {
   max-width: var(--container-max);
   margin-inline: auto;
   padding-inline: 32px;
+}
+
+
+@layer base {
+  button:not(:disabled),
+  [role="button"]:not(:disabled),
+  a.mx-btn {
+    cursor: pointer;
+  }
 }

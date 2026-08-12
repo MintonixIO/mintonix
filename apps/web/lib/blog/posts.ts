@@ -168,7 +168,7 @@ export const blogPosts: BlogPost[] = [
             kind: "text",
             text: "Upload a match to see your tempo curve, or browse the ",
           },
-          { kind: "link", text: "BWF library", href: "/features/bwf" },
+          { kind: "link", text: "BWF library", href: "/bwf" },
           {
             kind: "text",
             text: " to study how the best players in the world shape a rally.",

@@ -31,7 +31,6 @@ const PAGES = [
   { id: "feature-video-analysis", design: "/templates/feature-video-analysis/FeatureVideoAnalysis.dc.html", app: "/features/video-analysis" },
   { id: "feature-highlights", design: "/templates/feature-highlights/FeatureHighlights.dc.html", app: "/features/highlights" },
   { id: "feature-dashboard", design: "/templates/feature-dashboard/FeatureDashboard.dc.html", app: "/features/dashboard" },
-  { id: "feature-bwf", design: "/templates/feature-bwf/FeatureBwf.dc.html", app: "/features/bwf" },
   { id: "feature-replay", design: "/templates/feature-replay/FeatureReplay.dc.html", app: "/features/replay" },
   { id: "auth", design: "/templates/auth/Auth.dc.html", app: "/auth" },
   { id: "bwf", design: "/templates/bwf/Bwf.dc.html", app: "/bwf" },

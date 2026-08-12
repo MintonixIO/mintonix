@@ -99,7 +99,7 @@ function CalibrationShell() {
                             "border-[var(--brand)] bg-[var(--brand)] text-white",
                           done &&
                             !active &&
-                            "border-[var(--brand)] bg-[rgba(54,147,255,0.16)] text-[var(--brand)]",
+                            "border-[var(--brand)] bg-[rgba(255,255,255,0.05)] text-[var(--brand)]",
                           !active &&
                             !done &&
                             "border-[var(--border-strong)] bg-[var(--surface-2)] text-[var(--text-muted)]",

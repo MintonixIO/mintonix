@@ -90,7 +90,7 @@ function Thumb({
 /** Marketing dashboard preview — mirrors the design's embedded dashboard frame. */
 export function DashboardDemo({ className }: { className?: string }) {
   return (
-    <div
+    <div aria-label="Product illustration — not the live product"
       className={cn(
         "flex h-full min-h-[520px] overflow-hidden rounded-[14px] border border-[var(--border)] bg-[var(--bg-base)] text-[var(--text-primary)] shadow-[var(--shadow-lg),var(--shadow-edge)]",
         className,

@@ -69,7 +69,7 @@ One row = one match (BWF or user) and its primary video identity.
 | `id` | `text` **PK** | Deterministic hash for BWF; owner-scoped id for user (see [Ids](#ids)) |
 | `owner_id` | `uuid` → `auth.users`, **nullable** | `NULL` = system/BWF; set = user-owned |
 | `source_url` | `text`, nullable | YouTube (or similar) for **first** fetch; unused after original is in B2 |
-| `tournament` | `text`, nullable | Composite display/context: `{name}-{discipline}-{round}` e.g. `2026 All England Open-WS-Final` |
+| `tournament` | `text`, nullable | Composite display/context: `"{title} · {discipline} · {round}"` e.g. `2026 All England Open · WS · Final` (middle-dot separators; web parses at read time) |
 | `match_date` | `date`, nullable | Part of BWF identity hash when known; useful in UI |
 | `team1_player1` | `text`, nullable | |
 | `team1_player2` | `text`, nullable | `NULL` for singles |
@@ -191,6 +191,11 @@ id        = hex(sha256(utf-8 match_key))   # full 64 hex
 - Scores / `source_url` are **not** in the hash
 
 See `workers/github/match-data/schema.md`.
+
+**Do not** put game scores in the hash (Wikipedia score corrections must not
+mint a new id). **Do not** invent a second scheme (e.g. YouTube video id as
+`matches.id`) for BWF catalog rows.
+
 
 ### Match id (user)
 
@@ -484,7 +489,7 @@ Returns jsonb: `ok`, `match_id`, `job_id`, `stage`, `enqueue`, `queue`, `msg_id`
 |------|-----------|--------|
 | `service_role` | Full DML (edge functions, BWF loader) | Full DML |
 | `authenticated` | `SELECT` where `owner_id = (select auth.uid()) OR owner_id IS NULL` | `SELECT` via parent match |
-| `anon` / `public` | none (explicit `REVOKE ALL`) | none |
+| `anon` | **No** SELECT on BWF matches (revoked by `20260731000000_revoke_anon_bwf_catalog_read.sql`; historical grant migration is not the product path) | none |
 | Clients | **No direct table writes** | **No direct table writes** |
 
 User-authored files (original upload, `annotation.json`) go through
@@ -494,10 +499,23 @@ through edge functions as `service_role`.
 **RLS performance:** policies wrap `auth.uid()` in `(select …)` so Postgres
 caches one initPlan evaluation per statement instead of calling per row.
 
-**Product choice:** `owner_id IS NULL` readable by any signed-in user makes BWF
-catalog public to accounts. **BWF media delivery** is public via `cdn-access`
-`op: "delivery"` on `bwf/…` (no auth; short-lived CDN JWT). User media stays
-namespace-scoped.
+**Product choice (web BWF catalog):** private server path only. Next.js BWF
+loaders (`apps/web/lib/bwf/catalog.ts`) always use **service role**
+(`SUPABASE_SERVICE_ROLE_KEY`) and filter `owner_id IS NULL` on every query
+(defense in depth; service role bypasses RLS). Missing service-role env fails
+clearly. Catalog data is aggregated once into an in-memory **CatalogSnapshot**
+(process-local TTL ~300s, not Next Data Cache) with matches, slim directory
+players, and stats — full player profiles (form/rivals) are built on demand for
+player detail only. Multi-year catalogs are held entirely in process memory for
+the TTL; scale carefully before loading decades of seasons.
+
+Public anon read of system matches is **revoked** (not the product path).
+Authenticated users may still SELECT BWF rows via RLS for other product
+surfaces, but the BWF website does not rely on that.
+
+**BWF media delivery** is public via `cdn-access` `op: "delivery"` on `bwf/…`
+(no auth; short-lived CDN JWT). User media stays namespace-scoped.
+
 
 pgmq and RPCs: `EXECUTE` only for `service_role` (security definer + fixed
 `search_path = public` as required for pgmq schema access).
@@ -639,19 +657,17 @@ contract); DB stores `complete`|`failed`.
 Match-data scraper loads BWF **into `matches`** via PostgREST upsert on
 `id = sha256(match_key)` (`workers/github/match-data/load_to_supabase.py`).
 It does **not** call `matches-ingest` / enqueue GPU jobs — catalog load and
-pipeline enqueue stay separate. It does not need a parallel private schema
-unless product requires service-only BWF before launch (RLS).
+pipeline enqueue stay separate. Web BWF reads are service-role private
+(see Access control above); anon SELECT on system matches is revoked.
 
 ---
 
 ## Open follow-ups
 
-1. **Exact hash canonicalization** for BWF — loader uses
-   `sha256(utf-8 match_key)` where
-   `match_key = season|tournament|discipline|section|round|match_idx`
-   (see `workers/github/match-data/schema.md`). Pin test vectors if a second
-   producer invents ids. Edge functions accept a client/system-supplied `id`;
-   they do not invent a second hash algorithm.
+1. **Exact hash canonicalization** for BWF — single algorithm (Ids § above /
+   `schema.md`). Pin test vectors if a second producer invents ids. Edge
+   functions accept a client/system-supplied `id`; they do not invent a second
+   hash algorithm.
 2. **Stage advance vs re-queue** — after normalize, re-enter pgmq with same
    `job_id` and `stage = detect` (implemented in `complete_job`), or auto-dispatch
    next stage inside callback without a new queue hop (callback path must stay short).
@@ -661,8 +677,13 @@ unless product requires service-only BWF before launch (RLS).
 5. **Annotation presets** for BWF tournaments — config file vs small table when
    many events share geometry. Materialize `annotation.json` under `bwf/` when
    the service upload path lands (annotate still prints BWF geometry today).
-6. **Players table** — only if player pages / shared identity become product.
-7. **BWF read visibility** — authenticated public vs service-only until launch.
+6. **Players table** — only if player pages / shared identity become product
+   (web currently derives profiles from name-slug ids; collisions possible when
+   two athletes share a display name). No players table today.
+7. ~~**BWF read visibility**~~ — **decided:** web catalog is **service-role
+   private** (`apps/web/lib/bwf/catalog.ts` + CatalogSnapshot cache). Anon
+   SELECT on system matches is **revoked**
+   (`20260731000000_revoke_anon_bwf_catalog_read.sql`).
 8. **Optional B2 existence check / per-owner live-job cap** on user ingest if abuse appears.
 9. **Prod cutover** — see runbook below (not automated in CI).
 

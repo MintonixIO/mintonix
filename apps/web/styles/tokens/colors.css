@@ -1,99 +1,126 @@
 /* ============================================================
-   MINTONIX · COLOR TOKENS
-   Dark-first analytics palette. Logo blue is the spine; a cool
-   navy neutral ramp carries surfaces; mint signals positive.
+   MINTONIX · COLOR TOKENS — Cool neutral (rebalanced)
+   Charcoal atmosphere; brand blue only on CTAs / logo / Player A.
+   Steel is silver-grey (not blue-steel). Cyan = live only.
    ============================================================ */
 
 :root {
-  /* ---- Brand blue (logo: #3693FF) ---- */
+  /* ---- Brand blue (logo / primary CTAs / Player A: #3693FF) ---- */
   --blue-50:  #eaf3ff;
   --blue-100: #d2e5ff;
   --blue-200: #a6cbff;
   --blue-300: #79b0ff;
   --blue-400: #5ba8ff;
-  --blue-500: #3693ff; /* primary */
+  --blue-500: #3693ff;
   --blue-600: #1e7bf0;
   --blue-700: #1763c7;
   --blue-800: #154e9c;
   --blue-900: #143f78;
 
-  /* ---- Accent cyan (data highlights, live signals) ---- */
+  /* ---- Live electric cyan (video / live chips only) ---- */
   --cyan-400: #7ce8ff;
   --cyan-500: #50deff;
   --cyan-600: #1fc4ec;
+  --live:       var(--cyan-500);
+  --live-soft:  rgba(80, 222, 255, 0.10);
+  --live-ring:  rgba(80, 222, 255, 0.28);
 
-  /* ---- Near-black neutral ramp (whisper of cool) ---- */
-  --ink-950: #070809;
-  --ink-900: #0a0b0e; /* app base */
-  --ink-850: #0d0e12;
-  --ink-800: #101116; /* panel base */
-  --ink-750: #14151b;
-  --ink-700: #17191f; /* surface */
-  --ink-650: #1c1e25;
-  --ink-600: #20222a; /* elevated surface */
-  --ink-550: #282b34;
-  --ink-500: #323641; /* hairline strong */
-  --ink-400: #454a57;
-  --ink-300: #5f6571;
-  --ink-200: #8b9099;
-  --ink-100: #bdc1c8;
-  --ink-50:  #e9eaed;
+  /* ---- Steel (silver chrome — neutral, not blue) ---- */
+  --steel-300: #a8aeb8;
+  --steel-400: #8b929e;
+  --steel-500: #6f7684;
+  --steel:       var(--steel-400);
+  --steel-soft:  rgba(139, 146, 158, 0.12);
+  --steel-ring:  rgba(139, 146, 158, 0.28);
+
+  /* ---- Charcoal ink ramp (neutral dark, whisper of cool) ---- */
+  --ink-950: #070708;
+  --ink-900: #0b0c0e; /* app base */
+  --ink-850: #0f1013;
+  --ink-800: #131418; /* panel base */
+  --ink-750: #17181d;
+  --ink-700: #1b1c22; /* surface */
+  --ink-650: #21232a;
+  --ink-600: #272930; /* elevated */
+  --ink-550: #30323b;
+  --ink-500: #3c3f4a;
+  --ink-400: #545865;
+  --ink-300: #6e7380;
+  --ink-200: #969aa5;
+  --ink-100: #c4c7ce;
+  --ink-50:  #eceef1;
   --white:   #ffffff;
 
-  /* ---- Semantic neutrals (mapped, dark theme) ---- */
+  /* ---- Semantic neutrals ---- */
   --bg-base:        var(--ink-900);
   --bg-sunken:      var(--ink-950);
   --surface-1:      var(--ink-800);
   --surface-2:      var(--ink-700);
   --surface-3:      var(--ink-600);
   --surface-hover:  var(--ink-650);
-  --border-subtle:  #1a1c22;
-  --border:         #2a2d36;
-  --border-strong:  #3a3e49;
+  --border-subtle:  #1a1b20;
+  --border:         #2a2c34;
+  --border-strong:  #3c3f49;
   --border-focus:   var(--blue-500);
 
-  /* ---- Text ---- */
-  --text-strong:    #f4f5f7;
-  --text-primary:   #e6e7ea;
-  --text-secondary: #a0a3ab;
+  /* ---- Frost glass (neutral, not blue-tinted) ---- */
+  --frost-bg:            rgba(12, 13, 16, 0.62);
+  --frost-bg-scrolled:   rgba(10, 11, 14, 0.88);
+  --frost-border:        rgba(255, 255, 255, 0.07);
+  --frost-border-strong: rgba(255, 255, 255, 0.11);
+  --frost-highlight:     inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  --frost-blur:          16px;
+
+  /* ---- Text (neutral silver) ---- */
+  --text-strong:    #f3f4f6;
+  --text-primary:   #e4e5e9;
+  --text-secondary: #9a9da6;
   --text-muted:     #6b6e78;
-  --text-faint:     #494c56;
+  --text-faint:     #555861;
   --text-on-blue:   #ffffff;
+  /* Links: brand blue only when interactive — not steel-blue cast */
   --text-link:      var(--blue-400);
 
-  /* ---- Brand semantic ---- */
+  /* ---- Brand (logo blue CTAs only) ---- */
   --brand:          var(--blue-500);
-  --brand-hover:    var(--blue-400);
+  --brand-hover:    #4a9dff;
   --brand-active:   var(--blue-600);
-  --brand-subtle:   rgba(54, 147, 255, 0.12);
-  --brand-ring:     rgba(54, 147, 255, 0.40);
+  --brand-subtle:   rgba(54, 147, 255, 0.10);
+  --brand-ring:     rgba(54, 147, 255, 0.32);
+  --brand-chrome:   var(--steel);
+  --brand-chrome-soft: var(--steel-soft);
 
-  /* ---- Status (mint = positive, nods to the name) ---- */
-  --success-500:  #2dd4a7;
-  --success-400:  #4ee3bb;
-  --success-bg:   rgba(45, 212, 167, 0.12);
+  /* ---- Status ---- */
+  --success-500:  #3dceb8;
+  --success-400:  #5eead4;
+  --success-bg:   rgba(61, 206, 184, 0.12);
   --warning-500:  #fbbf24;
   --warning-400:  #fcd34d;
-  --warning-bg:   rgba(251, 191, 36, 0.12);
+  --warning-bg:   rgba(251, 191, 36, 0.10);
   --danger-500:   #f4515c;
   --danger-400:   #ff7a83;
   --danger-bg:    rgba(244, 81, 92, 0.12);
   --info-500:     var(--blue-500);
   --info-bg:      var(--brand-subtle);
 
-  /* ---- Data-viz sequence (rally / shot charts) ---- */
+  /* ---- Data-viz ---- */
   --viz-1: #3693ff;
   --viz-2: #50deff;
-  --viz-3: #2dd4a7;
-  --viz-4: #fbbf24;
-  --viz-5: #b07bff;
+  --viz-3: #3dceb8;
+  --viz-4: #8b9cff;
+  --viz-5: #a78bfa;
   --viz-6: #f4515c;
 
-  /* ---- Player A / B accents (match comparisons) ---- */
-  --player-a: #3693ff;
-  --player-b: #fbbf24;
+  /* ---- Player A / B ---- */
+  --player-a:      #3693ff;
+  --player-a-soft: rgba(54, 147, 255, 0.14);
+  --player-b:      #8b9cff;
+  --player-b-soft: rgba(139, 156, 255, 0.14);
+  --player-b-ring: rgba(139, 156, 255, 0.26);
+  --player-b-deep: #6b7ae0;
 
   /* ---- Glows ---- */
-  --glow-blue: 0 0 24px rgba(54, 147, 255, 0.35);
-  --glow-cyan: 0 0 24px rgba(80, 222, 255, 0.30);
+  --glow-blue: 0 0 20px rgba(54, 147, 255, 0.20);
+  --glow-cyan: 0 0 20px rgba(80, 222, 255, 0.16);
+  --glow-player-b: 0 0 14px rgba(139, 156, 255, 0.26);
 }

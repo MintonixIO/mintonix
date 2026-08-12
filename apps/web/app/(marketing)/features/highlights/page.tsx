@@ -1,3 +1,4 @@
+import Link from "next/link";
 import {
   Crown,
   Film,
@@ -25,7 +26,7 @@ const STRIP = [
   { l: "Smash", m: "334 km/h", c: "#f4515c" },
   { l: "Net kill", m: "0:06", c: "#2dd4a7" },
   { l: "Rally · 41 shots", m: "0:38", c: "#3693ff" },
-  { l: "Drive", m: "188 km/h", c: "#fbbf24" },
+  { l: "Drive", m: "188 km/h", c: "var(--accent)" },
   { l: "Smash", m: "312 km/h", c: "#f4515c" },
   { l: "Deception", m: "0:09", c: "#50deff" },
   { l: "Drop winner", m: "G2 · 14–12", c: "#2dd4a7" },
@@ -104,6 +105,14 @@ const REEL = [
 export default function FeatureHighlightsPage() {
   return (
     <div className="overflow-x-clip">
+      <div className="border-b border-[var(--border)] bg-[var(--surface-2)] px-4 py-2.5 text-center text-[12.5px] text-[var(--text-secondary)]">
+        <strong className="font-medium text-[var(--text-strong)]">Roadmap / preview.</strong>{" "}
+        Not part of the live public product — explore the{" "}
+        <Link href="/bwf" className="text-[var(--text-link)] underline-offset-2 hover:underline">
+          BWF catalog
+        </Link>{" "}
+        today.
+      </div>
       <FeatureHero
         align="center"
         EyebrowIcon={Film}
@@ -111,12 +120,12 @@ export default function FeatureHighlightsPage() {
         eyebrowClassName="bg-[rgba(45,212,167,0.16)] text-[#2dd4a7]"
         titleClassName="max-w-[16ch] text-[clamp(36px,5.4vw,64px)] leading-[1.03]"
         title="The best of the match, without the editing."
-        body="Set what counts as a highlight — a shot type, a speed, an outcome — and Mintonix pulls every matching rally into one reel. Trim, preview, and share it with a link."
+        body="Preview of a planned private tool: Set what counts as a highlight — a shot type, a speed, an outcome — and Mintonix pulls every matching rally into one reel. Trim, preview, and share it with a link."
         ctas={[
-          { href: "/auth", label: "Build a reel" },
+          { href: "/bwf", label: "Explore BWF catalog" },
           {
-            href: "/dashboard/highlights",
-            label: "See the reel library",
+            href: "/bwf/matches",
+            label: "Browse matches",
             variant: "outline",
           },
         ]}
@@ -246,7 +255,7 @@ export default function FeatureHighlightsPage() {
                         Net
                       </span>
                       <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--surface-1)] px-[9px] py-1 text-[12px] text-[var(--text-secondary)]">
-                        <span className="h-[7px] w-[7px] rounded-sm bg-[#fbbf24]" />
+                        <span className="h-[7px] w-[7px] rounded-sm bg-[var(--accent)]" />
                         Drive
                       </span>
                     </div>
@@ -340,14 +349,14 @@ export default function FeatureHighlightsPage() {
         layout="split"
         title="A reel your whole squad can watch."
         body="Share generates a link that respects your library permissions — players, coaches, anyone, no account needed. Revoke it any time."
-        ctas={[{ href: "/auth", label: "Build your first reel" }]}
+        ctas={[{ href: "/bwf", label: "Open BWF catalog" }]}
         glow="radial-gradient(120% 140% at 0% 0%, rgba(45,212,167,0.14), transparent 55%), var(--surface-1)"
       >
         <div className="rounded-[14px] border border-[var(--border)] bg-[var(--surface-2)] p-[18px]">
           <div className="flex items-center gap-2.5 rounded-[10px] border border-[var(--border-subtle)] bg-[var(--surface-1)] px-[13px] py-[11px]">
             <Share2 className="h-4 w-4 text-[#2dd4a7]" />
             <span className="min-w-0 flex-1 truncate font-mono text-[12.5px] text-[var(--text-secondary)]">
-              mintonix.com/r/smashes-300
+              mintonix.io/r/… (preview)
             </span>
             <span className="rounded-md bg-[#2dd4a7] px-2 py-1 text-[11px] font-semibold text-[#06281f]">
               Copy

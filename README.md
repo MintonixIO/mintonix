@@ -39,6 +39,13 @@ four user-clicked court corners.
 
 ---
 
+
+## Public product (web)
+
+- **Live:** marketing site + **BWF match catalog** (`/bwf/*`) from Supabase.
+- **Not live:** private dashboard, uploads, billing, and analysis tools (preview routes only).
+- Checklist: [MARKETING_BWF_CHECKLIST.md](MARKETING_BWF_CHECKLIST.md). Catalog snapshot cache is **process-local TTL** (not Next Data Cache).
+
 # Architecture summary
 
 Condensed reference; full detail in [ARCHITECTURE.md](ARCHITECTURE.md),
@@ -48,7 +55,8 @@ Condensed reference; full detail in [ARCHITECTURE.md](ARCHITECTURE.md),
 [video-preprocess](workers/vast/video-preprocess/README.md),
 [cdn](workers/cloudflare/cdn/README.md),
 [match-data](workers/github/match-data/README.md)).
-Review findings originated in [CODE_REVIEW_ISSUES.md](CODE_REVIEW_ISSUES.md).
+Code organization for agents/contributors: [AGENTS.md](AGENTS.md).
+Marketing + BWF ship checklist: [MARKETING_BWF_CHECKLIST.md](MARKETING_BWF_CHECKLIST.md).
 
 Status legend: ✅ built · 🚧 partially built · 📐 designed, not built.
 

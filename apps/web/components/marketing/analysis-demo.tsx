@@ -1,4 +1,3 @@
-import Image from "next/image";
 import {
   ArrowLeft,
   ChevronDown,
@@ -20,10 +19,11 @@ const RALLIES = [
   { n: "09", shots: 8, dur: "12s", end: "Unforced", tone: "danger" as const },
 ];
 
-/** Marketing hero demo — matches the design's embedded video-analysis frame. */
+/** Marketing illustration only — not the live product surface. */
 export function AnalysisDemo({ className }: { className?: string }) {
   return (
     <div
+      aria-label="Product illustration — video analysis preview"
       className={cn(
         "flex h-full min-h-[520px] flex-col overflow-hidden rounded-[14px] border border-[var(--border)] bg-[var(--bg-base)] text-[var(--text-primary)] shadow-[var(--shadow-xl),var(--shadow-edge)]",
         className,
@@ -63,14 +63,26 @@ export function AnalysisDemo({ className }: { className?: string }) {
       <div className="grid min-h-0 flex-1 grid-cols-[1.55fr_minmax(280px,0.9fr)]">
         {/* Video pane */}
         <div className="relative min-h-0 border-r border-[var(--border-subtle)] bg-[#070b16]">
-          <Image
-            src="/media/clip-frame.jpg"
-            alt="Match footage"
-            fill
-            className="object-cover object-center"
-            sizes="800px"
-            priority
-          />
+          {/* Empty media slot — drop /public/media/clip-frame.jpg later to restore still. */}
+          <div
+            className="absolute inset-0 flex flex-col items-center justify-center gap-2 px-6 text-center"
+            aria-hidden
+          >
+            <div
+              className="absolute inset-0 opacity-40"
+              style={{
+                backgroundImage:
+                  "radial-gradient(ellipse 70% 50% at 50% 40%, rgba(54,147,255,0.12), transparent 70%), linear-gradient(rgba(255,255,255,0.035) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.035) 1px, transparent 1px)",
+                backgroundSize: "auto, 40px 40px, 40px 40px",
+              }}
+            />
+            <span className="relative font-mono text-[11px] uppercase tracking-[0.12em] text-[var(--text-faint)]">
+              Match video
+            </span>
+            <span className="relative max-w-[28ch] text-[13px] leading-snug text-[var(--text-muted)]">
+              Preview still coming soon — open a live BWF match for YouTube playback.
+            </span>
+          </div>
           <div className="absolute inset-0 bg-gradient-to-t from-[rgba(7,11,22,0.75)] via-transparent to-transparent" />
 
           {/* Scorebug */}

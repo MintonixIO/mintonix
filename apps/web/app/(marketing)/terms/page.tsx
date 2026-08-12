@@ -59,7 +59,7 @@ export default function TermsPage() {
           className="pointer-events-none absolute inset-0"
           style={{
             background:
-              "radial-gradient(100% 50% at 50% -10%, rgba(54,147,255,0.13), transparent 56%)",
+              "radial-gradient(100% 50% at 50% -10%, rgba(255,255,255,0.04), transparent 56%)",
           }}
         />
         <div className="relative mx-auto max-w-[1080px] px-8 pt-20">
@@ -69,6 +69,11 @@ export default function TermsPage() {
           <h1 className="font-display text-[clamp(32px,4.6vw,48px)] font-semibold leading-[1.06] tracking-[-0.03em] text-[var(--text-strong)]">
             Terms of Service
           </h1>
+      <div className="mb-8 rounded-[12px] border border-[var(--border)] bg-[var(--surface-2)] px-4 py-3 text-[13.5px] leading-[1.55] text-[var(--text-secondary)]">
+        <strong className="font-medium text-[var(--text-strong)]">Scope note. </strong>
+        These terms cover the intended Mintonix product. The live public experience is the BWF match catalog. Features that require an account or paid plan are not offered until they ship.
+      </div>
+
           <p className="mt-4 max-w-[60ch] text-[16px] leading-[1.6] text-[var(--text-secondary)]">
             The agreement between you and Mintonix when you use the service.
             We&apos;ve kept it readable — but it is still the binding version.
@@ -239,10 +244,10 @@ export default function TermsPage() {
               <P>
                 Questions? Reach us at{" "}
                 <a
-                  href="mailto:legal@mintonix.com"
+                  href="mailto:legal@mintonix.io"
                   className="text-[var(--text-link)] hover:underline"
                 >
-                  legal@mintonix.com
+                  legal@mintonix.io
                 </a>{" "}
                 or through the{" "}
                 <Link href="/about#contact" className="text-[var(--text-link)] hover:underline">

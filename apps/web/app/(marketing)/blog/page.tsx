@@ -1,4 +1,10 @@
+import type { Metadata } from "next";
 import { BlogCatalog } from "@/components/marketing/blog-catalog";
+
+export const metadata: Metadata = {
+  title: "Blog",
+  description: "Notes on badminton analysis, BWF data, and Mintonix product updates.",
+};
 
 export default function BlogPage() {
   return (
@@ -8,7 +14,7 @@ export default function BlogPage() {
           className="pointer-events-none absolute inset-0 opacity-50"
           style={{
             backgroundImage:
-              "linear-gradient(rgba(54,147,255,0.05) 1px, transparent 1px), linear-gradient(90deg, rgba(54,147,255,0.05) 1px, transparent 1px)",
+              "linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.04) 1px, transparent 1px)",
             backgroundSize: "64px 64px",
             maskImage:
               "radial-gradient(90% 80% at 50% 0%, #000 30%, transparent 78%)",

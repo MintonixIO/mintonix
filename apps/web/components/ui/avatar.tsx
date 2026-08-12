@@ -5,9 +5,9 @@ const SIZES = { xs: 22, sm: 28, md: 36, lg: 48, xl: 64 } as const;
 
 const PALETTE = [
   "linear-gradient(135deg,#4a9dff,#2d7ff0)",
-  "linear-gradient(135deg,#50deff,#1fc4ec)",
-  "linear-gradient(135deg,#2dd4a7,#16a37f)",
-  "linear-gradient(135deg,#fbbf24,#f59e0b)",
+  "linear-gradient(135deg,#5b8fd4,#3d6eb8)",
+  "linear-gradient(135deg,#3dceb8,#2a9f8c)",
+  "linear-gradient(135deg,#8b9cff,#6b7ae0)",
   "linear-gradient(135deg,#b07bff,#8b5cf6)",
   "linear-gradient(135deg,#f4515c,#d63a45)",
 ];

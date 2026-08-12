@@ -165,22 +165,53 @@ def count_rows(table, filters):
     return int(cr.split("/")[-1]) if "/" in cr else len(r.json())
 
 
-def delete_matches(ids, batch_size=100):
-    """Delete match rows by id; jobs follow via ON DELETE CASCADE."""
+# Keep id=in.(…) GET/DELETE URLs short (64-char hashes × N values).
+ID_BATCH_SIZE = 50
+
+
+def postgrest_in_list(ids):
+    """PostgREST `in` filter value for text PKs: ("a","b")."""
+    return "(" + ",".join(f'"{x}"' for x in ids) + ")"
+
+
+def chunked(ids, batch_size=ID_BATCH_SIZE):
+    """Yield successive slices of ids (pure helper for purge/delete batches)."""
+    for i in range(0, len(ids), batch_size):
+        yield ids[i : i + batch_size]
+
+
+def filter_existing_ids(ids, select_fn, batch_size=ID_BATCH_SIZE):
+    """
+    Return the subset of ids that exist as BWF rows (owner_id is null).
+    select_fn(table, columns, order, params) must return row dicts with `id`.
+    """
+    existing = set()
+    for batch in chunked(ids, batch_size):
+        inlist = postgrest_in_list(batch)
+        for r in select_fn(
+            "matches",
+            "id",
+            "id",
+            params={"id": f"in.{inlist}", "owner_id": "is.null"},
+        ):
+            existing.add(r["id"])
+    return [i for i in ids if i in existing]
+
+
+def delete_matches(ids, batch_size=ID_BATCH_SIZE):
+    """Delete BWF match rows by id (owner_id null only); jobs cascade."""
     if not ids:
         return 0
     if DRY_RUN:
         return len(ids)
     removed = 0
-    for i in range(0, len(ids), batch_size):
-        batch = ids[i : i + batch_size]
-        # PostgREST `in` for text PKs: quote each value.
-        inlist = "(" + ",".join(f'"{x}"' for x in batch) + ")"
+    for batch in chunked(ids, batch_size):
+        inlist = postgrest_in_list(batch)
         for attempt in range(6):
             r = requests.delete(
                 f"{SUPABASE_URL}/rest/v1/matches",
                 headers={**HEADERS, "Prefer": "return=minimal"},
-                params={"id": f"in.{inlist}"},
+                params={"id": f"in.{inlist}", "owner_id": "is.null"},
                 timeout=60,
             )
             if r.status_code in (200, 204):
@@ -652,12 +683,9 @@ def main():
     # leftover row with that id still exists (legacy placeholders). Jobs cascade.
     purge_ids = [bwf_match_id(k) for k in unfinished_purge_keys]
     if purge_ids:
-        # Only delete ids that actually exist (avoid huge empty deletes).
-        existing = {
-            r["id"]
-            for r in select("matches", "id", "id", params={"owner_id": "is.null"})
-        }
-        purge_ids = [i for i in purge_ids if i in existing]
+        # Only delete ids that actually exist — filter via id=in.(…) batches
+        # instead of loading every BWF match id into memory.
+        purge_ids = filter_existing_ids(purge_ids, select)
     if purge_ids:
         if DRY_RUN:
             print(f"  [dry-run] would purge {len(purge_ids)} unfinished match(es)")

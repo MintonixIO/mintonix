@@ -151,20 +151,20 @@ function HeroCopy({
           )}
         >
           {ctas.map((c) => (
-            <Link key={c.href + c.label} href={c.href}>
-              <Button
-                size="lg"
-                variant={
-                  c.variant === "outline"
-                    ? "outline"
-                    : c.variant === "ghost"
-                      ? "ghost"
-                      : "primary"
-                }
-              >
-                {c.label}
-              </Button>
-            </Link>
+            <Button
+              key={c.href + c.label}
+              href={c.href}
+              size="lg"
+              variant={
+                c.variant === "outline"
+                  ? "outline"
+                  : c.variant === "ghost"
+                    ? "ghost"
+                    : "primary"
+              }
+            >
+              {c.label}
+            </Button>
           ))}
         </div>
       ) : null}
@@ -340,7 +340,7 @@ export function FeatureCTA({
         style={{
           background:
             glow ??
-            "radial-gradient(120% 140% at 50% -20%, rgba(54,147,255,0.16), transparent 60%), var(--surface-1)",
+            "var(--hero-wash), var(--surface-1)",
         }}
       >
         <div>
@@ -376,20 +376,20 @@ export function FeatureCTA({
               )}
             >
               {ctas.map((c) => (
-                <Link key={c.href + c.label} href={c.href}>
-                  <Button
-                    size="lg"
-                    variant={
-                      c.variant === "outline"
-                        ? "outline"
-                        : c.variant === "ghost"
-                          ? "ghost"
-                          : "primary"
-                    }
-                  >
-                    {c.label}
-                  </Button>
-                </Link>
+                <Button
+                  key={c.href + c.label}
+                  href={c.href}
+                  size="lg"
+                  variant={
+                    c.variant === "outline"
+                      ? "outline"
+                      : c.variant === "ghost"
+                        ? "ghost"
+                        : "primary"
+                  }
+                >
+                  {c.label}
+                </Button>
               ))}
             </div>
           ) : null}

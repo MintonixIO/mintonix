@@ -1,3 +1,4 @@
+import Link from "next/link";
 import type { Metadata } from "next";
 import {
   Box,
@@ -79,18 +80,26 @@ const USE_CASES: {
 export default function FeatureReplayPage() {
   return (
     <div className="overflow-x-clip">
+      <div className="border-b border-[var(--border)] bg-[var(--surface-2)] px-4 py-2.5 text-center text-[12.5px] text-[var(--text-secondary)]">
+        <strong className="font-medium text-[var(--text-strong)]">Roadmap / preview.</strong>{" "}
+        Not part of the live public product — explore the{" "}
+        <Link href="/bwf" className="text-[var(--text-link)] underline-offset-2 hover:underline">
+          BWF catalog
+        </Link>{" "}
+        today.
+      </div>
       <FeatureHero
         EyebrowIcon={Orbit}
         eyebrow="Replay"
         eyebrowClassName="bg-[rgba(80,222,255,0.16)] text-[var(--cyan-500,#50deff)]"
         titleClassName="text-[clamp(34px,4.6vw,56px)]"
         title="Filmed from one angle. Watch from any."
-        body="Mintonix reconstructs the court and both players in 3D from a single camera. Once it's rebuilt, you fly the camera anywhere — baseline, overhead, the net, even a player's eyeline."
+        body="Preview of a planned private tool: Mintonix reconstructs the court and both players in 3D from a single camera. Once it's rebuilt, you fly the camera anywhere — baseline, overhead, the net, even a player's eyeline."
         ctas={[
-          { href: "/auth", label: "Replay a match" },
+          { href: "/bwf/matches", label: "Browse BWF matches" },
           {
-            href: "/replay",
-            label: "Try it on a BWF match",
+            href: "/bwf",
+            label: "Open catalog",
             variant: "outline",
           },
         ]}
@@ -149,12 +158,12 @@ export default function FeatureReplayPage() {
       <FeatureCTA
         className="pt-[116px]"
         title="Move the camera. The match stays put."
-        body="Open any analyzed match and switch to Replay. Free camera included on every plan."
+        body="Replay is a UI preview of a planned tool. For live content, use the BWF catalog."
         ctas={[
-          { href: "/auth", label: "Start free" },
+          { href: "/bwf", label: "Open BWF catalog" },
           {
-            href: "/replay",
-            label: "Open a demo rally",
+            href: "/bwf/matches",
+            label: "Browse matches",
             variant: "outline",
           },
         ]}

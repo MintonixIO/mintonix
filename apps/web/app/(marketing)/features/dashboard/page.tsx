@@ -1,3 +1,4 @@
+import Link from "next/link";
 import {
   FileVideo,
   Folder,
@@ -44,24 +45,32 @@ const RECENTS = [
 const TEAM = [
   { in: "VA", bg: "linear-gradient(135deg,#3693ff,#1f5fb0)" },
   { in: "KM", bg: "linear-gradient(135deg,#2dd4a7,#157e63)" },
-  { in: "LS", bg: "linear-gradient(135deg,#fbbf24,#c98a06)" },
+  { in: "LS", bg: "linear-gradient(135deg,var(--accent),var(--brand))" },
   { in: "TP", bg: "linear-gradient(135deg,#f4515c,#a82b34)" },
 ];
 
 export default function FeatureDashboardPage() {
   return (
     <div className="overflow-x-clip">
+      <div className="border-b border-[var(--border)] bg-[var(--surface-2)] px-4 py-2.5 text-center text-[12.5px] text-[var(--text-secondary)]">
+        <strong className="font-medium text-[var(--text-strong)]">Roadmap / preview.</strong>{" "}
+        Not part of the live public product — explore the{" "}
+        <Link href="/bwf" className="text-[var(--text-link)] underline-offset-2 hover:underline">
+          BWF catalog
+        </Link>{" "}
+        today.
+      </div>
       <FeatureHero
         EyebrowIcon={LayoutDashboard}
         eyebrow="Dashboard"
         titleClassName="max-w-[14ch]"
         title="Every match, in one place."
-        body="Upload footage and it lands as a fully analyzed match. Watch what's processing, jump back into recent breakdowns, search the whole archive, and share any match with a link — without leaving the page."
+        body="Planned private workspace: upload footage and it lands as an analyzed match. Watch what's processing, jump into recent breakdowns, search the archive, and share a match with a link — preview only today."
         ctas={[
-          { href: "/auth", label: "Open your workspace" },
-          { href: "/dashboard", label: "See a live demo", variant: "outline" },
+          { href: "/bwf", label: "Open BWF catalog" },
+          { href: "/bwf/matches", label: "Browse matches", variant: "outline" },
         ]}
-        glow="radial-gradient(100% 60% at 85% -10%, rgba(54,147,255,0.16), transparent 55%)"
+        glow="radial-gradient(100% 60% at 85% -10%, rgba(255,255,255,0.05), transparent 55%)"
         gridClassName="grid items-center gap-10 lg:grid-cols-[1fr_0.78fr] lg:gap-14"
       >
         <div className="grid grid-cols-2 gap-3.5">
@@ -93,7 +102,7 @@ export default function FeatureDashboardPage() {
             className="pointer-events-none absolute -inset-px rounded-2xl"
             style={{
               boxShadow:
-                "0 0 0 1px rgba(54,147,255,0.18), 0 30px 90px rgba(54,147,255,0.14)",
+                "0 0 0 1px rgba(255,255,255,0.055), 0 30px 90px rgba(255,255,255,0.045)",
             }}
           />
           <div className="overflow-hidden rounded-[14px] border border-[var(--border)] shadow-[var(--shadow-xl)]">
@@ -295,8 +304,8 @@ export default function FeatureDashboardPage() {
 
       <FeatureCTA
         title="Your whole season, organized from day one."
-        body="Spin up a workspace in seconds and upload your first match free."
-        ctas={[{ href: "/auth", label: "Create your workspace" }]}
+        body="Workspace upload is planned — browse the free BWF catalog today."
+        ctas={[{ href: "/bwf", label: "Open BWF catalog" }]}
       />
     </div>
   );

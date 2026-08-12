@@ -20,6 +20,9 @@ export default function MarketingLayout({
         featured={marketingFeatured}
         mode="marketing"
         indicator="spotlight"
+        signInLabel={null}
+        ctaLabel="Open BWF"
+        ctaHref="/bwf"
       />
       <main className="flex-1">{children}</main>
       <Footer

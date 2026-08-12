@@ -2,43 +2,66 @@ import Link from "next/link";
 import {
   ArrowRight,
   Check,
-  Repeat,
-  Target,
-  Zap,
+  Clapperboard,
+  ExternalLink,
+  Flame,
+  Video,
 } from "lucide-react";
+import {
+  BWF_STATUS_UI,
+  displayDate,
+  formatScoreLine,
+  formatTeam,
+  isAllowlistedYoutubeUrl,
+  playerImageUrl,
+  playerWon,
+  type CatalogMatch,
+} from "@/lib/bwf/data";
+import { PA, PB } from "@/components/bwf/tokens";
 import { cn } from "@/lib/utils";
-import { PA, PB, typeColor, type Match, type Player } from "@/lib/bwf/types";
+import { Avatar } from "@/components/ui/avatar";
 
-export function MatchCard({ m, lens = "all" }: { m: Match; lens?: string }) {
-  const top = [...m.shotMix].sort((a, b) => b.pct - a.pct);
-  const badge =
-    lens === "long"
-      ? { label: "Longest rally", value: `${m.longest} shots`, color: "var(--accent)" }
-      : lens === "fast"
-        ? { label: "Top smash", value: `${m.fastestSmash} km/h`, color: "var(--danger-500)" }
-        : lens === "marathon"
-          ? { label: "Duration", value: `${m.dur} min`, color: "var(--text-strong)" }
-          : lens === "attacking"
-            ? { label: "Attacking", value: `${m.attackPct}%`, color: "var(--accent)" }
-            : null;
+export function MatchCard({
+  m,
+  highlight,
+}: {
+  m: CatalogMatch;
+  /** Optional filter badge context. */
+  highlight?: "video" | "three" | "comeback" | null;
+}) {
+  const t1Won = m.winner === 1;
+  const t2Won = m.winner === 2;
+  const score = formatScoreLine(m.games);
 
-  const row = (player: Player, color: string, won: boolean, side: "a" | "b") => (
+  const row = (
+    names: string[],
+    ids: string[],
+    color: string,
+    won: boolean,
+    sideScores: number[],
+  ) => (
     <div className="flex items-center gap-2.5">
       <span
         className="h-2 w-2 shrink-0 rounded-full"
         style={{ background: color }}
       />
+      <Avatar
+        name={formatTeam(names)}
+        src={ids[0] ? playerImageUrl(ids[0], names[0]) ?? undefined : undefined}
+        size={28}
+        className="shrink-0"
+      />
       <span
         className={cn(
-          "min-w-0 flex-1 truncate font-display text-base",
+          "min-w-0 flex-1 truncate font-display text-[15px]",
           won
             ? "font-semibold text-[var(--text-strong)]"
             : "font-medium text-[var(--text-secondary)]",
         )}
       >
-        {player.name}
+        {formatTeam(names)}
       </span>
-      {m.games.map((g, i) => (
+      {sideScores.map((s, i) => (
         <span
           key={i}
           className={cn(
@@ -46,7 +69,7 @@ export function MatchCard({ m, lens = "all" }: { m: Match; lens?: string }) {
             won ? "text-[var(--text-strong)]" : "text-[var(--text-muted)]",
           )}
         >
-          {side === "a" ? g.a : g.b}
+          {s}
         </span>
       ))}
       {won ? (
@@ -61,147 +84,222 @@ export function MatchCard({ m, lens = "all" }: { m: Match; lens?: string }) {
 
   return (
     <Link
-      href="/video-analysis"
+      href={`/bwf/matches/${m.id}`}
       className="group flex flex-col overflow-hidden rounded-[14px] border border-[var(--border)] bg-[var(--surface-1)] shadow-[var(--shadow-edge)] transition-[transform,border-color] duration-160 hover:-translate-y-0.5 hover:border-[var(--border-strong)]"
     >
       <div className="flex items-center gap-2 border-b border-[var(--border-subtle)] px-4 py-[13px]">
-        <span className="font-mono text-[10.5px] uppercase tracking-[0.06em] text-[var(--accent)]">
-          {m.disc}
-        </span>
-        <span className="h-[3px] w-[3px] rounded-full bg-[var(--text-faint)]" />
+        {m.disc ? (
+          <span className="font-mono text-[10.5px] uppercase tracking-[0.06em] text-[var(--accent)]">
+            {m.disc}
+          </span>
+        ) : null}
+        {m.disc ? (
+          <span className="h-[3px] w-[3px] rounded-full bg-[var(--text-faint)]" />
+        ) : null}
         <span className="min-w-0 truncate text-[12.5px] text-[var(--text-secondary)]">
-          {m.event} · {m.round}
+          {m.event}
+          {m.round ? ` · ${m.round}` : ""}
         </span>
         <div className="flex-1" />
         <span className="shrink-0 font-mono text-[11px] text-[var(--text-muted)]">
-          {m.date}
+          {displayDate(m)}
         </span>
       </div>
 
       <div className="flex flex-col gap-[9px] px-4 pb-3 pt-3.5">
-        {row(m.pa, PA, m.w === "a", "a")}
-        {row(m.pb, PB, m.w === "b", "b")}
+        {row(
+          m.team1,
+          m.team1Ids,
+          PA,
+          t1Won,
+          m.games.map((g) => g.t1),
+        )}
+        {row(
+          m.team2,
+          m.team2Ids,
+          PB,
+          t2Won,
+          m.games.map((g) => g.t2),
+        )}
       </div>
 
-      <div className="flex flex-col gap-3 px-4 pb-3.5">
-        <div className="flex items-center gap-2">
-          <span className="whitespace-nowrap font-mono text-[11px] tabular-nums text-[var(--text-muted)]">
-            {m.rallies} rallies · {m.avgRally} avg · {m.dur} min
-          </span>
-          <div className="flex-1" />
-          {badge ? (
-            <span className="inline-flex items-baseline gap-1.5 rounded-full border border-[var(--border)] bg-[var(--surface-3)] px-2.5 py-[3px]">
-              <span className="font-mono text-[8.5px] uppercase tracking-[0.1em] text-[var(--text-faint)]">
-                {badge.label}
-              </span>
-              <span
-                className="font-mono text-xs tabular-nums"
-                style={{ color: badge.color }}
-              >
-                {badge.value}
-              </span>
-            </span>
-          ) : null}
-        </div>
-
-        <div>
-          <div className="mb-1.5 flex items-center justify-between">
-            <span className="font-mono text-[9.5px] uppercase tracking-[0.1em] text-[var(--text-faint)]">
-              Momentum
-            </span>
-            <span className="font-mono text-[9.5px] text-[var(--text-faint)]">
-              who won each rally
-            </span>
-          </div>
-          <div className="flex h-[9px] gap-0.5 overflow-hidden rounded">
-            {m.momentum.map((w, i) => (
-              <div
-                key={i}
-                title={`Rally ${i + 1} · ${m.rallyLens[i]} shots`}
-                className="h-full opacity-85"
-                style={{
-                  flexGrow: m.rallyLens[i],
-                  flexBasis: 0,
-                  background: w === "a" ? PA : PB,
-                }}
-              />
-            ))}
-          </div>
-        </div>
-
-        <div>
-          <div className="mb-1.5 flex items-center justify-between">
-            <span className="font-mono text-[9.5px] uppercase tracking-[0.1em] text-[var(--text-faint)]">
-              Shot mix
-            </span>
-            <span className="font-mono text-[9.5px] text-[var(--text-muted)]">
-              {top[0].type} {top[0].pct}% · {top[1].type} {top[1].pct}%
-            </span>
-          </div>
-          <div className="flex h-[7px] overflow-hidden rounded bg-[var(--surface-3)]">
-            {m.shotMix.map((s) => (
-              <div
-                key={s.type}
-                title={`${s.type} ${s.pct}%`}
-                style={{
-                  width: `${s.pct}%`,
-                  background: typeColor(s.type),
-                }}
-              />
-            ))}
-          </div>
-        </div>
+      <div className="flex flex-wrap items-center gap-2 px-4 pb-3.5">
+        <span className="font-mono text-[11px] tabular-nums text-[var(--text-muted)]">
+          {score}
+        </span>
+        <div className="flex-1" />
+        <span
+          className={cn(
+            "rounded-full border px-2 py-[2px] font-mono text-[10px] uppercase tracking-wide",
+            BWF_STATUS_UI[m.status]?.className ??
+              "border-[var(--border)] bg-[var(--surface-2)] text-[var(--text-muted)]",
+          )}
+        >
+          {BWF_STATUS_UI[m.status]?.label ?? m.status}
+        </span>
       </div>
 
       <div className="flex flex-wrap items-center gap-2 border-t border-[var(--border-subtle)] px-4 py-3">
-        {(
-          [
-            {
-              key: "fast",
-              icon: Zap,
-              text: `${m.smashes300} smashes 300+`,
-              color: "var(--danger-500)",
-            },
-            {
-              key: "long",
-              icon: Repeat,
-              text: `Longest ${m.longest}`,
-              color: "var(--accent)",
-            },
-            {
-              key: "net",
-              icon: Target,
-              text: `${m.netWinners} net winners`,
-              color: "var(--success-500)",
-            },
-          ] as const
-        ).map((c) => {
-          const Icon = c.icon;
-          const emph =
-            (lens === "fast" && c.key === "fast") ||
-            (lens === "long" && c.key === "long") ||
-            (lens === "attacking" && c.key === "fast");
-          return (
-            <span
-              key={c.key}
-              className={cn(
-                "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-[5px] text-xs text-[var(--text-secondary)]",
-                emph
-                  ? "border-[var(--border-strong)] bg-[var(--surface-3)]"
-                  : "border-[var(--border-subtle)] bg-[var(--surface-2)]",
-              )}
-            >
-              <Icon className="h-[13px] w-[13px]" style={{ color: c.color }} />
-              {c.text}
-            </span>
-          );
-        })}
+        {isAllowlistedYoutubeUrl(m.sourceUrl) ? (
+          <span
+            className={cn(
+              "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-[5px] text-xs text-[var(--text-secondary)]",
+              highlight === "video"
+                ? "border-[var(--border-strong)] bg-[var(--surface-3)]"
+                : "border-[var(--border-subtle)] bg-[var(--surface-2)]",
+            )}
+          >
+            <Video className="h-[13px] w-[13px] text-[var(--danger-500)]" />
+            Video
+          </span>
+        ) : null}
+        {m.threeGames ? (
+          <span
+            className={cn(
+              "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-[5px] text-xs text-[var(--text-secondary)]",
+              highlight === "three"
+                ? "border-[var(--border-strong)] bg-[var(--surface-3)]"
+                : "border-[var(--border-subtle)] bg-[var(--surface-2)]",
+            )}
+          >
+            <Clapperboard className="h-[13px] w-[13px] text-[var(--accent)]" />
+            3 games
+          </span>
+        ) : null}
+        {m.comeback ? (
+          <span
+            className={cn(
+              "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-[5px] text-xs text-[var(--text-secondary)]",
+              highlight === "comeback"
+                ? "border-[var(--border-strong)] bg-[var(--surface-3)]"
+                : "border-[var(--border-subtle)] bg-[var(--surface-2)]",
+            )}
+          >
+            <Flame className="h-[13px] w-[13px] text-[var(--warning-400,var(--accent))]" />
+            Comeback
+          </span>
+        ) : null}
         <div className="min-w-2 flex-1" />
         <span className="inline-flex shrink-0 items-center gap-1 text-xs text-[var(--text-link)] group-hover:text-[var(--accent)]">
-          Open full analysis
+          Match details
           <ArrowRight className="h-3.5 w-3.5" />
         </span>
       </div>
+    </Link>
+  );
+}
+
+/**
+ * Shared compact match row for player history and H2H meeting lists.
+ * When `highlightPlayerId` is set, shows W/L (or A/B for H2H) vs opponent.
+ */
+export function MatchRow({
+  m,
+  highlightPlayerId,
+  outcomeMode = "wl",
+}: {
+  m: CatalogMatch;
+  /** When set, row is player-centric (W/L or A/B vs opponent). */
+  highlightPlayerId?: string;
+  /** `wl` for player profile; `ab` for H2H where A is highlightPlayerId. */
+  outcomeMode?: "wl" | "ab";
+}) {
+  const wonSide = m.winner;
+  const hasPlayer = Boolean(highlightPlayerId);
+  const won = highlightPlayerId
+    ? playerWon(m, highlightPlayerId)
+    : null;
+  const opp = highlightPlayerId
+    ? m.team1Ids.includes(highlightPlayerId)
+      ? formatTeam(m.team2)
+      : formatTeam(m.team1)
+    : null;
+
+  const badgeLabel =
+    outcomeMode === "ab"
+      ? won === true
+        ? "A"
+        : won === false
+          ? "B"
+          : "—"
+      : won === true
+        ? "W"
+        : won === false
+          ? "L"
+          : "—";
+
+  return (
+    <Link
+      href={`/bwf/matches/${m.id}`}
+      className="flex min-h-10 flex-wrap items-center gap-3 rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-2)] px-3 py-2.5 hover:border-[var(--border)]"
+    >
+      {hasPlayer ? (
+        <span
+          className={cn(
+            "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md font-mono text-[10px] font-semibold",
+            outcomeMode === "ab"
+              ? won === true
+                ? "bg-[var(--player-a-soft)] text-[var(--player-a)]"
+                : won === false
+                  ? "bg-[var(--player-b-soft)] text-[var(--player-b)]"
+                  : "bg-[var(--surface-3)] text-[var(--text-muted)]"
+              : won === true
+                ? "bg-[var(--success-bg)] text-[var(--success-500)]"
+                : won === false
+                  ? "bg-[rgba(244,81,92,0.14)] text-[var(--danger-500)]"
+                  : "bg-[var(--surface-3)] text-[var(--text-muted)]",
+          )}
+        >
+          {badgeLabel}
+        </span>
+      ) : m.disc ? (
+        <span className="w-8 font-mono text-[10px] text-[var(--accent)]">
+          {m.disc}
+        </span>
+      ) : null}
+
+      <span className="min-w-0 flex-1 truncate text-[13px] text-[var(--text-strong)]">
+        {hasPlayer && opp ? (
+          <>
+            <span className="text-[var(--text-muted)]">vs </span>
+            {opp}
+            <span className="hidden text-[var(--text-faint)] sm:inline">
+              {" · "}
+              {m.event}
+              {m.round ? ` · ${m.round}` : ""}
+            </span>
+          </>
+        ) : (
+          <>
+            <span className={wonSide === 1 ? "font-semibold" : ""}>
+              {formatTeam(m.team1)}
+            </span>
+            <span className="text-[var(--text-muted)]"> vs </span>
+            <span className={wonSide === 2 ? "font-semibold" : ""}>
+              {formatTeam(m.team2)}
+            </span>
+          </>
+        )}
+      </span>
+
+      <span className="font-mono text-[11px] tabular-nums text-[var(--text-muted)]">
+        {formatScoreLine(m.games)}
+      </span>
+
+      {!hasPlayer ? (
+        <span className="hidden font-mono text-[11px] text-[var(--text-faint)] sm:inline">
+          {m.event}
+          {m.round ? ` · ${m.round}` : ""}
+        </span>
+      ) : (
+        <span className="hidden font-mono text-[11px] text-[var(--text-faint)] sm:inline">
+          {displayDate(m) || m.round}
+        </span>
+      )}
+
+      {isAllowlistedYoutubeUrl(m.sourceUrl) ? (
+        <ExternalLink className="h-3.5 w-3.5 shrink-0 text-[var(--text-muted)]" />
+      ) : null}
     </Link>
   );
 }

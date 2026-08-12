@@ -42,19 +42,14 @@ export interface FooterProps {
 export function Footer({
   brand = "Mintonix",
   logoSrc = "/assets/logomark.png",
-  tagline = "The analysis engine for badminton — from raw footage to insight for every shot.",
+  tagline = "BWF match analysis — catalog, video, players, and head-to-head from real tournament data.",
   brandHref = "/",
   columns = [],
-  social = [
-    { type: "x", href: "#" },
-    { type: "youtube", href: "#" },
-    { type: "github", href: "#" },
-  ],
+  social = [],
   copyright = `© ${new Date().getFullYear()} Mintonix. All rights reserved.`,
   legalLinks = [
     { label: "Privacy", href: "/privacy" },
     { label: "Terms", href: "/terms" },
-    { label: "Status", href: "#" },
   ],
   maxWidth = 1320,
   className = "",

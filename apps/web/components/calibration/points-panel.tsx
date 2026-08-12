@@ -70,7 +70,7 @@ export function PointsPanel() {
                 className={cn(
                   "inline-flex h-[23px] w-[23px] shrink-0 items-center justify-center rounded-[7px] font-mono text-[11px] font-semibold",
                   ph.done &&
-                    "bg-[rgba(45,212,167,0.16)] text-[var(--success-500)]",
+                    "bg-[var(--success-bg)] text-[var(--success-500)]",
                   ph.active && !ph.done && "bg-[var(--brand)] text-white",
                   !ph.active &&
                     !ph.done &&
@@ -203,7 +203,7 @@ export function PointsPanel() {
           type="button"
           onClick={detectLines}
           disabled={linesDetected === "scanning"}
-          className="mb-3.5 flex h-10 w-full items-center justify-center gap-2 rounded-[10px] border border-[var(--brand)] bg-[rgba(54,147,255,0.12)] text-[13.5px] font-medium text-[var(--brand-hover,#5ba8ff)] disabled:cursor-default"
+          className="mb-3.5 flex h-10 w-full items-center justify-center gap-2 rounded-[10px] border border-[var(--brand)] bg-[rgba(255,255,255,0.04)] text-[13.5px] font-medium text-[var(--brand-hover,#5ba8ff)] disabled:cursor-default"
         >
           {linesDetected === "scanning" ? (
             <span
@@ -236,7 +236,7 @@ export function PointsPanel() {
                   className={cn(
                     "inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-md font-mono text-[10px] font-semibold text-[var(--brand)]",
                     lm.zone === "net"
-                      ? "bg-[rgba(54,147,255,0.16)]"
+                      ? "bg-[rgba(255,255,255,0.05)]"
                       : "bg-[var(--surface-3)]",
                   )}
                 >

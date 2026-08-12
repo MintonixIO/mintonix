@@ -45,7 +45,7 @@ export default function PrivacyPage() {
           className="pointer-events-none absolute inset-0"
           style={{
             background:
-              "radial-gradient(100% 50% at 50% -10%, rgba(54,147,255,0.13), transparent 56%)",
+              "radial-gradient(100% 50% at 50% -10%, rgba(255,255,255,0.04), transparent 56%)",
           }}
         />
         <div className="relative mx-auto max-w-[1080px] px-8 pt-20">
@@ -55,6 +55,11 @@ export default function PrivacyPage() {
           <h1 className="font-display text-[clamp(32px,4.6vw,48px)] font-semibold leading-[1.06] tracking-[-0.03em] text-[var(--text-strong)]">
             Privacy Policy
           </h1>
+      <div className="mb-8 rounded-[12px] border border-[var(--border)] bg-[var(--surface-2)] px-4 py-3 text-[13.5px] leading-[1.55] text-[var(--text-secondary)]">
+        <strong className="font-medium text-[var(--text-strong)]">Scope note. </strong>
+        This policy describes the intended product. The public site today is the free BWF catalog; account features, uploads, and billing described below may not be live yet.
+      </div>
+
           <p className="mt-4 max-w-[60ch] text-[16px] leading-[1.6] text-[var(--text-secondary)]">
             How Mintonix collects, uses, and protects your footage and account
             data — in plain terms, with the legal detail where it matters.
@@ -307,10 +312,10 @@ export default function PrivacyPage() {
                 Questions about privacy, or want to exercise a right? Reach our
                 team at{" "}
                 <a
-                  href="mailto:privacy@mintonix.com"
+                  href="mailto:privacy@mintonix.io"
                   className="text-[var(--text-link)] hover:underline"
                 >
-                  privacy@mintonix.com
+                  privacy@mintonix.io
                 </a>
                 , or through the{" "}
                 <Link

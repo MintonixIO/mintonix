@@ -20,14 +20,31 @@ const spaceGrotesk = Space_Grotesk({
 
 export const metadata: Metadata = {
   title: {
-    default: "Mintonix — Badminton analysis engine",
+    default: "Mintonix — BWF match analysis",
     template: "%s · Mintonix",
   },
   description:
-    "Mintonix turns match footage into rallies, heatmaps, shot distributions, and head-to-head metrics for players and coaches.",
+    "Analyze BWF tournament matches — catalog results, player careers, head-to-head records, and match video.",
   icons: {
     icon: "/assets/logomark.png",
   },
+  metadataBase: new URL("https://mintonix.io"),
+  openGraph: {
+    title: "Mintonix — BWF match analysis",
+    description:
+      "Browse BWF matches, players, and head-to-head from the Mintonix catalog.",
+    siteName: "Mintonix",
+    type: "website",
+    images: [{ url: "/assets/logo-full.png", alt: "Mintonix" }],
+  },
+  twitter: {
+    card: "summary",
+    title: "Mintonix — BWF match analysis",
+    description:
+      "Browse BWF matches, players, and head-to-head from the Mintonix catalog.",
+    images: ["/assets/logo-full.png"],
+  },
+  robots: { index: true, follow: true },
 };
 
 export default function RootLayout({

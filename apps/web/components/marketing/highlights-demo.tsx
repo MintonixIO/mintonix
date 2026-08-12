@@ -8,7 +8,7 @@ import {
 /** Marketing highlight-builder demo — matches home design showcase. */
 export function HighlightsDemo() {
   return (
-    <div className="overflow-hidden rounded-[14px] border border-[var(--border)] bg-[var(--surface-1)] shadow-[var(--shadow-lg),var(--shadow-edge)]">
+    <div aria-label="Product illustration — not the live product" className="overflow-hidden rounded-[14px] border border-[var(--border)] bg-[var(--surface-1)] shadow-[var(--shadow-lg),var(--shadow-edge)]">
       <div className="flex items-center gap-[11px] border-b border-[var(--border-subtle)] px-4 py-3">
         <ListTree className="h-4 w-4 text-[var(--accent)]" strokeWidth={1.75} />
         <span className="font-display text-sm font-semibold text-[var(--text-strong)]">
@@ -18,7 +18,7 @@ export function HighlightsDemo() {
           Axelsen vs Momota
         </span>
         <div className="flex-1" />
-        <span className="inline-flex h-7 items-center gap-1.5 rounded-lg border border-[var(--accent)] bg-[rgba(54,147,255,0.16)] px-2.5 text-[12.5px] text-[var(--text-strong)]">
+        <span className="inline-flex h-7 items-center gap-1.5 rounded-lg border border-[var(--accent)] bg-[var(--brand-subtle)] px-2.5 text-[12.5px] text-[var(--text-strong)]">
           <SlidersHorizontal className="h-3.5 w-3.5" strokeWidth={1.75} />
           Filter
           <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--accent)] px-1 font-mono text-[11px] text-white">
@@ -41,7 +41,7 @@ export function HighlightsDemo() {
                 Presets
               </span>
               <div className="flex flex-wrap gap-1.5">
-                <span className="rounded-full bg-[rgba(54,147,255,0.16)] px-2.5 py-1 text-xs text-[var(--text-strong)]">
+                <span className="rounded-full bg-[var(--brand-subtle)] px-2.5 py-1 text-xs text-[var(--text-strong)]">
                   Smashes 300+
                 </span>
                 {["Long rallies", "Net winners"].map((t) => (
@@ -62,14 +62,14 @@ export function HighlightsDemo() {
                 {[
                   { c: "#f4515c", l: "Smash", on: true },
                   { c: "#3693ff", l: "Drop" },
-                  { c: "#2dd4a7", l: "Net" },
-                  { c: "#fbbf24", l: "Drive" },
+                  { c: "var(--success-500)", l: "Net" },
+                  { c: "var(--accent)", l: "Drive" },
                 ].map((s) => (
                   <span
                     key={s.l}
                     className={
                       s.on
-                        ? "inline-flex items-center gap-1.5 rounded-full bg-[rgba(54,147,255,0.16)] px-2.5 py-1 text-xs text-[var(--text-strong)]"
+                        ? "inline-flex items-center gap-1.5 rounded-full bg-[var(--brand-subtle)] px-2.5 py-1 text-xs text-[var(--text-strong)]"
                         : "inline-flex items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--surface-1)] px-2.5 py-1 text-xs text-[var(--text-secondary)]"
                     }
                   >
@@ -91,7 +91,7 @@ export function HighlightsDemo() {
               </div>
               <div className="relative h-1 rounded-full bg-[var(--surface-3)]">
                 <div className="absolute inset-y-0 left-0 w-[83%] rounded-full bg-[var(--accent)]" />
-                <div className="absolute left-[83%] top-1/2 h-[13px] w-[13px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-[var(--accent)] shadow-[0_0_0_3px_rgba(54,147,255,0.25)]" />
+                <div className="absolute left-[83%] top-1/2 h-[13px] w-[13px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-[var(--accent)] shadow-[var(--ring)]" />
               </div>
             </div>
             <div className="flex flex-col gap-2">

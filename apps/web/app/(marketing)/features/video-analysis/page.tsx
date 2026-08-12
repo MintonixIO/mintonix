@@ -1,3 +1,4 @@
+import Link from "next/link";
 import {
   Gauge,
   Grid2x2,
@@ -21,7 +22,7 @@ const READOUT = [
   { t: "12:04", shot: "Smash · forehand", speed: "312 km/h", color: "#f4515c" },
   { t: "12:06", shot: "Drop · backhand", speed: "64 km/h", color: "#3693ff" },
   { t: "12:07", shot: "Net kill", speed: "88 km/h", color: "#2dd4a7" },
-  { t: "12:09", shot: "Drive · forehand", speed: "146 km/h", color: "#fbbf24" },
+  { t: "12:09", shot: "Drive · forehand", speed: "146 km/h", color: "var(--accent)" },
   { t: "12:11", shot: "Smash winner", speed: "334 km/h", color: "#f4515c" },
 ];
 
@@ -35,7 +36,7 @@ const SHOT_DIST = [
   { name: "Smashes", pct: 22, color: "#f4515c" },
   { name: "Drops", pct: 19, color: "#50deff" },
   { name: "Net", pct: 17, color: "#2dd4a7" },
-  { name: "Drives", pct: 14, color: "#fbbf24" },
+  { name: "Drives", pct: 14, color: "var(--accent)" },
 ];
 
 const HEAT_A = [
@@ -78,16 +79,24 @@ function heat(v: number) {
 export default function FeatureVideoAnalysisPage() {
   return (
     <div className="overflow-x-clip">
+      <div className="border-b border-[var(--border)] bg-[var(--surface-2)] px-4 py-2.5 text-center text-[12.5px] text-[var(--text-secondary)]">
+        <strong className="font-medium text-[var(--text-strong)]">Roadmap / preview.</strong>{" "}
+        Not part of the live public product — explore the{" "}
+        <Link href="/bwf" className="text-[var(--text-link)] underline-offset-2 hover:underline">
+          BWF catalog
+        </Link>{" "}
+        today.
+      </div>
       <FeatureHero
         EyebrowIcon={ScanLine}
         eyebrow="Video analysis"
         title="Every shot, measured."
-        body="Upload raw footage and Mintonix watches it the way a coach does — splitting the match into rallies, naming every shot, mapping where players move, and clocking the shuttle. No tagging, no spreadsheets."
+        body="Preview of a planned private tool: Upload raw footage and Mintonix watches it the way a coach does — splitting the match into rallies, naming every shot, mapping where players move, and clocking the shuttle. No tagging, no spreadsheets."
         ctas={[
-          { href: "/auth", label: "Analyze a match" },
-          { href: "/video-analysis", label: "See it live", variant: "outline" },
+          { href: "/bwf/matches", label: "Open a BWF match" },
+          { href: "/bwf", label: "Browse BWF instead", variant: "outline" },
         ]}
-        glow="radial-gradient(110% 60% at 15% -10%, rgba(54,147,255,0.16), transparent 55%)"
+        glow="radial-gradient(110% 60% at 15% -10%, rgba(255,255,255,0.05), transparent 55%)"
       >
         <div className="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface-1)] shadow-[var(--shadow-xl),var(--shadow-edge)]">
           <div className="flex items-center gap-2 border-b border-[var(--border-subtle)] px-4 py-3">
@@ -344,11 +353,11 @@ export default function FeatureVideoAnalysisPage() {
 
       <FeatureCTA
         title="Point a camera. Get the numbers."
-        body="Your first match is free to analyze — no card, no setup. Or open a pro match from the BWF library and explore the analysis right now."
+        body="Private upload analysis is on the roadmap. Today, explore real BWF matches in the free catalog."
         ctas={[
-          { href: "/auth", label: "Analyze your first match" },
+          { href: "/bwf", label: "Explore the catalog" },
           {
-            href: "/bwf",
+            href: "/bwf/matches",
             label: "Browse BWF matches",
             variant: "ghost",
           },

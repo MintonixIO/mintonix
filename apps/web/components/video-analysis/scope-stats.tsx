@@ -419,7 +419,7 @@ export function ScopeStats({
                     />
                   </svg>
                   <div className="absolute left-[28%] top-[26%] h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full bg-[var(--player-a)] shadow-[0_0_10px_rgba(54,147,255,0.6)]" />
-                  <div className="absolute left-[58%] top-[74%] h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full bg-[var(--player-b)] shadow-[0_0_10px_rgba(251,191,36,0.5)]" />
+                  <div className="absolute left-[58%] top-[74%] h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full bg-[var(--player-b)] shadow-[var(--glow-player-b)]" />
                 </div>
               </div>
               <div className="mt-2.5 flex flex-wrap items-center gap-4 font-mono text-[11px] text-[var(--text-muted)]">

@@ -17,23 +17,10 @@ export default function AboutPage() {
         <div
           className="pointer-events-none absolute inset-0"
           style={{
-            background:
-              "radial-gradient(110% 55% at 50% -10%, rgba(54,147,255,0.16), transparent 56%)",
+            background: "var(--hero-wash)",
           }}
         />
-        <div
-          className="pointer-events-none absolute inset-0"
-          style={{
-            backgroundImage:
-              "linear-gradient(rgba(54,147,255,0.05) 1px, transparent 1px), linear-gradient(90deg, rgba(54,147,255,0.05) 1px, transparent 1px)",
-            backgroundSize: "64px 64px",
-            maskImage:
-              "radial-gradient(80% 45% at 50% 0%, #000 30%, transparent 78%)",
-            WebkitMaskImage:
-              "radial-gradient(80% 45% at 50% 0%, #000 30%, transparent 78%)",
-          }}
-        />
-        <div className="relative mx-auto max-w-[1080px] px-8 pt-[84px] text-center">
+        <div className="relative mx-auto max-w-[1080px] px-5 pt-20 text-center sm:px-8 sm:pt-[84px]">
           <div className="mb-4 font-mono text-[11px] uppercase tracking-[0.14em] text-[var(--accent)]">
             About Mintonix
           </div>
@@ -41,23 +28,23 @@ export default function AboutPage() {
             We watch every rally so the game gives up its secrets.
           </h1>
           <p className="mx-auto mt-5 max-w-[56ch] text-[17px] leading-[1.6] text-[var(--text-secondary)]">
-            Mintonix began with a simple frustration: the most important moments
-            in badminton vanish the instant they happen. We build the engine that
-            turns footage into a record you can study — rally by rally, shot by
-            shot.
+            Today the public site is a free BWF match catalog — scores, players,
+            head-to-head, and video links. Private upload analysis is still on
+            the roadmap. The project started from the same frustration: important
+            rallies vanish unless you can study them.
           </p>
         </div>
       </section>
 
       {/* Story */}
-      <section className="mx-auto max-w-[1080px] px-8 pt-24">
+      <section className="mx-auto max-w-[1080px] px-5 pt-24 sm:px-8">
         <div className="grid items-start gap-8 lg:grid-cols-[0.9fr_1.1fr] lg:gap-16">
           <div className="lg:sticky lg:top-24">
             <div className="mb-3.5 font-mono text-[11px] uppercase tracking-[0.12em] text-[var(--accent)]">
               Our story
             </div>
             <h2 className="font-display text-[clamp(26px,3.4vw,40px)] font-semibold leading-[1.1] tracking-[-0.025em] text-[var(--text-strong)] text-balance">
-              From a courtside laptop to a full analysis engine.
+              From a courtside laptop to a free BWF catalog.
             </h2>
           </div>
           <div className="flex flex-col gap-[22px] text-base leading-[1.7] text-[var(--text-secondary)]">
@@ -75,10 +62,12 @@ export default function AboutPage() {
               number, and a number into a coaching decision.
             </p>
             <p>
-              Today Mintonix is used by players, coaches, and federations who
-              want the same thing I wanted — to{" "}
+              Today anyone can browse the public BWF catalog for free. I&apos;m
+              building this for players and coaches who want the same thing I
+              wanted — to{" "}
               <span className="text-[var(--text-strong)]">see clearly</span>.
-              It&apos;s still just me: one person, based in the United States,
+              Private upload analysis and team tools are on the roadmap.
+              It's still just me: one person, based in the United States,
               working to the global tour calendar, and still watching a lot of
               badminton.
             </p>
@@ -89,7 +78,7 @@ export default function AboutPage() {
       {/* Contact */}
       <section
         id="contact"
-        className="mx-auto max-w-[1080px] scroll-mt-20 px-8 pb-[120px] pt-[110px]"
+        className="mx-auto max-w-[1080px] scroll-mt-20 px-5 pb-[120px] pt-[110px] sm:px-8"
       >
         <div className="max-w-[60ch]">
           <div className="mb-3.5 font-mono text-[11px] uppercase tracking-[0.14em] text-[var(--accent)]">
@@ -113,14 +102,14 @@ export default function AboutPage() {
               {
                 icon: Mail,
                 t: "Email",
-                d: "hello@mintonix.com",
-                href: "mailto:hello@mintonix.com",
+                d: "hello@mintonix.io",
+                href: "mailto:hello@mintonix.io",
               },
               {
                 icon: MessageSquare,
                 t: "Support",
-                d: "In-app help for Pro seats",
-                href: "/dashboard/help-support",
+                d: "Email for product questions",
+                href: "/about#contact",
               },
             ].map((c) => (
               <Link

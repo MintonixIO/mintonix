@@ -145,10 +145,10 @@ export function CourtSchematic({
                   ? PA
                   : armed
                     ? reqOpen
-                      ? "rgba(251,191,36,0.28)"
+                      ? "color-mix(in srgb, var(--player-b) 28%, transparent)"
                       : "rgba(54,147,255,0.28)"
                     : reqOpen
-                      ? "rgba(251,191,36,0.16)"
+                      ? "color-mix(in srgb, var(--player-b) 16%, transparent)"
                       : "rgba(7,8,9,0.55)"
               }
               stroke={

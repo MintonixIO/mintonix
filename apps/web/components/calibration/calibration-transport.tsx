@@ -109,7 +109,7 @@ export function CalibrationTransport() {
             "inline-flex h-[30px] items-center gap-1.5 whitespace-nowrap rounded-lg border px-2.5 text-[12.5px]",
             isCal
               ? "cursor-default border-[var(--border)] text-[var(--text-faint)]"
-              : "border-[var(--brand)] bg-[rgba(54,147,255,0.12)] text-[var(--brand-hover,#5ba8ff)] hover:brightness-110",
+              : "border-[var(--brand)] bg-[rgba(255,255,255,0.04)] text-[var(--brand-hover,#5ba8ff)] hover:brightness-110",
           )}
         >
           {isCal ? (

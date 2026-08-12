@@ -4,12 +4,18 @@ Badminton video analysis platform: ingest match footage (BWF broadcasts + user
 uploads), normalize it, track shuttle and players, and produce 3D positions and
 match analytics.
 
+**Web (public):** marketing + BWF catalog live; dashboard workspace is preview-only. See MARKETING_BWF_CHECKLIST.md.
+
+**Code organization** (colocate by use, split by real boundary, abstract on
+second use) for agents and humans: **[AGENTS.md](./AGENTS.md)**. This file owns
+system design and the trust model; AGENTS.md owns how we lay out and edit code.
+
 Status legend: ✅ built · 🚧 partially built · 📐 designed, not built.
 
 ```
                  ┌─────────────── INGESTION ───────────────┐
   BWF backlog ──▶│                                          │
-  BWF scraper ──▶│  match-data pipeline (GitHub Actions) ✅ │──▶ matches table
+  BWF scraper ──▶│  match-data pipeline (GitHub Actions) ✅ │──▶ matches (players derived in web)
   User upload ──▶│  cdn-access presigned PUT ✅             │──▶ B2  users/<uid>/…
                  └──────────────────┬──────────────────────┘
                                     ▼  enqueue
@@ -458,10 +464,18 @@ in `wrangler.toml`).
 3. **Queue tech** — pgmq is the recommendation; if Supabase Queues proves
    limiting for priority/rate-caps, the fallback is a plain `jobs`-table
    dispatcher with `FOR UPDATE SKIP LOCKED`.
-4. **BWF artifact visibility** — the RLS in the pipeline migration lets any
-   signed-in user read system-owned (BWF) videos/assets, while the raw
-   match-data tables stay private. Tighten to owner-only if BWF content should
-   stay service-only until launch.
+4. ~~**BWF catalog visibility**~~ — **decided:** the **web** BWF catalog is
+   **server-private** via service role (`SUPABASE_SERVICE_ROLE_KEY`) with
+   `owner_id IS NULL` on every query. Next.js builds a single cached
+   `CatalogSnapshot` (matches + slim directory players + stats;
+   `bwf-catalog-v6`, 5 min); full profiles (form/rivals) are built on demand.
+   Catalog load does **not** enqueue GPU jobs. Multi-year data is held entirely
+   in process memory for the cache TTL — document/scale limits before loading
+   many seasons. There is no separate players table — identity is a **name
+   slug** from the four roster columns (known collision limit). Public anon
+   SELECT on system matches is **revoked**
+   (`20260731000000_revoke_anon_bwf_catalog_read`). User-owned matches stay
+   private.
 
 Decided (2026-07): all footage is **single-camera** (shuttle 3D comes from
 physics-fit trajectories; no multi-view tables anywhere). Also decided

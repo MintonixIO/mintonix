@@ -297,7 +297,7 @@ export function CalibrationCanvas() {
 
         {/* Scan overlay */}
         {step === "points" && linesDetected === "scanning" ? (
-          <div className="pointer-events-none absolute inset-0 overflow-hidden bg-[rgba(54,147,255,0.04)]">
+          <div className="pointer-events-none absolute inset-0 overflow-hidden bg-[rgba(255,255,255,0.035)]">
             <div
               className="absolute left-0 right-0 h-0.5"
               style={{
@@ -369,7 +369,7 @@ export function CalibrationCanvas() {
               background: "rgba(7,8,9,0.72)",
               borderColor:
                 Q.level === "need"
-                  ? "rgba(251,191,36,0.4)"
+                  ? "color-mix(in srgb, var(--player-b) 40%, transparent)"
                   : "rgba(45,212,167,0.4)",
             }}
           >
