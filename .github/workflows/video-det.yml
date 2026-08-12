@@ -23,12 +23,12 @@ jobs:
     permissions:
       contents: read
       packages: write
-    # Model bake (vast-worker fetch_models) uses the same GitHub Environment
-    # naming as match-data / supabase:
-    #   vars.SUPABASE_PROJECT_REF  → https://<ref>.supabase.co
+    # Model bake uses match-data naming:
+    #   vars.SUPABASE_PROJECT_REF (via vast-worker environment) → SUPABASE_URL
     #   secrets.SUPABASE_SERVICE_KEY → x-pipeline-token for ops/model-urls
-    # (edge PIPELINE_SERVICE_TOKEN is configured to the same value as the
-    # service role key; no separate CI secret names.)
+    # Reusable workflows must receive secrets explicitly from the caller.
+    secrets:
+      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
     with:
       directory: workers/vast/video-det
       image: video-det

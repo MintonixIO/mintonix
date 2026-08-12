@@ -43,13 +43,18 @@ on:
         required: false
         type: string
         default: ""
+    secrets:
+      # Must be passed explicitly by the caller (reusable workflows do not
+      # auto-inherit repo/env secrets). Same name as match-data.
+      SUPABASE_SERVICE_KEY:
+        required: false
 
 jobs:
   build-test-push:
     runs-on: ubuntu-latest
     # Same env selection as match-data / supabase: PR → dev, master → prod.
-    # Model bake reads vars.SUPABASE_PROJECT_REF + secrets.SUPABASE_SERVICE_KEY
-    # from that environment (no separate SUPABASE_URL / PIPELINE_SERVICE_TOKEN).
+    # URL from vars.SUPABASE_PROJECT_REF; auth from caller-passed SERVICE_KEY
+    # (edge PIPELINE_SERVICE_TOKEN is configured to the same value).
     environment: ${{ github.event_name == 'pull_request' && 'dev' || 'prod' }}
     permissions:
       contents: read
@@ -85,8 +90,7 @@ jobs:
         if: ${{ inputs.fetch_models }}
         working-directory: ${{ inputs.directory }}
         env:
-          # Mirror match-data.yml naming: derive URL from project ref; auth with
-          # service key (edge PIPELINE_SERVICE_TOKEN is set to the same value).
+          # URL from environment var; key from workflow_call secret input.
           SUPABASE_URL: https://${{ vars.SUPABASE_PROJECT_REF }}.supabase.co
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: bash tools/fetch_models.sh
