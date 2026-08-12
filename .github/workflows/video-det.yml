@@ -38,8 +38,15 @@ jobs:
       fetch_models: true
       # No GPU on CI runners: TensorRT engine *build* and real inference stay
       # manual. Import + unit tests still catch API drift. CUDA stub for imports.
-      # ALLOW_MISSING_MODELS only for unit tests that assert 503 without GPU load.
-      docker_run_args: "-e ALLOW_MISSING_MODELS=1"
+      # Bake verification checks /app/models on disk; unit tests must NOT load
+      # those engines (TRT deserialize segfaults without a GPU — exit 139).
+      # Point model env at missing paths + ALLOW_MISSING_MODELS so lifespan
+      # stays unloaded while still asserting 503/import contracts.
+      docker_run_args: >-
+        -e ALLOW_MISSING_MODELS=1
+        -e POSE_ENGINE=/nonexistent/pose.engine
+        -e SHUTTLE_CKPT=/nonexistent/shuttle.pt
+        -e SHUTTLE_ENGINE=
       test_command: >-
         bash -c "ln -s /usr/local/cuda/lib64/stubs/libcuda.so
         /usr/local/lib/libcuda.so.1 && ldconfig &&
