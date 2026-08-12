@@ -287,10 +287,11 @@ class TestShuttleProcessFrames(unittest.TestCase):
         class FakeModel:
             def __call__(self, x):
                 b = x.shape[0]
-                # Encode left/center/right channel-0 values into heatmap conf.
-                conf = x[:, 0:1, 0:1, 0:1].mean(dim=1, keepdim=True)
+                # Encode center frame channel-0 corner into heatmap conf.
+                # x is (B, 9, H, W) = concat of prev/center/next RGB.
+                conf = x[:, 3, 0, 0]  # (B,) center RGB ch0
                 hm = torch.zeros((b, SHUTTLE_WIN, 4, 4), dtype=torch.float32)
-                hm[:, 1, 1, 1] = conf.view(b, 1, 1)
+                hm[:, 1, 1, 1] = conf
                 return hm
 
         det.model = FakeModel()
