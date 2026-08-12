@@ -1,6 +1,6 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import {
   Gauge,
   Pause,
@@ -10,9 +10,9 @@ import {
   StepBack,
   StepForward,
 } from "lucide-react";
-import type { Shot } from "@/lib/match-viewer/types";
-import { cn, formatTime } from "@/lib/utils";
-import type { TimelineScope } from "./timeline";
+import type { Shot, TimelineScope } from "@/lib/match-viewer/types";
+import { formatMatchClock } from "@/lib/match-viewer/format";
+import { cn } from "@/lib/utils";
 
 export type TransportMarker = {
   id: string;
@@ -64,8 +64,18 @@ export function Transport({
   const t = Math.max(0, Math.min(duration, scopeT));
   const progress = t / duration;
 
+  const dragCleanupRef = useRef<(() => void) | null>(null);
+
+  useEffect(() => {
+    return () => {
+      dragCleanupRef.current?.();
+      dragCleanupRef.current = null;
+    };
+  }, []);
+
   const seekFromEvent = (clientX: number, el: HTMLElement) => {
     const r = el.getBoundingClientRect();
+    if (r.width <= 0) return;
     const next = ((clientX - r.left) / r.width) * duration;
     onSeek(Math.max(0, Math.min(duration, next)));
   };
@@ -88,12 +98,21 @@ export function Transport({
           seekFromEvent(e.clientX, el);
           const move = (ev: PointerEvent) => seekFromEvent(ev.clientX, el);
           const up = () => {
-            el.releasePointerCapture(e.pointerId);
+            try {
+              el.releasePointerCapture(e.pointerId);
+            } catch {
+              /* already released */
+            }
             window.removeEventListener("pointermove", move);
             window.removeEventListener("pointerup", up);
+            window.removeEventListener("pointercancel", up);
+            dragCleanupRef.current = null;
           };
+          dragCleanupRef.current?.();
+          dragCleanupRef.current = up;
           window.addEventListener("pointermove", move);
           window.addEventListener("pointerup", up);
+          window.addEventListener("pointercancel", up);
         }}
         onKeyDown={(e) => {
           const step = scope.level === "rally" ? 0.1 : scope.level === "set" ? 2 : 15;
@@ -160,9 +179,9 @@ export function Transport({
         </div>
 
         <span className="whitespace-nowrap font-mono text-[11px] tabular-nums text-[var(--text-muted)]">
-          {formatTime(t)}
+          {formatMatchClock(t)}
           <span className="text-[var(--text-faint)]"> / </span>
-          {formatTime(duration)}
+          {formatMatchClock(duration)}
         </span>
 
         {shot ? (

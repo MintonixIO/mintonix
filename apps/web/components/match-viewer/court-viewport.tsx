@@ -8,7 +8,6 @@ import {
   type WheelEvent as ReactWheelEvent,
 } from "react";
 import { Eye, Move3d, RotateCcw } from "lucide-react";
-import { PlayerFigure } from "./player-figure";
 import { courtToPct } from "@/lib/match-viewer/generate";
 import type { Frame, PlayerPov, ViewMode } from "@/lib/match-viewer/types";
 import { cn } from "@/lib/utils";
@@ -27,7 +26,63 @@ type CourtViewportProps = {
   currentShotLabel?: string;
   playerAName: string;
   playerBName: string;
+  /** Honest label for synthetic overlay (default Demo). */
+  overlayBadge?: string;
 };
+
+function PlayerFigure({ color, dark }: { color: string; dark: string }) {
+  return (
+    <>
+      <div
+        className="absolute left-1/2 top-1/2 h-[11px] w-[26px] -translate-x-1/2 -translate-y-1/2 rounded-full border-[1.5px]"
+        style={{
+          borderColor: `${color}bf`,
+          background: `radial-gradient(closest-side, ${color}4d, transparent)`,
+          boxShadow: `0 0 12px ${color}73`,
+        }}
+      />
+      <div
+        className="absolute bottom-0 left-1/2 h-[46px] w-6 origin-bottom -translate-x-1/2"
+        style={{ transform: "translateX(-50%) rotateX(-90deg)", transformOrigin: "50% 100%" }}
+      >
+        <div
+          className="absolute left-1/2 top-0 h-[13px] w-[13px] -translate-x-1/2 rounded-full"
+          style={{ background: color, boxShadow: `0 0 10px ${color}b3` }}
+        />
+        <div
+          className="absolute bottom-0 left-1/2 h-[29px] w-4 -translate-x-1/2 rounded-[8px_8px_5px_5px]"
+          style={{
+            background: `linear-gradient(${color}, ${dark})`,
+            boxShadow: `0 0 14px ${color}80`,
+          }}
+        />
+      </div>
+      <div
+        className="absolute bottom-0 left-1/2 h-[46px] w-6 origin-bottom -translate-x-1/2"
+        style={{
+          transform: "translateX(-50%) rotateX(-90deg) rotateY(90deg)",
+          transformOrigin: "50% 100%",
+        }}
+      >
+        <div
+          className="absolute left-1/2 top-0 h-[13px] w-[13px] -translate-x-1/2 rounded-full"
+          style={{ background: dark, boxShadow: `0 0 10px ${color}99` }}
+        />
+        <div
+          className="absolute bottom-0 left-1/2 h-[29px] w-4 -translate-x-1/2 rounded-[8px_8px_5px_5px]"
+          style={{
+            background: `linear-gradient(${dark}, ${color}99)`,
+            boxShadow: `0 0 14px ${color}66`,
+          }}
+        />
+      </div>
+    </>
+  );
+}
+
+function clamp(v: number, lo: number, hi: number) {
+  return Math.max(lo, Math.min(hi, v));
+}
 
 export function CourtViewport({
   frame,
@@ -43,6 +98,7 @@ export function CourtViewport({
   currentShotLabel,
   playerAName,
   playerBName,
+  overlayBadge = "Demo",
 }: CourtViewportProps) {
   const dragRef = useRef<{ x: number; y: number; az: number; el: number } | null>(null);
   const [dragging, setDragging] = useState(false);
@@ -51,11 +107,6 @@ export function CourtViewport({
   const bPct = courtToPct(frame.b);
   const sPct = courtToPct(frame.shuttle);
 
-  /**
-   * First-person: stand slightly behind the player, look at the shuttle.
-   * Court is translated so the player is near the bottom of the frustum,
-   * opponent + shuttle dominate the view (what they actually see).
-   */
   const playerCam = useMemo(() => {
     const self = playerPov === "A" ? frame.a : frame.b;
     const target = frame.shuttle;
@@ -64,8 +115,7 @@ export function CourtViewport({
     const dz = target.z - 1.55;
     const azLook = (Math.atan2(dx, -dy) * 180) / Math.PI;
     const dist = Math.max(0.4, Math.hypot(dx, dy));
-    const elLook = clamp(10 + (Math.atan2(dz, dist) * 180) / Math.PI * 0.45, 5, 26);
-    // Mild shift — keep full court readable, player near near-edge of view
+    const elLook = clamp(10 + ((Math.atan2(dz, dist) * 180) / Math.PI) * 0.45, 5, 26);
     const shiftX = -self.x * 5.5;
     const shiftY = playerPov === "A" ? -self.y * 3.2 + 28 : -self.y * 3.2 - 28;
     return { az: azLook, el: elLook, zoom: 1.42, shiftX, shiftY };
@@ -262,7 +312,7 @@ export function CourtViewport({
       {currentShotLabel ? (
         <div className="absolute bottom-12 left-3 z-10 max-w-[min(260px,72%)] rounded-[9px] border border-[var(--border)] bg-[rgba(10,16,32,0.82)] px-2.5 py-1.5 text-[12px] text-[var(--text-strong)] backdrop-blur sm:bottom-3">
           <span className="font-mono text-[10px] uppercase tracking-wider text-[var(--cyan-500)]">
-            Live
+            {overlayBadge}
           </span>
           <div className="mt-0.5 truncate font-medium">{currentShotLabel}</div>
         </div>
@@ -311,8 +361,4 @@ export function CourtViewport({
       ) : null}
     </div>
   );
-}
-
-function clamp(v: number, lo: number, hi: number) {
-  return Math.max(lo, Math.min(hi, v));
 }

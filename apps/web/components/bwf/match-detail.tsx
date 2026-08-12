@@ -164,9 +164,10 @@ export function MatchDetail({ m }: { m: CatalogMatch }) {
           <Link
             href={`/match-viewer/${m.id}`}
             className="inline-flex min-h-10 items-center gap-2 rounded-[10px] bg-[var(--brand)] px-3.5 py-2 text-[13px] font-medium text-[var(--text-on-blue)] shadow-[0_4px_14px_rgba(54,147,255,0.22)] hover:bg-[var(--brand-hover)]"
+            title="Synthetic demo analysis — not pipeline output"
           >
             <Play className="h-4 w-4 fill-current" />
-            Open match viewer
+            Demo match viewer
           </Link>
         </div>
       </div>
@@ -209,9 +210,10 @@ export function MatchDetail({ m }: { m: CatalogMatch }) {
             <Link
               href={`/match-viewer/${m.id}`}
               className="inline-flex items-center gap-1.5 text-xs text-[var(--text-link)] hover:text-[var(--brand)]"
+              title="Synthetic demo analysis — not pipeline output"
             >
               <Play className="h-3.5 w-3.5" />
-              Watch in match viewer
+              Demo match viewer
             </Link>
             <a
               href={youtube.href}
@@ -242,7 +244,7 @@ export function MatchDetail({ m }: { m: CatalogMatch }) {
               href={`/match-viewer/${m.id}`}
               className="inline-flex min-h-10 items-center text-[13px] text-[var(--text-link)] hover:text-[var(--brand)]"
             >
-              Open match viewer (demo 3D)
+              Demo match viewer (3D only)
             </Link>
             <Link
               href="/bwf/matches?lens=video"
@@ -260,7 +262,7 @@ export function MatchDetail({ m }: { m: CatalogMatch }) {
               href={`/match-viewer/${m.id}`}
               className="inline-flex min-h-10 items-center text-[13px] text-[var(--text-link)] hover:text-[var(--brand)]"
             >
-              Open match viewer (demo 3D)
+              Demo match viewer (3D only)
             </Link>
             <Link
               href="/bwf/matches?lens=video"

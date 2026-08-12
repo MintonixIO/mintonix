@@ -63,6 +63,7 @@ export default async function CatalogMatchViewerPage({
   return (
     <MatchViewer
       matchId={match.id}
+      // null (not undefined) so generator never invents a default video
       youtubeId={youtube?.id ?? null}
       title={title}
       event={event}

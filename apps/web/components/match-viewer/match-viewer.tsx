@@ -2,28 +2,49 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, Download, Share2 } from "lucide-react";
+import { ArrowLeft } from "lucide-react";
 import { AnalysisPanel } from "./analysis-panel";
 import { BroadcastView } from "./broadcast-view";
 import { CourtViewport } from "./court-viewport";
 import { RallyBrowser } from "./rally-browser";
-import { MatchTimeline, type TimelineScope } from "./timeline";
+import { MatchTimeline } from "./timeline";
 import { Transport, type TransportMarker } from "./transport";
+import { generateMatch, type GenerateMatchOptions } from "@/lib/match-viewer/generate";
 import {
-  frameAt,
-  generateMatch,
-  type GenerateMatchOptions,
-} from "@/lib/match-viewer/generate";
-import type { MatchData, MomentFilter, PlayerPov, Shot, ViewMode } from "@/lib/match-viewer/types";
+  advanceMatchT,
+  broadcastTime,
+  frameForPlayhead,
+  locatePlayhead,
+  scopeWindow,
+  shotAt,
+  shotMatchT,
+} from "@/lib/match-viewer/playhead";
+import type {
+  MatchData,
+  MomentFilter,
+  PlayerPov,
+  Shot,
+  TimelineScope,
+  ViewMode,
+} from "@/lib/match-viewer/types";
 import { VIEW_MODES } from "@/lib/match-viewer/types";
 import { cn } from "@/lib/utils";
 
 /** Default corner: low angle from near-side corner */
 const CORNER = { az: -48, el: 16, zoom: 1.1 };
 
+/** UI playhead publish rate while playing (3D still feels smooth enough). */
+const UI_HZ = 20;
+const UI_DT = 1 / UI_HZ;
+
 export type MatchViewerProps = {
   /** Catalog / demo match id */
   matchId?: string;
+  /**
+   * `undefined` → generator demo default video.
+   * `null` → no broadcast (catalog without source).
+   * string → that video id.
+   */
   youtubeId?: string | null;
   title?: string;
   event?: string;
@@ -31,7 +52,7 @@ export type MatchViewerProps = {
   playerBName?: string;
   backHref?: string;
   backLabel?: string;
-  /** When true, show a "demo analysis" chip — synthetic rallies / 3D. */
+  /** When true, show demo analysis labeling — synthetic rallies / 3D. */
   demoAnalysis?: boolean;
 };
 
@@ -56,7 +77,8 @@ export function MatchViewer({
       id: matchId,
       title,
       event,
-      youtubeId: youtubeId || undefined,
+      // Pass through null explicitly so catalog never invents a video
+      youtubeId,
       playerA: playerAName ? { name: playerAName } : undefined,
       playerB: playerBName ? { name: playerBName } : undefined,
       broadcastLabel: demoAnalysis
@@ -71,31 +93,44 @@ export function MatchViewer({
   const shortA = surname(nameA);
   const shortB = surname(nameB);
 
-  const defaultRally =
-    MATCH.rallies.find((r) => r.tags.includes("fast-smash") && r.set === 2) ??
-    MATCH.rallies[Math.floor(MATCH.rallies.length / 2)] ??
-    MATCH.rallies[0]!;
+  const defaultMatchT = useMemo(() => {
+    const preferred =
+      MATCH.rallies.find((r) => r.tags.includes("fast-smash") && r.set === 2) ??
+      MATCH.rallies[Math.floor(MATCH.rallies.length / 2)] ??
+      MATCH.rallies[0];
+    return preferred?.matchT0 ?? 0;
+  }, [MATCH]);
 
-  const [rallyId, setRallyId] = useState(defaultRally.id);
-  const [t, setT] = useState(0);
+  const [matchT, setMatchT] = useState(defaultMatchT);
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(1);
   const [momentFilter, setMomentFilter] = useState<MomentFilter>("all");
   const [gameFilter, setGameFilter] = useState<number | "all">("all");
-  const [shotId, setShotId] = useState<string | null>(null);
   const [mobileTab, setMobileTab] = useState<"browse" | "analysis">("browse");
-  /** Hierarchical navigator: match → game → rally */
   const [scope, setScope] = useState<TimelineScope>({ level: "match" });
 
-  const [viewMode, setViewMode] = useState<ViewMode>("broadcast");
+  const [viewMode, setViewMode] = useState<ViewMode>(() =>
+    MATCH.meta.youtubeId ? "broadcast" : "corner",
+  );
   const [playerPov, setPlayerPov] = useState<PlayerPov>("A");
   const [az, setAz] = useState(CORNER.az);
   const [el, setEl] = useState(CORNER.el);
   const [zoom, setZoom] = useState(CORNER.zoom);
 
-  const rally = useMemo(
-    () => MATCH.rallies.find((r) => r.id === rallyId) ?? MATCH.rallies[0]!,
-    [rallyId],
+  const matchTRef = useRef(matchT);
+  matchTRef.current = matchT;
+  const scopeRef = useRef(scope);
+  scopeRef.current = scope;
+  const speedRef = useRef(speed);
+  speedRef.current = speed;
+
+  const loc = useMemo(() => locatePlayhead(MATCH, matchT), [MATCH, matchT]);
+  const rally = loc.rally ?? MATCH.rallies[0]!;
+  const localT = loc.localT;
+  const frame = useMemo(() => frameForPlayhead(loc), [loc]);
+  const shot = useMemo(
+    () => (loc.inGap || !loc.rally ? null : shotAt(loc.rally, localT)),
+    [loc, localT],
   );
 
   const filtered = useMemo(() => {
@@ -103,64 +138,23 @@ export function MatchViewer({
     if (gameFilter !== "all") list = list.filter((r) => r.set === gameFilter);
     if (momentFilter !== "all") list = list.filter((r) => r.tags.includes(momentFilter));
     return list;
-  }, [momentFilter, gameFilter]);
-
-  const frame = useMemo(() => frameAt(rally, t), [rally, t]);
-
-  const shot = useMemo(() => {
-    if (shotId) {
-      const s = rally.shots.find((x) => x.id === shotId);
-      if (s) return s;
-    }
-    return (
-      rally.shots.find((s) => t >= s.t0 && t <= s.t1) ??
-      rally.shots[frame.shotIndex - 1] ??
-      null
-    );
-  }, [rally, shotId, t, frame.shotIndex]);
+  }, [MATCH.rallies, momentFilter, gameFilter]);
 
   const trail = useMemo(() => {
-    const frames = rally.frames;
+    if (!loc.rally || loc.inGap) return [];
+    const frames = loc.rally.frames;
     if (frames.length === 0) return [];
     let idx = 0;
     for (let i = 0; i < frames.length; i++) {
-      if (frames[i]!.t <= t) idx = i;
+      if (frames[i]!.t <= localT) idx = i;
     }
     return frames.slice(Math.max(0, idx - 11), idx).map((f) => f.shuttle);
-  }, [rally, t]);
+  }, [loc, localT]);
 
-  const matchT = rally.matchT0 + t;
-  const videoTime = rally.videoT0 + t;
-
-  const setBound = useMemo(() => {
-    const setNum =
-      scope.level === "set"
-        ? scope.set
-        : scope.level === "rally"
-          ? (MATCH.rallies.find((r) => r.id === scope.rallyId) ?? rally).set
-          : rally.set;
-    return MATCH.setBounds.find((s) => s.set === setNum) ?? MATCH.setBounds[0]!;
-  }, [scope, rally]);
-
-  const scopeDuration = useMemo(() => {
-    if (scope.level === "match") return MATCH.totalDuration;
-    if (scope.level === "set") return Math.max(0.001, setBound.t1 - setBound.t0);
-    const r = MATCH.rallies.find((x) => x.id === scope.rallyId) ?? rally;
-    return Math.max(0.001, r.duration);
-  }, [scope, setBound, rally]);
-
-  const scopeT = useMemo(() => {
-    if (scope.level === "match") return matchT;
-    if (scope.level === "set") return Math.max(0, matchT - setBound.t0);
-    return t;
-  }, [scope, matchT, setBound, t]);
-
-  const scopeLabel = useMemo(() => {
-    if (scope.level === "match") return "Full match";
-    if (scope.level === "set") return `Game ${scope.set}`;
-    const r = MATCH.rallies.find((x) => x.id === scope.rallyId) ?? rally;
-    return `Rally ${r.n} · G${r.set}`;
-  }, [scope, rally]);
+  const win = useMemo(() => scopeWindow(MATCH, scope), [MATCH, scope]);
+  const scopeDuration = Math.max(0.001, win.t1 - win.t0);
+  const scopeT = Math.max(0, Math.min(scopeDuration, matchT - win.t0));
+  const scopeLabel = win.label;
 
   const transportMarkers = useMemo((): TransportMarker[] => {
     if (scope.level === "rally") {
@@ -177,156 +171,109 @@ export function MatchViewer({
         .filter((r) => r.set === scope.set)
         .map((r) => ({
           id: r.id,
-          t: r.matchT0 - setBound.t0,
+          t: r.matchT0 - win.t0,
           kind: r.tags.includes("fast-smash") ? "smash" : "rally",
           label: `R${r.n}`,
         }));
     }
-    // Match: set starts as markers
     return MATCH.setBounds.map((s) => ({
       id: `set-${s.set}`,
       t: s.t0,
       kind: "rally" as const,
       label: `G${s.set}`,
     }));
-  }, [scope, rally, setBound]);
+  }, [scope, rally, win.t0, MATCH]);
 
-  const scopeRef = useRef(scope);
-  scopeRef.current = scope;
-
-  const rafRef = useRef<number | null>(null);
-  const lastRef = useRef<number | null>(null);
-
+  // Absolute match-clock playback — gaps advance naturally
   useEffect(() => {
-    if (!playing) {
-      lastRef.current = null;
-      if (rafRef.current) cancelAnimationFrame(rafRef.current);
-      return;
-    }
+    if (!playing) return;
+
+    let raf = 0;
+    let lastNow: number | null = null;
+    let acc = 0;
+
     const tick = (now: number) => {
-      if (lastRef.current == null) lastRef.current = now;
-      const dt = ((now - lastRef.current) / 1000) * speed;
-      lastRef.current = now;
+      if (lastNow == null) lastNow = now;
+      const wallDt = (now - lastNow) / 1000;
+      lastNow = now;
+      acc += wallDt * speedRef.current;
 
-      const sc = scopeRef.current;
-
-      if (sc.level === "match" || sc.level === "set") {
-        // Advance absolute match clock, map into rallies
-        setT((prev) => {
-          const current = MATCH.rallies.find((r) => r.id === rallyId) ?? MATCH.rallies[0]!;
-          let nextMatchT = current.matchT0 + prev + dt;
-
-          const cap =
-            sc.level === "set"
-              ? (MATCH.setBounds.find((s) => s.set === sc.set)?.t1 ?? MATCH.totalDuration)
-              : MATCH.totalDuration;
-
-          if (nextMatchT >= cap) {
-            setPlaying(false);
-            nextMatchT = cap - 0.001;
-          }
-
-          let found = MATCH.rallies[0]!;
-          for (const r of MATCH.rallies) {
-            if (nextMatchT >= r.matchT0) found = r;
-          }
-          if (found.id !== current.id) {
-            setRallyId(found.id);
-            setShotId(null);
-            return Math.max(0, Math.min(found.duration, nextMatchT - found.matchT0));
-          }
-          return Math.max(0, Math.min(current.duration, nextMatchT - current.matchT0));
-        });
-        setShotId(null);
-      } else {
-        // Rally scope — stay inside this rally
-        setT((prev) => {
-          const next = prev + dt;
-          const r = MATCH.rallies.find((x) => x.id === rallyId) ?? MATCH.rallies[0]!;
-          if (next >= r.duration) {
-            setPlaying(false);
-            return r.duration;
-          }
-          return next;
-        });
-        setShotId(null);
+      if (acc >= UI_DT) {
+        const sc = scopeRef.current;
+        const window = scopeWindow(MATCH, sc);
+        const step = advanceMatchT(MATCH, matchTRef.current, acc, window.t1);
+        acc = 0;
+        matchTRef.current = step.matchT;
+        setMatchT(step.matchT);
+        if (step.stop) {
+          setPlaying(false);
+          return;
+        }
       }
 
-      rafRef.current = requestAnimationFrame(tick);
+      raf = requestAnimationFrame(tick);
     };
-    rafRef.current = requestAnimationFrame(tick);
-    return () => {
-      if (rafRef.current) cancelAnimationFrame(rafRef.current);
-    };
-  }, [playing, speed, rallyId]);
 
-  const selectRally = useCallback((id: string) => {
-    setRallyId(id);
-    setT(0);
-    setShotId(null);
-    setPlaying(false);
-  }, []);
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [playing, MATCH]);
 
-  const selectShot = useCallback((rId: string, s: Shot) => {
-    setRallyId(rId);
-    setT(s.t0);
-    setShotId(s.id);
-    setPlaying(false);
-    setScope({ level: "rally", rallyId: rId });
-    setMobileTab("analysis");
-  }, []);
+  const seekMatchT = useCallback(
+    (mt: number, pause = true) => {
+      const next = Math.max(0, Math.min(MATCH.totalDuration, mt));
+      matchTRef.current = next;
+      setMatchT(next);
+      if (pause) setPlaying(false);
+    },
+    [MATCH.totalDuration],
+  );
 
-  const seekMatchT = useCallback((mt: number) => {
-    const clamped = Math.max(0, Math.min(MATCH.totalDuration, mt));
-    let found = MATCH.rallies[0]!;
-    for (const r of MATCH.rallies) {
-      if (clamped >= r.matchT0) found = r;
-    }
-    const inRally = clamped >= found.matchT0 && clamped <= found.matchT0 + found.duration;
-    setRallyId(found.id);
-    setT(inRally ? Math.max(0, Math.min(found.duration, clamped - found.matchT0)) : 0);
-    setShotId(null);
-    setPlaying(false);
-  }, []);
+  const selectRally = useCallback(
+    (id: string) => {
+      const r = MATCH.rallies.find((x) => x.id === id);
+      if (!r) return;
+      seekMatchT(r.matchT0);
+    },
+    [MATCH.rallies, seekMatchT],
+  );
+
+  const selectShot = useCallback(
+    (rId: string, s: Shot) => {
+      const r = MATCH.rallies.find((x) => x.id === rId);
+      if (!r) return;
+      seekMatchT(shotMatchT(r, s));
+      setScope({ level: "rally", rallyId: rId });
+      setMobileTab("analysis");
+    },
+    [MATCH.rallies, seekMatchT],
+  );
 
   const seekScope = useCallback(
-    (localT: number) => {
-      if (scope.level === "match") {
-        seekMatchT(localT);
-        return;
-      }
-      if (scope.level === "set") {
-        const bound = MATCH.setBounds.find((s) => s.set === scope.set)!;
-        seekMatchT(bound.t0 + localT);
-        return;
-      }
-      // rally
-      const r = MATCH.rallies.find((x) => x.id === scope.rallyId) ?? rally;
-      setRallyId(r.id);
-      setT(Math.max(0, Math.min(r.duration, localT)));
-      setShotId(null);
-      setPlaying(false);
+    (localScopeT: number) => {
+      seekMatchT(win.t0 + localScopeT);
     },
-    [scope, seekMatchT, rally],
+    [seekMatchT, win.t0],
   );
 
   const handleScopeChange = useCallback(
     (next: TimelineScope) => {
       setScope(next);
       if (next.level === "set") {
-        // Jump playhead into the set if we're outside it
         const bound = MATCH.setBounds.find((s) => s.set === next.set);
-        if (bound && (matchT < bound.t0 || matchT >= bound.t1)) {
+        if (bound && (matchTRef.current < bound.t0 || matchTRef.current >= bound.t1)) {
           const first = MATCH.rallies.find((r) => r.set === next.set);
-          if (first) selectRally(first.id);
+          if (first) seekMatchT(first.matchT0);
         }
       }
       if (next.level === "rally") {
         const r = MATCH.rallies.find((x) => x.id === next.rallyId);
-        if (r && r.id !== rallyId) selectRally(r.id);
+        if (r) {
+          const cur = locatePlayhead(MATCH, matchTRef.current);
+          if (cur.rally?.id !== r.id) seekMatchT(r.matchT0);
+        }
       }
     },
-    [matchT, rallyId, selectRally],
+    [MATCH, seekMatchT],
   );
 
   const resetCorner = useCallback(() => {
@@ -341,91 +288,85 @@ export function MatchViewer({
   };
 
   const currentShotLabel = shot
-    ? `${shot.player === "A" ? MATCH.meta.playerA.name.split(" ").pop() : MATCH.meta.playerB.name.split(" ").pop()} · ${shot.type}${shot.speedKmh >= 200 ? ` · ${shot.speedKmh} km/h` : ""}`
+    ? `${shot.player === "A" ? shortA : shortB} · ${shot.type}${shot.speedKmh >= 200 ? ` · ${shot.speedKmh} km/h` : ""}`
     : undefined;
 
   const rallyIndex = MATCH.rallies.findIndex((r) => r.id === rally.id);
 
   const goPrevShot = () => {
-    if (!shot) return;
-    const idx = rally.shots.findIndex((s) => s.id === shot.id);
-    if (idx > 0) {
-      const s = rally.shots[idx - 1]!;
-      setT(s.t0);
-      setShotId(s.id);
-    } else if (rallyIndex > 0 && scope.level !== "rally") {
+    if (!loc.rally) return;
+    const shots = loc.rally.shots;
+    if (shot) {
+      const idx = shots.findIndex((s) => s.id === shot.id);
+      if (idx > 0) {
+        seekMatchT(shotMatchT(loc.rally, shots[idx - 1]!));
+        return;
+      }
+    }
+    if (rallyIndex > 0 && scope.level !== "rally") {
       const prev = MATCH.rallies[rallyIndex - 1]!;
       if (scope.level === "set" && prev.set !== scope.set) {
         setPlaying(false);
         return;
       }
-      const last = prev.shots[prev.shots.length - 1]!;
-      setRallyId(prev.id);
-      setT(last.t0);
-      setShotId(last.id);
+      const last = prev.shots[prev.shots.length - 1];
+      if (last) seekMatchT(shotMatchT(prev, last));
+    } else {
+      setPlaying(false);
     }
-    setPlaying(false);
   };
 
   const goNextShot = () => {
+    if (!loc.rally) return;
+    const shots = loc.rally.shots;
     if (!shot) {
-      const s = rally.shots[0];
-      if (s) {
-        setT(s.t0);
-        setShotId(s.id);
-      }
+      const s = shots[0];
+      if (s) seekMatchT(shotMatchT(loc.rally, s));
       return;
     }
-    const idx = rally.shots.findIndex((s) => s.id === shot.id);
-    if (idx < rally.shots.length - 1) {
-      const s = rally.shots[idx + 1]!;
-      setT(s.t0);
-      setShotId(s.id);
-    } else if (rallyIndex < MATCH.rallies.length - 1 && scope.level !== "rally") {
+    const idx = shots.findIndex((s) => s.id === shot.id);
+    if (idx < shots.length - 1) {
+      seekMatchT(shotMatchT(loc.rally, shots[idx + 1]!));
+      return;
+    }
+    if (rallyIndex < MATCH.rallies.length - 1 && scope.level !== "rally") {
       const next = MATCH.rallies[rallyIndex + 1]!;
       if (scope.level === "set" && next.set !== scope.set) {
         setPlaying(false);
         return;
       }
-      setRallyId(next.id);
-      setT(0);
-      setShotId(next.shots[0]?.id ?? null);
+      seekMatchT(next.matchT0);
+    } else {
+      setPlaying(false);
     }
-    setPlaying(false);
   };
 
   const goPrevRally = () => {
     if (rallyIndex <= 0) return;
     const prev = MATCH.rallies[rallyIndex - 1]!;
     if (scope.level === "set" && prev.set !== scope.set) return;
-    if (scope.level === "rally") {
-      selectRally(prev.id);
-      setScope({ level: "rally", rallyId: prev.id });
-      return;
-    }
-    selectRally(prev.id);
+    seekMatchT(prev.matchT0);
+    if (scope.level === "rally") setScope({ level: "rally", rallyId: prev.id });
   };
 
   const goNextRally = () => {
     if (rallyIndex >= MATCH.rallies.length - 1) return;
     const next = MATCH.rallies[rallyIndex + 1]!;
     if (scope.level === "set" && next.set !== scope.set) return;
-    if (scope.level === "rally") {
-      selectRally(next.id);
-      setScope({ level: "rally", rallyId: next.id });
-      return;
-    }
-    selectRally(next.id);
+    seekMatchT(next.matchT0);
+    if (scope.level === "rally") setScope({ level: "rally", rallyId: next.id });
   };
 
   useEffect(() => {
     if (momentFilter === "all" && gameFilter === "all") return;
-    if (!filtered.some((r) => r.id === rallyId) && filtered[0]) {
+    if (!filtered.some((r) => r.id === rally.id) && filtered[0]) {
       selectRally(filtered[0].id);
     }
-  }, [momentFilter, gameFilter, filtered, rallyId, selectRally]);
+  }, [momentFilter, gameFilter, filtered, rally.id, selectRally]);
 
   const matchHours = MATCH.totalDuration / 3600;
+  const videoTime = broadcastTime(MATCH, matchT);
+  const hasBroadcast = Boolean(MATCH.meta.youtubeId);
 
   const timelineProps = {
     rallies: MATCH.rallies,
@@ -467,7 +408,8 @@ export function MatchViewer({
               ) : null}
             </div>
             <div className="hidden truncate font-mono text-[10px] text-[var(--text-muted)] sm:block">
-              {MATCH.meta.event} · {MATCH.rallies.length} rallies · {matchHours.toFixed(1)}h
+              {MATCH.meta.broadcastLabel} · {MATCH.rallies.length} rallies ·{" "}
+              {matchHours.toFixed(1)}h
             </div>
           </div>
         </div>
@@ -475,22 +417,27 @@ export function MatchViewer({
         <div className="flex-1" />
 
         <div className="flex items-center gap-0.5 rounded-full border border-[var(--border)] bg-[var(--surface-1)] p-0.5">
-          {VIEW_MODES.map((m) => (
-            <button
-              key={m.id}
-              type="button"
-              title={m.hint}
-              onClick={() => switchView(m.id)}
-              className={cn(
-                "rounded-full px-1.5 py-1 text-[10.5px] font-medium sm:px-2.5 sm:py-1.5 sm:text-[12px]",
-                viewMode === m.id
-                  ? "bg-[var(--cyan-500)] text-[#04141b] shadow-[0_0_12px_rgba(80,222,255,0.3)]"
-                  : "text-[var(--text-secondary)] hover:text-[var(--text-strong)]",
-              )}
-            >
-              {m.label}
-            </button>
-          ))}
+          {VIEW_MODES.map((m) => {
+            const disabled = m.id === "broadcast" && !hasBroadcast;
+            return (
+              <button
+                key={m.id}
+                type="button"
+                title={disabled ? "No broadcast linked for this match" : m.hint}
+                disabled={disabled}
+                onClick={() => !disabled && switchView(m.id)}
+                className={cn(
+                  "rounded-full px-1.5 py-1 text-[10.5px] font-medium sm:px-2.5 sm:py-1.5 sm:text-[12px]",
+                  disabled && "cursor-not-allowed opacity-40",
+                  viewMode === m.id
+                    ? "bg-[var(--cyan-500)] text-[#04141b] shadow-[0_0_12px_rgba(80,222,255,0.3)]"
+                    : "text-[var(--text-secondary)] hover:text-[var(--text-strong)]",
+                )}
+              >
+                {m.label}
+              </button>
+            );
+          })}
         </div>
 
         {viewMode === "player" ? (
@@ -519,7 +466,13 @@ export function MatchViewer({
           </div>
         ) : null}
 
-        <div className="flex items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--surface-1)] px-2 py-1 sm:gap-2 sm:px-2.5">
+        <div
+          className="flex items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--surface-1)] px-2 py-1 sm:gap-2 sm:px-2.5"
+          title="Demo scoreline — not official catalog score"
+        >
+          <span className="hidden font-mono text-[9px] uppercase tracking-wide text-[var(--text-faint)] sm:inline">
+            Demo
+          </span>
           <span className="h-1.5 w-1.5 rounded-full bg-[var(--player-a)]" />
           <span className="font-mono text-[12px] tabular-nums text-[var(--text-strong)]">
             {rally.scoreA}–{rally.scoreB}
@@ -527,58 +480,55 @@ export function MatchViewer({
           <span className="h-1.5 w-1.5 rounded-full bg-[var(--player-b)]" />
           <span className="font-mono text-[10px] text-[var(--text-faint)]">G{rally.set}</span>
         </div>
-
-        <button
-          type="button"
-          className="hidden h-8 items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--surface-1)] px-2 text-[12px] text-[var(--text-secondary)] sm:inline-flex sm:px-2.5"
-        >
-          <Share2 className="h-3.5 w-3.5" />
-        </button>
-        <button
-          type="button"
-          className="hidden h-8 items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--surface-1)] px-2 text-[12px] text-[var(--text-secondary)] sm:inline-flex sm:px-2.5"
-        >
-          <Download className="h-3.5 w-3.5" />
-        </button>
       </header>
 
-      {/*
-        Mobile: stage dominates (~62%), slim moments rail below (~38%).
-        Desktop: wide stage + 280px dense rail — 2h match stays scannable.
-      */}
       <div className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_min(38dvh,280px)] lg:grid-cols-[minmax(0,1fr)_280px] lg:grid-rows-1 lg:gap-2.5 lg:p-2.5">
         <div className="flex min-h-0 min-w-0 flex-col lg:gap-2">
           <section className="flex min-h-0 flex-1 flex-col overflow-hidden bg-[linear-gradient(160deg,#0c1426,#070d1a)] lg:rounded-xl lg:border lg:border-[var(--border)] lg:shadow-[var(--shadow-lg),0_0_0_1px_rgba(80,222,255,0.06)]">
             <div className="relative min-h-0 flex-1">
-              {viewMode === "broadcast" ? (
-                <BroadcastView
-                  youtubeId={MATCH.meta.youtubeId}
-                  videoTime={videoTime}
-                  playing={playing}
-                  speed={speed}
-                />
-              ) : (
-                <CourtViewport
-                  frame={frame}
-                  trail={trail}
-                  mode={viewMode}
-                  playerPov={playerPov}
-                  az={az}
-                  el={el}
-                  zoom={zoom}
-                  currentShotLabel={currentShotLabel}
-                  playerAName={MATCH.meta.playerA.name}
-                  playerBName={MATCH.meta.playerB.name}
-                  onOrbit={(nextAz, nextEl) => {
-                    setAz(nextAz);
-                    setEl(nextEl);
-                  }}
-                  onZoom={(deltaY) =>
-                    setZoom((z) => Math.max(0.55, Math.min(1.9, z - deltaY * 0.001)))
-                  }
-                  onResetOrbit={resetCorner}
-                />
-              )}
+              {/* Keep YT mounted under 3D to avoid destroy/recreate races */}
+              {hasBroadcast || viewMode === "broadcast" ? (
+                <div
+                  className={cn(
+                    "absolute inset-0",
+                    viewMode === "broadcast" ? "z-[1]" : "z-0",
+                  )}
+                >
+                  <BroadcastView
+                    youtubeId={MATCH.meta.youtubeId}
+                    videoTime={videoTime}
+                    playing={playing}
+                    speed={speed}
+                    active={viewMode === "broadcast"}
+                  />
+                </div>
+              ) : null}
+
+              {viewMode !== "broadcast" ? (
+                <div className="absolute inset-0 z-[2]">
+                  <CourtViewport
+                    frame={frame}
+                    trail={trail}
+                    mode={viewMode}
+                    playerPov={playerPov}
+                    az={az}
+                    el={el}
+                    zoom={zoom}
+                    currentShotLabel={currentShotLabel}
+                    playerAName={nameA}
+                    playerBName={nameB}
+                    overlayBadge="Demo"
+                    onOrbit={(nextAz, nextEl) => {
+                      setAz(nextAz);
+                      setEl(nextEl);
+                    }}
+                    onZoom={(deltaY) =>
+                      setZoom((z) => Math.max(0.55, Math.min(1.9, z - deltaY * 0.001)))
+                    }
+                    onResetOrbit={resetCorner}
+                  />
+                </div>
+              ) : null}
             </div>
             <Transport
               scope={scope}
@@ -599,16 +549,13 @@ export function MatchViewer({
             />
           </section>
 
-          <div className="hidden shrink-0 rounded-xl border border-[var(--border)] bg-[var(--surface-1)] px-2.5 py-2 shadow-[var(--shadow-edge)] lg:block">
+          {/* One timeline instance (compact on small screens via CSS height only in component) */}
+          <div className="shrink-0 border-t border-[var(--border-subtle)] bg-[var(--surface-1)] px-2 py-1.5 lg:rounded-xl lg:border lg:border-[var(--border)] lg:px-2.5 lg:py-2 lg:shadow-[var(--shadow-edge)]">
             <MatchTimeline {...timelineProps} />
           </div>
         </div>
 
         <aside className="flex min-h-0 flex-col overflow-hidden border-t border-[var(--border)] bg-[var(--bg-base)] lg:border-0 lg:bg-transparent">
-          <div className="shrink-0 border-b border-[var(--border-subtle)] px-2 py-1 lg:hidden">
-            <MatchTimeline {...timelineProps} compact />
-          </div>
-
           {viewMode === "player" ? (
             <div className="flex shrink-0 gap-1 border-b border-[var(--border-subtle)] p-1 sm:hidden">
               {(["A", "B"] as const).map((p) => (
@@ -686,8 +633,8 @@ export function MatchViewer({
                 rally={rally}
                 shot={shot}
                 frame={frame}
-                playerA={MATCH.meta.playerA.name}
-                playerB={MATCH.meta.playerB.name}
+                playerA={nameA}
+                playerB={nameB}
               />
             </div>
           </div>

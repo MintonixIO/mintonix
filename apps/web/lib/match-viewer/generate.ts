@@ -20,9 +20,35 @@ function mulberry32(seed: number) {
   };
 }
 
-const FPS = 16; // leaner frame density for long matches
+/** Stable seed from match id so each catalog id gets a distinct but fixed demo. */
+export function seedFromId(id: string): number {
+  let h = 0x20260812;
+  for (let i = 0; i < id.length; i++) {
+    h = Math.imul(h ^ id.charCodeAt(i), 0x5bd1e995);
+    h ^= h >>> 15;
+  }
+  return h >>> 0;
+}
+
+const FPS = 16;
 const COURT_HALF_L = 6.7;
 const COURT_HALF_W = 2.59;
+
+const TIMING = {
+  preMatch: 180,
+  gapMin: 28,
+  gapSpan: 42,
+  longGapChance: 0.08,
+  longGapMin: 90,
+  longGapSpan: 50,
+  afterRally: 2.5,
+  setIntervalMin: 240,
+  setIntervalSpan: 180,
+  postMatch: 120,
+} as const;
+
+/** Demo-only sample broadcast when the standalone demo route omits a video id. */
+export const DEMO_YOUTUBE_ID = "6NJU8Kwv0Xg";
 
 function clamp(v: number, lo: number, hi: number) {
   return Math.max(lo, Math.min(hi, v));
@@ -50,9 +76,19 @@ function shuttleArc(from: Vec3, to: Vec3, t: number, peakBoost = 1): Vec3 {
   return { x: base.x, y: base.y, z: Math.max(0.05, z) };
 }
 
+function surname(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  return parts[parts.length - 1] || name;
+}
+
+type EndKind =
+  | { kind: "winner"; shot: ShotType; label: string }
+  | { kind: "error"; forced: boolean; shot: ShotType; label: string }
+  | { kind: "ace"; label: string };
+
 type RallySpec = {
   shots: number;
-  end: string;
+  end: EndKind;
   winner: PlayerId;
   tags: RallyTag[];
   smashSpeeds?: number[];
@@ -60,50 +96,127 @@ type RallySpec = {
 };
 
 const SEED_SPECS: RallySpec[] = [
-  { shots: 4, end: "Net error", winner: "B", tags: ["short", "unforced", "net-play"], style: "net" },
-  { shots: 7, end: "Smash winner", winner: "A", tags: ["fast-smash", "winner"], style: "power", smashSpeeds: [304] },
-  { shots: 14, end: "Drop winner", winner: "A", tags: ["long-rally", "net-play", "winner", "high-intensity"], style: "mixed" },
-  { shots: 9, end: "Drive winner", winner: "B", tags: ["winner", "high-intensity"], style: "mixed", smashSpeeds: [311] },
+  {
+    shots: 4,
+    end: { kind: "error", forced: false, shot: "Net", label: "Net error" },
+    winner: "B",
+    tags: ["short", "unforced", "net-play"],
+    style: "net",
+  },
+  {
+    shots: 7,
+    end: { kind: "winner", shot: "Smash", label: "Smash winner" },
+    winner: "A",
+    tags: ["fast-smash", "winner"],
+    style: "power",
+    smashSpeeds: [304],
+  },
+  {
+    shots: 14,
+    end: { kind: "winner", shot: "Drop", label: "Drop winner" },
+    winner: "A",
+    tags: ["long-rally", "net-play", "winner", "high-intensity"],
+    style: "mixed",
+  },
+  {
+    shots: 9,
+    end: { kind: "winner", shot: "Drive", label: "Drive winner" },
+    winner: "B",
+    tags: ["winner", "high-intensity"],
+    style: "mixed",
+    smashSpeeds: [311],
+  },
   {
     shots: 18,
-    end: "Smash winner",
+    end: { kind: "winner", shot: "Smash", label: "Smash winner" },
     winner: "A",
     tags: ["long-rally", "fast-smash", "winner", "high-intensity"],
     style: "power",
     smashSpeeds: [318, 322, 328],
   },
-  { shots: 6, end: "Net kill", winner: "B", tags: ["net-play", "winner", "short"], style: "net" },
+  {
+    shots: 6,
+    end: { kind: "winner", shot: "Net kill", label: "Net kill" },
+    winner: "B",
+    tags: ["net-play", "winner", "short"],
+    style: "net",
+  },
   {
     shots: 15,
-    end: "Smash winner",
+    end: { kind: "winner", shot: "Smash", label: "Smash winner" },
     winner: "A",
     tags: ["long-rally", "fast-smash", "winner"],
     style: "power",
     smashSpeeds: [308, 316],
   },
-  { shots: 8, end: "Unforced error", winner: "B", tags: ["unforced"], style: "baseline", smashSpeeds: [301] },
-  { shots: 5, end: "Smash winner", winner: "A", tags: ["fast-smash", "winner", "short"], style: "power", smashSpeeds: [324] },
-  { shots: 11, end: "Forced error", winner: "B", tags: ["high-intensity", "winner"], style: "mixed", smashSpeeds: [299] },
+  {
+    shots: 8,
+    end: { kind: "error", forced: false, shot: "Clear", label: "Unforced error" },
+    winner: "B",
+    tags: ["unforced"],
+    style: "baseline",
+    smashSpeeds: [301],
+  },
+  {
+    shots: 5,
+    end: { kind: "winner", shot: "Smash", label: "Smash winner" },
+    winner: "A",
+    tags: ["fast-smash", "winner", "short"],
+    style: "power",
+    smashSpeeds: [324],
+  },
+  {
+    shots: 11,
+    end: { kind: "error", forced: true, shot: "Lift", label: "Forced error" },
+    winner: "B",
+    tags: ["high-intensity", "winner"],
+    style: "mixed",
+    smashSpeeds: [299],
+  },
   {
     shots: 22,
-    end: "Smash winner",
+    end: { kind: "winner", shot: "Smash", label: "Smash winner" },
     winner: "A",
     tags: ["long-rally", "fast-smash", "high-intensity", "winner"],
     style: "power",
     smashSpeeds: [312, 330, 336],
   },
-  { shots: 3, end: "Service ace", winner: "B", tags: ["short", "winner"], style: "baseline" },
-  { shots: 10, end: "Net error", winner: "A", tags: ["net-play", "unforced"], style: "net" },
+  {
+    shots: 3,
+    end: { kind: "ace", label: "Service ace" },
+    winner: "B",
+    tags: ["short", "winner"],
+    style: "baseline",
+  },
+  {
+    shots: 10,
+    end: { kind: "error", forced: false, shot: "Net", label: "Net error" },
+    winner: "A",
+    tags: ["net-play", "unforced"],
+    style: "net",
+  },
   {
     shots: 16,
-    end: "Drop winner",
+    end: { kind: "winner", shot: "Drop", label: "Drop winner" },
     winner: "B",
     tags: ["long-rally", "net-play", "winner", "high-intensity"],
     style: "mixed",
     smashSpeeds: [295],
   },
-  { shots: 12, end: "Clear winner", winner: "A", tags: ["winner"], style: "baseline" },
-  { shots: 6, end: "Drive winner", winner: "B", tags: ["winner", "short"], style: "mixed" },
+  {
+    shots: 12,
+    end: { kind: "winner", shot: "Clear", label: "Clear winner" },
+    winner: "A",
+    tags: ["winner"],
+    style: "baseline",
+  },
+  {
+    shots: 6,
+    end: { kind: "winner", shot: "Drive", label: "Drive winner" },
+    winner: "B",
+    tags: ["winner", "short"],
+    style: "mixed",
+  },
 ];
 
 const SHOT_CYCLE: ShotType[] = [
@@ -121,22 +234,48 @@ const SHOT_CYCLE: ShotType[] = [
   "Smash",
 ];
 
+const END_POOL: EndKind[] = [
+  { kind: "winner", shot: "Smash", label: "Smash winner" },
+  { kind: "winner", shot: "Drop", label: "Drop winner" },
+  { kind: "winner", shot: "Drive", label: "Drive winner" },
+  { kind: "error", forced: false, shot: "Net", label: "Net error" },
+  { kind: "error", forced: false, shot: "Clear", label: "Unforced error" },
+  { kind: "error", forced: true, shot: "Lift", label: "Forced error" },
+  { kind: "winner", shot: "Net kill", label: "Net kill" },
+  { kind: "winner", shot: "Clear", label: "Clear winner" },
+  { kind: "ace", label: "Service ace" },
+];
+
+function tagsFor(spec: { shots: number; end: EndKind; style: RallySpec["style"] }): RallyTag[] {
+  const tags: RallyTag[] = [];
+  if (spec.shots >= 14) tags.push("long-rally");
+  if (spec.shots <= 5) tags.push("short");
+  if (spec.end.kind === "winner" && spec.end.shot === "Smash") tags.push("fast-smash");
+  if (spec.style === "power") tags.push("fast-smash");
+  if (spec.style === "net" || (spec.end.kind === "winner" && spec.end.shot === "Net kill")) {
+    tags.push("net-play");
+  }
+  if (spec.end.kind === "error" && !spec.end.forced && spec.end.shot === "Net") {
+    tags.push("net-play");
+  }
+  if (spec.end.kind === "winner" || spec.end.kind === "ace") tags.push("winner");
+  if (spec.end.kind === "error" && spec.end.forced) tags.push("winner");
+  if (spec.end.kind === "error" && !spec.end.forced) tags.push("unforced");
+  if (spec.shots >= 12 || spec.style === "power") tags.push("high-intensity");
+  return [...new Set(tags)];
+}
+
 function pickShotType(
   i: number,
   style: RallySpec["style"],
   isLast: boolean,
-  end: string,
+  end: EndKind,
 ): ShotType {
   if (i === 0) return "Serve";
   if (isLast) {
-    if (end.includes("Smash")) return "Smash";
-    if (end.includes("Drop")) return "Drop";
-    if (end.includes("Drive")) return "Drive";
-    if (end.includes("Net kill")) return "Net kill";
-    if (end.includes("Net")) return "Net";
-    if (end.includes("Service")) return "Serve";
-    if (end.includes("Clear")) return "Clear";
-    return "Clear";
+    if (end.kind === "ace") return "Serve";
+    if (end.kind === "winner") return end.shot;
+    return end.shot;
   }
   if (style === "net") {
     const netTypes: ShotType[] = ["Net", "Net", "Lift", "Drop", "Net kill", "Block"];
@@ -155,8 +294,10 @@ function analysisFor(
   speed: number,
   player: PlayerId,
   side: "FH" | "BH",
+  nameA: string,
+  nameB: string,
 ): string {
-  const who = player === "A" ? "Axelsen" : "Momota";
+  const who = player === "A" ? surname(nameA) : surname(nameB);
   const hand = side === "FH" ? "forehand" : "backhand";
   if (type === "Smash") {
     return `${who} fires a ${hand} smash at ${speed} km/h — steep angle into the deep corner.`;
@@ -190,25 +331,8 @@ function mutateSpec(base: RallySpec, rand: () => number): RallySpec {
   const shots = clamp(Math.round(base.shots + (rand() - 0.5) * 6), 3, 24);
   const styles = ["baseline", "net", "mixed", "power"] as const;
   const style = styles[Math.floor(rand() * styles.length)]!;
-  const ends = [
-    "Smash winner",
-    "Drop winner",
-    "Drive winner",
-    "Net error",
-    "Unforced error",
-    "Forced error",
-    "Net kill",
-    "Clear winner",
-  ];
-  const end = ends[Math.floor(rand() * ends.length)]!;
-  const tags: RallyTag[] = [];
-  if (shots >= 14) tags.push("long-rally");
-  if (shots <= 5) tags.push("short");
-  if (end.includes("Smash") || style === "power") tags.push("fast-smash");
-  if (style === "net" || end.includes("Net")) tags.push("net-play");
-  if (end.includes("winner") || end.includes("kill") || end.includes("ace")) tags.push("winner");
-  if (end.includes("Unforced") || end.includes("error")) tags.push("unforced");
-  if (shots >= 12 || style === "power") tags.push("high-intensity");
+  const end = END_POOL[Math.floor(rand() * END_POOL.length)]!;
+  const tags = tagsFor({ shots, end, style });
   const smashSpeeds =
     tags.includes("fast-smash")
       ? Array.from({ length: Math.max(1, Math.floor(shots / 7)) }, () =>
@@ -218,16 +342,40 @@ function mutateSpec(base: RallySpec, rand: () => number): RallySpec {
   return { shots, end, winner, tags, smashSpeeds, style };
 }
 
+/**
+ * Ensure last hitter matches end semantics:
+ * - winner / ace → last contact is winner
+ * - error → last contact is loser (the one who erred)
+ * Ace forces short rally ending on serve by winner.
+ */
+function alignSpec(spec: RallySpec): RallySpec {
+  let shots = spec.shots;
+  if (spec.end.kind === "ace") {
+    shots = Math.max(1, Math.min(3, shots));
+    // Odd shot count starting from server (index 0) means server hits last
+    // We set server = winner later; force odd count so last = server = winner
+    if (shots % 2 === 0) shots += 1;
+  } else if (spec.end.kind === "winner") {
+    // last player (0=A if server A) must equal winner — adjusted via server choice
+  } else {
+    // error: last player is the loser
+  }
+  return { ...spec, shots };
+}
+
 function buildRally(
   n: number,
   set: number,
   spec: RallySpec,
   matchT0: number,
-  videoT0: number,
   scoreA: number,
   scoreB: number,
+  server: PlayerId,
+  nameA: string,
+  nameB: string,
   rand: () => number,
 ): Rally {
+  const aligned = alignSpec(spec);
   const playerStart: Record<PlayerId, Vec3> = {
     A: { x: 0.2, y: 4.2, z: 0 },
     B: { x: -0.15, y: -4.0, z: 0 },
@@ -253,15 +401,34 @@ function buildRally(
   };
   const shotPlan: Plan[] = [];
 
-  for (let i = 0; i < spec.shots; i++) {
-    const player: PlayerId = i % 2 === 0 ? "A" : "B";
-    const isLast = i === spec.shots - 1;
-    const type = pickShotType(i, spec.style, isLast, spec.end);
+  const other = (p: PlayerId): PlayerId => (p === "A" ? "B" : "A");
+
+  // Last hitter from end semantics; work backwards so shot 0 is always server
+  const lastPlayer: PlayerId =
+    aligned.end.kind === "error" ? other(aligned.winner) : aligned.winner;
+
+  for (let i = 0; i < aligned.shots; i++) {
+    const isLast = i === aligned.shots - 1;
+    // Player for shot i: alternate from server; force last to lastPlayer
+    let player: PlayerId =
+      i % 2 === 0 ? server : other(server);
+    if (isLast) {
+      player = lastPlayer;
+    } else if (aligned.shots > 1) {
+      // Ensure path can reach lastPlayer: if parity wrong for penultimate, leave as alternate
+      const expectedLast = (aligned.shots - 1) % 2 === 0 ? server : other(server);
+      if (expectedLast !== lastPlayer && i === aligned.shots - 2) {
+        // penultimate is opposite of last
+        player = other(lastPlayer);
+      }
+    }
+
+    const type = pickShotType(i, aligned.style, isLast, aligned.end);
     const side: "FH" | "BH" = rand() > 0.45 ? "FH" : "BH";
 
     let speed = 80 + rand() * 40;
     if (type === "Smash") {
-      const assigned = spec.smashSpeeds?.[smashIdx];
+      const assigned = aligned.smashSpeeds?.[smashIdx];
       smashIdx += 1;
       speed = assigned ?? 280 + rand() * 40;
     } else if (type === "Drive") speed = 160 + rand() * 50;
@@ -323,6 +490,17 @@ function buildRally(
     shotPlan.push({ type, player, side, duration: baseDur, speed, from, to, contactZ });
   }
 
+  // Fix last shot player if alternate loop still wrong
+  if (shotPlan.length > 0) {
+    shotPlan[shotPlan.length - 1]!.player = lastPlayer;
+    if (aligned.end.kind === "ace" || (aligned.end.kind === "winner" && aligned.end.shot)) {
+      if (aligned.end.kind === "ace") shotPlan[shotPlan.length - 1]!.type = "Serve";
+      else shotPlan[shotPlan.length - 1]!.type = aligned.end.shot;
+    } else if (aligned.end.kind === "error") {
+      shotPlan[shotPlan.length - 1]!.type = aligned.end.shot;
+    }
+  }
+
   const frames: Frame[] = [];
   posA = { ...playerStart.A };
   posB = { ...playerStart.B };
@@ -343,7 +521,7 @@ function buildRally(
       speedKmh: Math.round(sp.speed),
       contactHeight: +sp.contactZ.toFixed(2),
       target: { x: +sp.to.x.toFixed(2), y: +sp.to.y.toFixed(2) },
-      analysis: analysisFor(sp.type, Math.round(sp.speed), sp.player, sp.side),
+      analysis: analysisFor(sp.type, Math.round(sp.speed), sp.player, sp.side, nameA, nameB),
     });
 
     const a0 = { ...posA };
@@ -389,9 +567,9 @@ function buildRally(
     .filter((s) => s.type === "Smash")
     .reduce((m, s) => Math.max(m, s.speedKmh), 0);
   const intensity = clamp(
-    (spec.shots / 22) * 0.5 +
+    (aligned.shots / 22) * 0.5 +
       (maxSmashKmh > 0 ? (maxSmashKmh - 280) / 80 : 0) * 0.35 +
-      (spec.tags.includes("high-intensity") ? 0.2 : 0),
+      (aligned.tags.includes("high-intensity") ? 0.2 : 0),
     0.12,
     1,
   );
@@ -403,11 +581,10 @@ function buildRally(
     scoreA,
     scoreB,
     matchT0,
-    videoT0,
     duration: +t.toFixed(2),
-    winner: spec.winner,
-    endReason: spec.end,
-    tags: spec.tags,
+    winner: aligned.winner,
+    endReason: aligned.end.label,
+    tags: aligned.tags,
     shots,
     frames,
     maxSmashKmh,
@@ -415,36 +592,50 @@ function buildRally(
   };
 }
 
-/**
- * Full 3-game match ~2h wall-clock. Dense 3D only on rallies;
- * between-point / between-game gaps live on the match clock so a long
- * broadcast scrubs cleanly without empty frames.
- */
 export type GenerateMatchOptions = {
   id?: string;
   title?: string;
   event?: string;
   playerA?: { name: string; country?: string };
   playerB?: { name: string; country?: string };
-  youtubeId?: string;
+  /**
+   * `undefined` → standalone demo default video.
+   * `null` → no broadcast (catalog match without source).
+   * string → that video id.
+   */
+  youtubeId?: string | null;
   broadcastLabel?: string;
+  /** When set, stop after a player wins this many games (default 2 = best-of-3). */
+  setsToWin?: number;
 };
 
+/**
+ * Full best-of-3 match on a ~2h wall-clock with synthetic 3D only on rallies.
+ * Between-point gaps live on the absolute match clock for honest scrubbing.
+ */
 export function generateMatch(opts: GenerateMatchOptions = {}): MatchData {
-  const rand = mulberry32(20260812);
+  const id = opts.id ?? "demo-axelsen-momota-full";
+  const rand = mulberry32(seedFromId(id));
+  const nameA = opts.playerA?.name ?? "Viktor Axelsen";
+  const nameB = opts.playerB?.name ?? "Kento Momota";
+  const setsToWin = opts.setsToWin ?? 2;
+
   const rallies: Rally[] = [];
   const setBounds: MatchData["setBounds"] = [];
 
   let n = 0;
-  // Pre-match walk-on + warm-up on the broadcast clock
-  let matchT = 180;
-  let videoT = 180;
+  let matchT = TIMING.preMatch;
+  let setsWonA = 0;
+  let setsWonB = 0;
+  let setNum = 0;
+  // First rally of match: A serves
+  let server: PlayerId = "A";
 
-  for (let set = 1; set <= 3; set++) {
+  while (setsWonA < setsToWin && setsWonB < setsToWin && setNum < 5) {
+    setNum += 1;
     let scoreA = 0;
     let scoreB = 0;
     const setT0 = matchT;
-    // All three games to 21 — full-length final
     const target = 21;
 
     while (
@@ -453,65 +644,86 @@ export function generateMatch(opts: GenerateMatchOptions = {}): MatchData {
     ) {
       if (scoreA >= 30 || scoreB >= 30) break;
 
-      // Between points: recovery, towel, score announcement (~25–70s)
-      // Occasional longer reviews / medical (~90–140s)
-      const longBreak = rand() < 0.08;
-      const gap = longBreak ? 90 + rand() * 50 : 28 + rand() * 42;
+      const longBreak = rand() < TIMING.longGapChance;
+      const gap = longBreak
+        ? TIMING.longGapMin + rand() * TIMING.longGapSpan
+        : TIMING.gapMin + rand() * TIMING.gapSpan;
       matchT += gap;
-      videoT += gap;
 
       const base = SEED_SPECS[n % SEED_SPECS.length]!;
-      const spec = n < SEED_SPECS.length ? base : mutateSpec(base, rand);
+      const spec = n < SEED_SPECS.length ? { ...base } : mutateSpec(base, rand);
       n += 1;
-      const rally = buildRally(n, set, spec, matchT, videoT, scoreA, scoreB, rand);
+      const rally = buildRally(
+        n,
+        setNum,
+        spec,
+        matchT,
+        scoreA,
+        scoreB,
+        server,
+        nameA,
+        nameB,
+        rand,
+      );
       rallies.push(rally);
-      matchT += rally.duration + 2.5;
-      videoT += rally.duration + 2.5;
+      matchT += rally.duration + TIMING.afterRally;
 
       if (spec.winner === "A") scoreA += 1;
       else scoreB += 1;
+
+      // Side-out: winner of the point serves next
+      server = spec.winner;
 
       if (n > 250) break;
     }
 
     setBounds.push({
-      set,
+      set: setNum,
       t0: setT0,
       t1: matchT,
       score: `${scoreA}–${scoreB}`,
     });
 
-    // Interval / change ends (~4–7 min on TV)
-    if (set < 3) {
-      matchT += 240 + rand() * 180;
-      videoT += 240 + rand() * 180;
+    if (scoreA > scoreB) setsWonA += 1;
+    else setsWonB += 1;
+
+    if (setsWonA < setsToWin && setsWonB < setsToWin) {
+      const interval = TIMING.setIntervalMin + rand() * TIMING.setIntervalSpan;
+      matchT += interval;
     }
   }
 
-  // Medal ceremony / post-match
-  matchT += 120;
-  videoT += 120;
+  matchT += TIMING.postMatch;
 
   const finalScore = setBounds.map((s) => s.score).join(" · ");
 
+  // youtubeId: undefined → demo default; null → none; string → use
+  const youtubeId =
+    opts.youtubeId === undefined
+      ? DEMO_YOUTUBE_ID
+      : opts.youtubeId;
+
   return {
     meta: {
-      id: opts.id ?? "demo-axelsen-momota-full",
+      id,
       title: opts.title ?? "Axelsen vs Momota",
-      event: opts.event ?? "All England Open · Final · Full match",
+      event: opts.event ?? "All England Open · Final · Demo match",
       playerA: {
-        name: opts.playerA?.name ?? "Viktor Axelsen",
+        name: nameA,
         country: opts.playerA?.country ?? "DEN",
       },
       playerB: {
-        name: opts.playerB?.name ?? "Kento Momota",
+        name: nameB,
         country: opts.playerB?.country ?? "JPN",
       },
       finalScore,
-      sets: 3,
+      sets: setBounds.length,
       fps: FPS,
-      youtubeId: opts.youtubeId ?? "6NJU8Kwv0Xg",
-      broadcastLabel: opts.broadcastLabel ?? "BWF TV · demo analysis",
+      youtubeId,
+      broadcastLabel:
+        opts.broadcastLabel ??
+        (youtubeId ? "Demo analysis · synthetic trajectory" : "Demo 3D · no broadcast linked"),
+      broadcastOffset: 0,
     },
     rallies,
     totalDuration: matchT,

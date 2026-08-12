@@ -4,7 +4,8 @@ import { useEffect, useMemo, useRef } from "react";
 import { ChevronDown, Filter, Zap } from "lucide-react";
 import type { MomentFilter, Rally, Shot } from "@/lib/match-viewer/types";
 import { FILTER_LABELS } from "@/lib/match-viewer/types";
-import { cn, formatDuration, formatTime } from "@/lib/utils";
+import { formatRallyDuration } from "@/lib/match-viewer/format";
+import { cn } from "@/lib/utils";
 
 type RallyBrowserProps = {
   rallies: Rally[];
@@ -139,8 +140,14 @@ export function RallyBrowser({
                   onClick={() => onSelectRally(r.id)}
                   className="flex w-full items-center gap-1.5 px-1.5 py-1 text-left"
                 >
-                  <span className="w-6 shrink-0 font-mono text-[10px] tabular-nums text-[var(--text-muted)]">
-                    {String(r.n).padStart(3, "0")}
+                  <span
+                    className={cn(
+                      "w-9 shrink-0 font-mono text-[11px] tabular-nums leading-none",
+                      open ? "text-[var(--text-strong)]" : "text-[var(--text-muted)]",
+                    )}
+                    title={`Score before rally · R${r.n}`}
+                  >
+                    {r.scoreA}–{r.scoreB}
                   </span>
                   <span
                     className={cn(
@@ -159,13 +166,11 @@ export function RallyBrowser({
                       <span className="truncate text-[var(--text-secondary)]">{r.endReason}</span>
                     </div>
                     <div className="flex items-center gap-1 font-mono text-[9.5px] leading-tight text-[var(--text-muted)]">
-                      <span>
-                        {r.scoreA}–{r.scoreB}
-                      </span>
+                      <span>R{r.n}</span>
                       <span>·</span>
                       <span>{r.shots.length}sh</span>
                       <span>·</span>
-                      <span>{formatDuration(r.duration)}</span>
+                      <span>{formatRallyDuration(r.duration)}</span>
                       {r.maxSmashKmh > 0 ? (
                         <>
                           <span>·</span>
@@ -175,9 +180,6 @@ export function RallyBrowser({
                           </span>
                         </>
                       ) : null}
-                      <span className="ml-auto text-[var(--text-faint)]">
-                        {formatTime(r.matchT0)}
-                      </span>
                     </div>
                   </div>
                   <ChevronDown

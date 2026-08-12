@@ -1,13 +1,20 @@
 "use client";
 
-import type { MatchData, Rally, Shot } from "@/lib/match-viewer/types";
-import { cn, formatTime } from "@/lib/utils";
+import type { MatchData, Rally, Shot, TimelineScope } from "@/lib/match-viewer/types";
+import { formatMatchClock } from "@/lib/match-viewer/format";
+import { cn } from "@/lib/utils";
 
-/** Drill-down scope for the match navigator + transport scrubber. */
-export type TimelineScope =
-  | { level: "match" }
-  | { level: "set"; set: number }
-  | { level: "rally"; rallyId: string };
+export type { TimelineScope };
+
+type TimelineSegment = {
+  id: string;
+  t0: number;
+  t1: number;
+  color: string;
+  title: string;
+  active: boolean;
+  onClick: () => void;
+};
 
 type TimelineProps = {
   rallies: Rally[];
@@ -31,8 +38,8 @@ function tagColor(tags: string[], intensity: number): string {
 }
 
 /**
- * Classic banded timeline look with hierarchical select:
- * Match → Game → Rally. Transport (blue bar) scrubs the active section.
+ * Banded timeline with hierarchical select (Match → Game → Rally).
+ * Renders one segment list for both label row and bar row.
  */
 export function MatchTimeline({
   rallies,
@@ -84,41 +91,97 @@ export function MatchTimeline({
         ? `Game ${scope.set} timeline`
         : `Rally ${scopedRally!.n} timeline`;
 
-  const clockLabel = () => {
-    if (scope.level === "match") {
-      return (
-        <>
-          {formatTime(matchT)}
-          <span className="text-[var(--text-faint)]"> / </span>
-          {formatTime(totalDuration)}
-        </>
-      );
-    }
-    if (scope.level === "set" && setBound) {
-      const local = Math.max(0, matchT - setBound.t0);
-      return (
-        <>
-          {formatTime(local)}
-          <span className="text-[var(--text-faint)]"> / </span>
-          {formatTime(setBound.t1 - setBound.t0)}
-        </>
-      );
-    }
-    const local = Math.max(0, Math.min(scopedRally!.duration, matchT - scopedRally!.matchT0));
-    return (
-      <>
-        {formatTime(local)}
-        <span className="text-[var(--text-faint)]"> / </span>
-        {formatTime(scopedRally!.duration)}
-      </>
-    );
-  };
+  const localClock = Math.max(0, Math.min(winSpan, matchT - winT0));
 
   const tickStep = winSpan > 5400 ? 15 : winSpan > 1800 ? 10 : winSpan > 300 ? 5 : 1;
   const ticks: number[] = [];
   if (scope.level !== "rally") {
     for (let m = tickStep; m * 60 < winSpan; m += tickStep) ticks.push(winT0 + m * 60);
   }
+
+  let labels: TimelineSegment[] = [];
+  let segments: TimelineSegment[] = [];
+
+  if (scope.level === "match") {
+    labels = setBounds.map((s) => ({
+      id: `label-set-${s.set}`,
+      t0: s.t0,
+      t1: s.t1,
+      color: "transparent",
+      title: `G${s.set} ${s.score}`,
+      active: activeRally.set === s.set,
+      onClick: () => {
+        onScopeChange({ level: "set", set: s.set });
+        const first = rallies.find((r) => r.set === s.set);
+        if (first) onSelectRally(first.id);
+      },
+    }));
+    segments = rallies.map((rally) => ({
+      id: rally.id,
+      t0: rally.matchT0,
+      t1: rally.matchT0 + rally.duration,
+      color: tagColor(rally.tags, rally.intensity),
+      title: `R${rally.n} · G${rally.set} · ${rally.endReason}`,
+      active: rally.id === activeRallyId,
+      onClick: () => {
+        onSelectRally(rally.id);
+        onScopeChange({ level: "set", set: rally.set });
+      },
+    }));
+  } else if (scope.level === "set" && setBound) {
+    labels = setRallies.map((r) => ({
+      id: `label-${r.id}`,
+      t0: r.matchT0,
+      t1: r.matchT0 + r.duration,
+      color: "transparent",
+      title: `R${r.n}`,
+      active: r.id === activeRallyId,
+      onClick: () => {
+        onSelectRally(r.id);
+        onScopeChange({ level: "rally", rallyId: r.id });
+      },
+    }));
+    segments = setRallies.map((rally) => ({
+      id: rally.id,
+      t0: rally.matchT0,
+      t1: rally.matchT0 + rally.duration,
+      color: tagColor(rally.tags, rally.intensity),
+      title: `R${rally.n} · ${rally.scoreA}–${rally.scoreB} · ${rally.endReason}`,
+      active: rally.id === activeRallyId,
+      onClick: () => {
+        onSelectRally(rally.id);
+        onScopeChange({ level: "rally", rallyId: rally.id });
+      },
+    }));
+  } else if (scope.level === "rally" && scopedRally) {
+    labels = scopedRally.shots.map((s) => ({
+      id: `label-${s.id}`,
+      t0: scopedRally.matchT0 + s.t0,
+      t1: scopedRally.matchT0 + s.t1,
+      color: "transparent",
+      title: `${s.index}. ${s.type}`,
+      active: false,
+      onClick: () => onSelectShot?.(scopedRally.id, s),
+    }));
+    segments = scopedRally.shots.map((s) => {
+      const local = matchT - scopedRally.matchT0;
+      const active = local >= s.t0 && local <= s.t1 + 0.05;
+      return {
+        id: s.id,
+        t0: scopedRally.matchT0 + s.t0,
+        t1: scopedRally.matchT0 + s.t1,
+        color:
+          s.type === "Smash" ? "rgba(244, 81, 92, 0.75)" : "rgba(80, 222, 255, 0.45)",
+        title: `${s.index}. ${s.type} · ${s.speedKmh} km/h`,
+        active,
+        onClick: () => onSelectShot?.(scopedRally.id, s),
+      };
+    });
+  }
+
+  const minLabelWidth = scope.level === "match" ? 4 : scope.level === "set" ? 1.2 : 3;
+  const minSegWidth =
+    scope.level === "match" ? 0.12 : scope.level === "set" ? 0.35 : 0.8;
 
   return (
     <div className={cn("space-y-1", compact && "space-y-0.5")}>
@@ -142,80 +205,44 @@ export function MatchTimeline({
           ) : null}
         </div>
         <span className="font-mono text-[11px] tabular-nums text-[var(--text-muted)]">
-          {clockLabel()}
+          {formatMatchClock(localClock)}
+          <span className="text-[var(--text-faint)]"> / </span>
+          {formatMatchClock(winSpan)}
         </span>
       </div>
 
       <div className="relative h-3.5">
-        {scope.level === "match"
-          ? setBounds.map((s) => {
-              const left = (s.t0 / totalDuration) * 100;
-              const width = ((s.t1 - s.t0) / totalDuration) * 100;
-              return (
-                <button
-                  key={s.set}
-                  type="button"
-                  onClick={() => {
-                    onScopeChange({ level: "set", set: s.set });
-                    const first = rallies.find((r) => r.set === s.set);
-                    if (first) onSelectRally(first.id);
-                  }}
-                  className="absolute top-0 truncate text-left font-mono text-[10px] text-[var(--text-muted)] hover:text-[var(--cyan-500)]"
-                  style={{ left: `${left}%`, width: `${Math.max(width, 4)}%` }}
-                  title={`Expand game ${s.set} · ${s.score}`}
-                >
-                  G{s.set} {s.score}
-                </button>
-              );
-            })
-          : null}
-
-        {scope.level === "set" && setBound
-          ? setRallies.map((r) => {
-              const left = ((r.matchT0 - setBound.t0) / winSpan) * 100;
-              const width = (r.duration / winSpan) * 100;
-              const active = r.id === activeRallyId;
-              return (
-                <button
-                  key={r.id}
-                  type="button"
-                  onClick={() => {
-                    onSelectRally(r.id);
-                    onScopeChange({ level: "rally", rallyId: r.id });
-                  }}
-                  className={cn(
-                    "absolute top-0 truncate text-left font-mono text-[10px]",
-                    active
-                      ? "text-[var(--cyan-500)]"
-                      : "text-[var(--text-muted)] hover:text-[var(--cyan-500)]",
-                  )}
-                  style={{ left: `${left}%`, width: `${Math.max(width, 1.2)}%` }}
-                  title={`Expand R${r.n}`}
-                >
-                  {setRallies.length <= 24 || active ? `R${r.n}` : ""}
-                </button>
-              );
-            })
-          : null}
-
-        {scope.level === "rally" && scopedRally
-          ? scopedRally.shots.map((s) => {
-              const left = (s.t0 / scopedRally.duration) * 100;
-              const width = ((s.t1 - s.t0) / scopedRally.duration) * 100;
-              return (
-                <button
-                  key={s.id}
-                  type="button"
-                  onClick={() => onSelectShot?.(scopedRally.id, s)}
-                  className="absolute top-0 truncate text-left font-mono text-[10px] text-[var(--text-muted)] hover:text-[var(--cyan-500)]"
-                  style={{ left: `${left}%`, width: `${Math.max(width, 3)}%` }}
-                  title={`${s.index}. ${s.type}`}
-                >
-                  {scopedRally.shots.length <= 12 ? s.type.slice(0, 2) : ""}
-                </button>
-              );
-            })
-          : null}
+        {labels.map((seg) => {
+          const left = ((seg.t0 - winT0) / winSpan) * 100;
+          const width = ((seg.t1 - seg.t0) / winSpan) * 100;
+          const showText =
+            scope.level === "match" ||
+            (scope.level === "set" && (setRallies.length <= 24 || seg.active)) ||
+            (scope.level === "rally" && (scopedRally?.shots.length ?? 0) <= 12);
+          return (
+            <button
+              key={seg.id}
+              type="button"
+              onClick={seg.onClick}
+              className={cn(
+                "absolute top-0 truncate text-left font-mono text-[10px]",
+                seg.active
+                  ? "text-[var(--cyan-500)]"
+                  : "text-[var(--text-muted)] hover:text-[var(--cyan-500)]",
+              )}
+              style={{ left: `${left}%`, width: `${Math.max(width, minLabelWidth)}%` }}
+              title={seg.title}
+            >
+              {showText
+                ? scope.level === "rally"
+                  ? seg.title.split(" ")[1]?.slice(0, 2) ?? ""
+                  : scope.level === "set"
+                    ? seg.title
+                    : seg.title
+                : ""}
+            </button>
+          );
+        })}
       </div>
 
       <div
@@ -228,21 +255,12 @@ export function MatchTimeline({
       >
         {scope.level === "match"
           ? setBounds.map((s, i) => {
-              const left = (s.t0 / totalDuration) * 100;
-              const width = ((s.t1 - s.t0) / totalDuration) * 100;
+              const left = ((s.t0 - winT0) / winSpan) * 100;
+              const width = ((s.t1 - s.t0) / winSpan) * 100;
               return (
-                <button
-                  key={s.set}
-                  type="button"
-                  role="option"
-                  aria-selected={activeRally.set === s.set}
-                  title={`Game ${s.set} · ${s.score}`}
-                  onClick={() => {
-                    onScopeChange({ level: "set", set: s.set });
-                    const first = rallies.find((r) => r.set === s.set);
-                    if (first) onSelectRally(first.id);
-                  }}
-                  className="absolute inset-y-0 hover:bg-[rgba(54,147,255,0.06)]"
+                <div
+                  key={`bg-${s.set}`}
+                  className="pointer-events-none absolute inset-y-0"
                   style={{
                     left: `${left}%`,
                     width: `${width}%`,
@@ -252,119 +270,52 @@ export function MatchTimeline({
                 />
               );
             })
-          : null}
+          : (
+            <div
+              className="pointer-events-none absolute inset-0"
+              style={{
+                background:
+                  scope.level === "set"
+                    ? "rgba(54,147,255,0.04)"
+                    : "rgba(80,222,255,0.03)",
+              }}
+            />
+          )}
 
-        {scope.level === "set" ? (
-          <div className="absolute inset-0 bg-[rgba(54,147,255,0.04)]" />
-        ) : null}
-
-        {scope.level === "rally" ? (
-          <div className="absolute inset-0 bg-[rgba(80,222,255,0.03)]" />
-        ) : null}
-
-        {ticks.map((t) => (
+        {ticks.map((tick) => (
           <div
-            key={t}
+            key={tick}
             className="pointer-events-none absolute top-0 bottom-0 w-px bg-[var(--border-subtle)]"
-            style={{ left: `${((t - winT0) / winSpan) * 100}%` }}
+            style={{ left: `${((tick - winT0) / winSpan) * 100}%` }}
           />
         ))}
 
-        {scope.level === "match"
-          ? rallies.map((rally) => {
-              const left = (rally.matchT0 / totalDuration) * 100;
-              const width = (rally.duration / totalDuration) * 100;
-              const active = rally.id === activeRallyId;
-              return (
-                <button
-                  key={rally.id}
-                  type="button"
-                  role="option"
-                  aria-selected={active}
-                  title={`R${rally.n} · G${rally.set} · ${rally.endReason}`}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onSelectRally(rally.id);
-                    onScopeChange({ level: "set", set: rally.set });
-                  }}
-                  className={cn(
-                    "absolute top-1.5 bottom-1.5 rounded-[1px]",
-                    active && "z-10 ring-1 ring-[var(--cyan-500)]",
-                  )}
-                  style={{
-                    left: `${left}%`,
-                    width: `${Math.max(width, 0.12)}%`,
-                    background: tagColor(rally.tags, rally.intensity),
-                  }}
-                />
-              );
-            })
-          : null}
-
-        {scope.level === "set" && setBound
-          ? setRallies.map((rally) => {
-              const left = ((rally.matchT0 - setBound.t0) / winSpan) * 100;
-              const width = (rally.duration / winSpan) * 100;
-              const active = rally.id === activeRallyId;
-              return (
-                <button
-                  key={rally.id}
-                  type="button"
-                  role="option"
-                  aria-selected={active}
-                  title={`R${rally.n} · ${rally.scoreA}–${rally.scoreB} · ${rally.endReason}`}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onSelectRally(rally.id);
-                    onScopeChange({ level: "rally", rallyId: rally.id });
-                  }}
-                  className={cn(
-                    "absolute top-1.5 bottom-1.5 rounded-[1px]",
-                    active && "z-10 ring-1 ring-[var(--cyan-500)]",
-                  )}
-                  style={{
-                    left: `${left}%`,
-                    width: `${Math.max(width, 0.35)}%`,
-                    background: tagColor(rally.tags, rally.intensity),
-                  }}
-                />
-              );
-            })
-          : null}
-
-        {scope.level === "rally" && scopedRally
-          ? scopedRally.shots.map((s) => {
-              const left = (s.t0 / scopedRally.duration) * 100;
-              const width = ((s.t1 - s.t0) / scopedRally.duration) * 100;
-              const local = matchT - scopedRally.matchT0;
-              const active = local >= s.t0 && local <= s.t1 + 0.05;
-              const smash = s.type === "Smash";
-              return (
-                <button
-                  key={s.id}
-                  type="button"
-                  role="option"
-                  aria-selected={active}
-                  title={`${s.index}. ${s.type} · ${s.speedKmh} km/h`}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onSelectShot?.(scopedRally.id, s);
-                  }}
-                  className={cn(
-                    "absolute top-1.5 bottom-1.5 rounded-[1px]",
-                    active && "z-10 ring-1 ring-[var(--cyan-500)]",
-                  )}
-                  style={{
-                    left: `${left}%`,
-                    width: `${Math.max(width, 0.8)}%`,
-                    background: smash
-                      ? "rgba(244, 81, 92, 0.75)"
-                      : "rgba(80, 222, 255, 0.45)",
-                  }}
-                />
-              );
-            })
-          : null}
+        {segments.map((seg) => {
+          const left = ((seg.t0 - winT0) / winSpan) * 100;
+          const width = ((seg.t1 - seg.t0) / winSpan) * 100;
+          return (
+            <button
+              key={seg.id}
+              type="button"
+              role="option"
+              aria-selected={seg.active}
+              title={seg.title}
+              onClick={(e) => {
+                e.stopPropagation();
+                seg.onClick();
+              }}
+              className={cn(
+                "absolute top-1.5 bottom-1.5 rounded-[1px]",
+                seg.active && "z-10 ring-1 ring-[var(--cyan-500)]",
+              )}
+              style={{
+                left: `${left}%`,
+                width: `${Math.max(width, minSegWidth)}%`,
+                background: seg.color,
+              }}
+            />
+          );
+        })}
 
         <div
           className="pointer-events-none absolute top-0 bottom-0 z-20 w-0.5 bg-[var(--cyan-500)] shadow-[0_0_8px_rgba(80,222,255,0.7)]"
