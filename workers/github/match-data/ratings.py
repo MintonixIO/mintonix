@@ -246,6 +246,13 @@ def determine_winner(games: list[tuple[int, int]]) -> int | None:
     return None
 
 
+def is_real_player(name: str | None) -> bool:
+    n = normalize_name(name)
+    if not n:
+        return False
+    return _NON_PLAYER_RE.match(n) is None
+
+
 def roster_names(row: dict) -> tuple[str, ...]:
     names = []
     for k in (
@@ -369,14 +376,16 @@ def clean_matches(rows: Iterable[dict]) -> list[CleanMatch]:
         year = parse_year(row.get("tournament"))
         if year is None:
             continue
-        s1 = [k for k, _ in team_entities(row, 1)]
-        s2 = [k for k, _ in team_entities(row, 2)]
+        s1 = [k for k, raw in team_entities(row, 1) if is_real_player(raw)]
+        s2 = [k for k, raw in team_entities(row, 2) if is_real_player(raw)]
         if disc in SINGLES:
             if len(s1) != 1 or len(s2) != 1:
                 continue
         else:
-            if len(s1) < 1 or len(s2) < 1:
+            if len(s1) != 2 or len(s2) != 2:
                 continue
+        if sorted(s1) == sorted(s2):
+            continue
         rnd = (row.get("round") or "") or _round_from_tournament(row.get("tournament"))
         ro = round_order(rnd)
         w = match_weight(row.get("tournament") or "", rnd)
@@ -434,8 +443,9 @@ def assign_days(matches: list[CleanMatch]) -> list[CleanMatch]:
 # 2. Match weight  w = w_tier × w_round
 # ---------------------------------------------------------------------------
 
-# First match wins. Super 100 names are checked before "China Masters" so
-# Baoji / Ruichang are not treated as Super 750.
+# First match wins. Super 1000 is listed before Super 100 so "Super 1000"
+# is not swallowed by the "super 100" substring. Named Super 100 events
+# (Baoji / Ruichang) sit above "China Masters" so they stay 0.30, not 0.85.
 _TIER_RULES: list[tuple[float, tuple[str, ...]]] = [
     (
         1.00,
@@ -449,9 +459,19 @@ _TIER_RULES: list[tuple[float, tuple[str, ...]]] = [
         ),
     ),
     (
+        0.95,
+        (
+            "super 1000",
+            "all england",
+            "china open",
+            "indonesia open",
+            "malaysia open",
+            "japan open",
+        ),
+    ),
+    (
         0.30,
         (
-            "super 100",
             "ruichang",
             "baoji",
             "akita masters",
@@ -461,17 +481,6 @@ _TIER_RULES: list[tuple[float, tuple[str, ...]]] = [
             "syed modi",
             "kaohsiung",
             "taipei open",
-        ),
-    ),
-    (
-        0.95,
-        (
-            "super 1000",
-            "all england",
-            "china open",
-            "indonesia open",
-            "malaysia open",
-            "japan open",
         ),
     ),
     (
@@ -516,7 +525,27 @@ _TIER_RULES: list[tuple[float, tuple[str, ...]]] = [
             "taipei masters",
         ),
     ),
+    (
+        0.30,
+        (
+            "ruichang",
+            "baoji",
+            "akita masters",
+            "vietnam open",
+            "odisha",
+            "guwahati",
+            "syed modi",
+            "kaohsiung",
+            "taipei open",
+        ),
+    ),
 ]
+
+_SUPER_100_RE = re.compile(r"super\s*100(?!\s*0)")
+_NON_PLAYER_RE = re.compile(
+    r"^(bye|walkover|w/?o|retired|retire|tbd|n/?a|qualifier|q\d+|lucky loser)$",
+    re.I,
+)
 
 
 def tournament_tier_weight(tournament: str) -> float:
@@ -524,6 +553,8 @@ def tournament_tier_weight(tournament: str) -> float:
     for weight, keys in _TIER_RULES:
         if any(k in t for k in keys):
             return weight
+    if _SUPER_100_RE.search(t):
+        return 0.30
     return 0.40  # Other / unrecognized
 
 

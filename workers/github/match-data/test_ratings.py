@@ -158,6 +158,47 @@ class HomonymTests(unittest.TestCase):
 
 
 class CleaningTests(unittest.TestCase):
+    def test_drops_bye_and_incomplete_doubles(self):
+        vs_bye = row(t2="Bye", t2c=None)
+        wo = row(t2="Walkover", t2c=None)
+        incomplete_md = row(
+            tournament="2024 Indonesia Open · MD · Final",
+            t1="Liang Wei Keng",
+            t1b=None,
+            t2="Kim Astro",
+            t2b="Seo Partner",
+            t2c="KOR",
+            t2bc="KOR",
+        )
+        full_md = row(
+            tournament="2024 Indonesia Open · MD · Final",
+            t1="Liang Wei Keng",
+            t1b="Wang Chang",
+            t1bc="CHN",
+            t2="Kim Astro",
+            t2b="Seo Partner",
+            t2c="KOR",
+            t2bc="KOR",
+        )
+        cleaned = R.clean_matches([vs_bye, wo, incomplete_md, full_md])
+        self.assertEqual(len(cleaned), 1)
+        self.assertEqual(cleaned[0].disc, "MD")
+        self.assertEqual(len(cleaned[0].side1), 2)
+        self.assertEqual(len(cleaned[0].side2), 2)
+
+    def test_drops_alias_self_match(self):
+        cleaned = R.clean_matches(
+            [
+                row(
+                    t1="An Se Young",
+                    t1c="KOR",
+                    t2="An Se-young",
+                    t2c="Korea",
+                )
+            ]
+        )
+        self.assertEqual(cleaned, [])
+
     def test_drops_incomplete_and_walkover(self):
         incomplete = row(g=((21, 15),))
         walkover = row(g=())
@@ -243,6 +284,16 @@ class WeightAndScoreTests(unittest.TestCase):
         self.assertAlmostEqual(R.tournament_tier_weight("2024 Baoji China Masters · MS · Final"), 0.30)
         self.assertAlmostEqual(R.tournament_tier_weight("2024 Ruichang China Masters · WS · R32"), 0.30)
         self.assertAlmostEqual(R.tournament_tier_weight("2024 China Masters · MS · Final"), 0.85)
+
+    def test_super1000_string_is_not_super100(self):
+        self.assertAlmostEqual(
+            R.tournament_tier_weight("2024 BWF World Tour Super 1000 · MS · Final"),
+            0.95,
+        )
+        self.assertAlmostEqual(
+            R.tournament_tier_weight("2024 Akita Masters Super 100 · MS · Final"),
+            0.30,
+        )
 
     def test_worlds_final_weight(self):
         w = R.match_weight("2024 BWF World Championships · MS · Final", "Final")
