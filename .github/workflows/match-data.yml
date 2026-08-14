@@ -51,7 +51,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Unit tests
-        run: python3 -m unittest test_scraper_cli.py test_scraper_dates.py test_fetch_cache.py test_load_purge.py test_ratings.py -v
+        run: python3 -m unittest test_scraper_cli.py test_scraper_dates.py test_scraper_results.py test_fetch_cache.py test_load_purge.py test_ratings.py -v
 
       # 1. Scrape current season, or every World Tour year when dispatched
       #    with historical=true (one-shot date backfill after the infobox parser).

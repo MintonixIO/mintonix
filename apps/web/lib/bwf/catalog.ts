@@ -45,6 +45,9 @@ import type {
 import { BWF_SEARCH_LIMIT } from "./types";
 
 const MATCH_SELECT =
+  "id,tournament,match_date,team1_player1,team1_player2,team2_player1,team2_player2,team1_player1_country,team1_player2_country,team2_player1_country,team2_player2_country,g1_t1,g1_t2,g2_t1,g2_t2,g3_t1,g3_t2,result,winner_side,status,source_url,duration_sec,created_at";
+
+const MATCH_SELECT_NO_RESULT =
   "id,tournament,match_date,team1_player1,team1_player2,team2_player1,team2_player2,team1_player1_country,team1_player2_country,team2_player1_country,team2_player2_country,g1_t1,g1_t2,g2_t1,g2_t2,g3_t1,g3_t2,status,source_url,duration_sec,created_at";
 
 const MATCH_SELECT_NO_COUNTRY =
@@ -102,8 +105,14 @@ async function fetchPages(
       .range(from, from + pageSize - 1);
 
     if (error) {
+      if (select === MATCH_SELECT && /result|winner_side/i.test(error.message)) {
+        select = MATCH_SELECT_NO_RESULT;
+        from = 0;
+        rows.length = 0;
+        continue;
+      }
       if (
-        select === MATCH_SELECT &&
+        (select === MATCH_SELECT || select === MATCH_SELECT_NO_RESULT) &&
         /country/i.test(error.message)
       ) {
         select = MATCH_SELECT_NO_COUNTRY;
@@ -300,6 +309,17 @@ export async function getMatchById(id: string): Promise<CatalogMatch | null> {
     .eq("id", id)
     .is("owner_id", null)
     .maybeSingle();
+
+  if (error && /result|winner_side/i.test(error.message)) {
+    const retry = await client
+      .from("matches")
+      .select(MATCH_SELECT_NO_RESULT)
+      .eq("id", id)
+      .is("owner_id", null)
+      .maybeSingle();
+    data = retry.data as typeof data;
+    error = retry.error;
+  }
 
   if (error && /country/i.test(error.message)) {
     const retry = await client

@@ -48,6 +48,7 @@ function catalogMatch(id: string): CatalogMatch {
       { t1: 21, t2: 12 },
     ],
     winner: 1,
+    result: "completed",
     threeGames: false,
     comeback: false,
     status: "pending",

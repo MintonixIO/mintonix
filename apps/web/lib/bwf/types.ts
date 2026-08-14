@@ -66,6 +66,9 @@ export const BWF_SEARCH_MAX_Q = 100;
 
 export type GameScore = { t1: number; t2: number };
 
+/** Wiki match outcome. Ratings ignore walkover / retired / incomplete. */
+export type MatchResult = "completed" | "walkover" | "retired" | "incomplete";
+
 /** One finished BWF match from the `matches` table. */
 export type CatalogMatch = {
   id: string;
@@ -86,6 +89,8 @@ export type CatalogMatch = {
   games: GameScore[];
   /** Winning side 1 or 2, or null if undetermined. */
   winner: 1 | 2 | null;
+  /** Wiki outcome; walkover/retired are stored but not rated. */
+  result: MatchResult | null;
   threeGames: boolean;
   comeback: boolean;
   status: MatchStatus;

@@ -5,6 +5,7 @@ import {
   computeGames,
   computeWinner,
   displayDate,
+  formatScoreLine,
   isComeback,
   mapDbMatch,
   parseTournament,
@@ -226,6 +227,32 @@ describe("mapDbMatch / playerWon", () => {
     );
     expect(m.team1).toEqual(["Solo Player"]);
     expect(m.team1Ids).not.toContain("");
+  });
+
+  it("keeps a walkover winner from winner_side when scores are empty", () => {
+    const m = mapDbMatch(
+      row({
+        id: "wo",
+        tournament: "2026 Test · MS · R32",
+        team1_player1: "Viktor Axelsen",
+        team1_player1_country: "DEN",
+        team2_player1: "Kodai Naraoka",
+        team2_player1_country: "JPN",
+        result: "walkover",
+        winner_side: 1,
+      }),
+    );
+    expect(m.result).toBe("walkover");
+    expect(m.winner).toBe(1);
+    expect(m.games).toEqual([]);
+    expect(formatScoreLine(m.games, m.result)).toBe("W/O");
+    expect(playerWon(m, m.team1Ids[0])).toBe(true);
+  });
+
+  it("labels a retirement with the points played", () => {
+    expect(
+      formatScoreLine([{ t1: 21, t2: 15 }, { t1: 8, t2: 5 }], "retired"),
+    ).toBe("21–15, 8–5 ret.");
   });
 });
 

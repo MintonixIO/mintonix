@@ -32,7 +32,7 @@ export function MatchCard({
 }) {
   const t1Won = m.winner === 1;
   const t2Won = m.winner === 2;
-  const score = formatScoreLine(m.games);
+  const score = formatScoreLine(m.games, m.result);
 
   const row = (
     names: string[],
@@ -285,7 +285,7 @@ export function MatchRow({
       </span>
 
       <span className="font-mono text-[11px] tabular-nums text-[var(--text-muted)]">
-        {formatScoreLine(m.games)}
+        {formatScoreLine(m.games, m.result)}
         {kind ? (
           <span className="ml-1.5 text-[var(--text-faint)]">{kind}</span>
         ) : null}

@@ -2,6 +2,7 @@ import type {
   CatalogMatch,
   Disc,
   GameScore,
+  MatchResult,
   MatchStatus,
 } from "./types";
 import { DISCS } from "./types";
@@ -235,9 +236,16 @@ export function isComeback(games: GameScore[], winner: 1 | 2 | null): boolean {
   return g1Winner != null && g1Winner !== winner && games.length === 3;
 }
 
-export function formatScoreLine(games: GameScore[]): string {
-  if (!games.length) return "—";
-  return games.map((g) => `${g.t1}–${g.t2}`).join(", ");
+export function formatScoreLine(
+  games: GameScore[],
+  result?: MatchResult | null,
+): string {
+  const base = games.length
+    ? games.map((g) => `${g.t1}–${g.t2}`).join(", ")
+    : "";
+  if (result === "walkover") return base ? `${base} W/O` : "W/O";
+  if (result === "retired") return base ? `${base} ret.` : "ret.";
+  return base || "—";
 }
 
 export function formatDuration(sec: number | null | undefined): string | null {
@@ -292,6 +300,8 @@ export type DbMatchRow = {
   g2_t2: number | null;
   g3_t1: number | null;
   g3_t2: number | null;
+  result?: string | null;
+  winner_side?: number | null;
   status: string;
   source_url: string | null;
   duration_sec: number | null;
@@ -317,6 +327,20 @@ function rosterWithIds(
   return { names: outNames, ids, countries: outCc };
 }
 
+export function parseMatchResult(
+  raw: string | null | undefined,
+): MatchResult | null {
+  if (
+    raw === "completed" ||
+    raw === "walkover" ||
+    raw === "retired" ||
+    raw === "incomplete"
+  ) {
+    return raw;
+  }
+  return null;
+}
+
 export function mapDbMatch(row: DbMatchRow): CatalogMatch {
   const parsed = parseTournament(row.tournament);
   const t1 = rosterWithIds(teamNames(row.team1_player1, row.team1_player2), [
@@ -328,7 +352,11 @@ export function mapDbMatch(row: DbMatchRow): CatalogMatch {
     row.team2_player2_country,
   ]);
   const games = computeGames(row);
-  const winner = computeWinner(games);
+  const fromScores = computeWinner(games);
+  const fromSide =
+    row.winner_side === 1 || row.winner_side === 2 ? row.winner_side : null;
+  const winner = fromScores ?? fromSide;
+  const result = parseMatchResult(row.result);
   const status = (
     ["pending", "processing", "ready", "failed"].includes(row.status)
       ? row.status
@@ -351,6 +379,7 @@ export function mapDbMatch(row: DbMatchRow): CatalogMatch {
     team2Countries: t2.countries,
     games,
     winner,
+    result,
     threeGames: games.length === 3,
     comeback: isComeback(games, winner),
     status,

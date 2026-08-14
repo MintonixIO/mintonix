@@ -167,7 +167,7 @@ export function MatchDetail({ m }: { m: CatalogMatch }) {
 
         <div className="flex flex-wrap items-center gap-2 border-t border-[var(--border-subtle)] px-5 py-4">
           <span className="font-display text-lg font-semibold tabular-nums text-[var(--text-strong)]">
-            {formatScoreLine(m.games)}
+            {formatScoreLine(m.games, m.result)}
           </span>
           {kind ? (
             <span className="rounded-full border border-[var(--border-subtle)] bg-[var(--surface-2)] px-2.5 py-1 font-mono text-xs text-[var(--text-secondary)]">

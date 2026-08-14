@@ -209,6 +209,18 @@ def strip_bold(s):
 
 FLAGICON_RE = re.compile(r"\{\{flagicon\|([^}|]+)(?:\|[^}]*)?\}\}")
 WIKILINK_RE = re.compile(r"\[\[([^\]|]+)(?:\|([^\]]*))?\]\]")
+_WO_RE = re.compile(r"\b(?:w\s*/\s*o|w/?o|walk[- ]?over)\b", re.I)
+_RET_RE = re.compile(r"\b(?:retired?|rtd|ret\.?)\b", re.I)
+
+
+def classify_result_text(*texts: str) -> str | None:
+    """walkover / retired from wiki score cells. None if the cell is a normal score."""
+    blob = " ".join(t or "" for t in texts)
+    if _WO_RE.search(blob):
+        return "walkover"
+    if _RET_RE.search(blob):
+        return "retired"
+    return None
 
 
 def parse_team_field(value):
@@ -297,16 +309,28 @@ def extract_bracket_matches(template_content, section_path, page_title, discipli
             if not team1.strip() and not team2.strip():
                 continue
             games = []
+            score_blobs: list[str] = []
             for g in range(1, 9):
                 s1 = params.get(f"RD{rd}-score{t1}-{g}")
                 s2 = params.get(f"RD{rd}-score{t2}-{g}")
-                if (s1 is None or not s1.strip()) and (s2 is None or not s2.strip()):
+                # Compact brackets also use RD1-score1 (no game suffix).
+                if g == 1:
+                    if s1 is None:
+                        s1 = params.get(f"RD{rd}-score{t1}")
+                    if s2 is None:
+                        s2 = params.get(f"RD{rd}-score{t2}")
+                if (s1 is None or not str(s1).strip()) and (
+                    s2 is None or not str(s2).strip()
+                ):
                     break
+                score_blobs.append(s1 or "")
+                score_blobs.append(s2 or "")
                 games.append({
                     "game": g,
                     "score1": parse_score_field(s1 or ""),
                     "score2": parse_score_field(s2 or ""),
                 })
+            result = classify_result_text(*score_blobs)
             round_label = (params.get(f"RD{rd}") or f"Round {rd}").strip()
             matches.append({
                 "tournament_page": page_title,
@@ -320,6 +344,7 @@ def extract_bracket_matches(template_content, section_path, page_title, discipli
                 "seed2": parse_seed_field(params.get(f"RD{rd}-seed{t2}", "")),
                 "team2": parse_team_field(team2),
                 "games": games,
+                "result": result,
             })
     return matches
 
@@ -570,7 +595,7 @@ def extract_group_stage_matches(wikitext, discipline_start, discipline_end, page
                     continue
                 # Extract cells using the updated cell splitter
                 cells = _split_wikitable_cells(row)
-                if len(cells) < 5:
+                if len(cells) < 3:
                     continue
                 # Determine layout: if first cell looks like a date, it's a "first row"
                 # with rowspan. Otherwise, it's a continuation row (same date).
@@ -578,6 +603,8 @@ def extract_group_stage_matches(wikitext, discipline_start, discipline_end, page
                 # Check if first cell is a date (e.g. "17 Dec", "rowspan=2 | 17 Dec")
                 date_match = re.match(r'(\d{1,2}\s+\w+)', first_cell)
                 if date_match:
+                    if len(cells) < 4:
+                        continue
                     current_date = date_match.group(1)
                     p1_raw, score_raw, p2_raw = cells[1], cells[2], cells[3]
                     set_cells = cells[4:]
@@ -585,21 +612,23 @@ def extract_group_stage_matches(wikitext, discipline_start, discipline_end, page
                     # Continuation row — no date cell
                     p1_raw, score_raw, p2_raw = cells[0], cells[1], cells[2]
                     set_cells = cells[3:]
-                # Parse the score column (games won: e.g. 2–0)
+                # Parse the score column (games won: e.g. 2–0) — w/o / retired
+                # have no numeric games-won but the match still happened.
                 games_won = _parse_games_won(score_raw)
-                if games_won is None:
-                    continue
+                result = classify_result_text(score_raw, *set_cells)
                 # Parse per-game scores from set cells
                 games = []
                 for gi, sc in enumerate(set_cells, 1):
                     parsed = _parse_set_score(sc)
                     if parsed is None:
-                        break
+                        continue
                     games.append({
                         "game": gi,
                         "score1": parsed[0],
                         "score2": parsed[1],
                     })
+                if games_won is None and result is None and not games:
+                    continue
                 match_idx += 1
                 matches.append({
                     "tournament_page": page_title,
@@ -615,6 +644,7 @@ def extract_group_stage_matches(wikitext, discipline_start, discipline_end, page
                     "team2": _parse_group_player(p2_raw),
                     "games_won": games_won,
                     "games": games,
+                    "result": result,
                 })
     return matches
 
@@ -702,16 +732,20 @@ def _parse_games_won(raw):
 
 
 def _parse_set_score(raw):
-    """Parse '''21'''–10 -> (score1_dict, score2_dict). Returns None if empty/voided."""
+    """Parse '''21'''–10 -> (score1_dict, score2_dict).
+
+    Voided/strikethrough cells are dropped. A retirement that still has
+    points (``21–8 retired``) keeps the numbers; the match is tagged
+    ``result=retired`` by the caller.
+    """
     if not raw:
         return None
-    if "<s>" in raw or "voided" in raw.lower() or "retired" in raw.lower():
+    if "<s>" in raw or "voided" in raw.lower():
         return None
-    # Determine which side is bold (winner)
     s1_bold = bool(re.search(r"'''-?\d", raw))
-    # Check if the second number is bold: pattern like 21–'''10'''
     s2_bold = bool(re.search(r"\d\s*[–-]\s*'''-?\d", raw))
     cleaned = re.sub(r"'", "", raw).strip()
+    cleaned = _RET_RE.sub("", cleaned).strip()
     m = re.match(r"(\d+)\s*[–-]\s*(\d+)", cleaned)
     if not m:
         return None
