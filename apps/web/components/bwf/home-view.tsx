@@ -89,7 +89,7 @@ export function HomeView({
             This week
           </h2>
           <span className="font-mono text-[11px] text-[var(--text-muted)]">
-            last 7 days · newest first
+            this calendar week · UTC
           </span>
           <div className="flex-1" />
           <Link
@@ -103,8 +103,8 @@ export function HomeView({
         {thisWeek.length === 0 ? (
           <div className="rounded-[14px] border border-dashed border-[var(--border)] px-6 py-12 text-center">
             <p className="text-[13px] text-[var(--text-muted)]">
-              No matches dated in the last week. Showing late-round features
-              below.
+              No matches dated this calendar week (Mon–Sun, UTC). Late-round
+              features are below.
             </p>
           </div>
         ) : (

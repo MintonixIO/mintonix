@@ -84,6 +84,14 @@ MATCH_UPSERT_COLS = (
 )
 
 
+COUNTRY_COLS = (
+    "team1_player1_country",
+    "team1_player2_country",
+    "team2_player1_country",
+    "team2_player2_country",
+)
+
+
 def youtube_url(video_id: str | None) -> str | None:
     if not video_id:
         return None
@@ -123,6 +131,20 @@ def upsert(table, rows, on_conflict, batch_size=500):
                 if r.status_code in (200, 201, 204):
                     total += len(batch)
                     break
+                if (
+                    r.status_code == 400
+                    and "country" in (r.text or "").lower()
+                    and any(k in row for row in batch for k in COUNTRY_COLS)
+                ):
+                    print(
+                        "  country columns missing on matches; "
+                        "retrying this batch without them"
+                    )
+                    batch = [
+                        {k: v for k, v in row.items() if k not in COUNTRY_COLS}
+                        for row in batch
+                    ]
+                    continue
                 if r.status_code in (429, 500, 502, 503) and attempt < 5:
                     wait = 2 ** attempt
                     print(f"  {table}: {r.status_code}, retry in {wait}s...")

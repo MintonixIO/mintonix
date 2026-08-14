@@ -5,12 +5,17 @@ on:
     # Weekly, Sunday 09:00 UTC
     - cron: "0 9 * * 0"
   workflow_dispatch:
+    inputs:
+      historical:
+        description: Rescrape all World Tour years (2018–current) to backfill match_date
+        type: boolean
+        default: false
   pull_request:
     paths:
       - "workers/github/match-data/**"
       - ".github/workflows/match-data.yml"
   push:
-    branches: [master, rel/catalog]
+    branches: [master]
     paths:
       - "workers/github/match-data/**"
       - ".github/workflows/match-data.yml"
@@ -48,9 +53,16 @@ jobs:
       - name: Unit tests
         run: python3 -m unittest test_scraper_cli.py test_scraper_dates.py test_fetch_cache.py test_load_purge.py test_ratings.py -v
 
-      # 1. Scrape the current season (year comes from a time server)
+      # 1. Scrape current season, or every World Tour year when dispatched
+      #    with historical=true (one-shot date backfill after the infobox parser).
       - name: Scrape BWF results
-        run: python3 scraper.py
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ github.event.inputs.historical }}" = "true" ]; then
+            echo "Historical backfill: scraping 2018–current"
+            ./load_historical_years.sh --scrape-only
+          else
+            python3 scraper.py
+          fi
 
       # 2. Fetch BWF channel video metadata (offline-friendly producer)
       - name: Fetch YouTube video metadata

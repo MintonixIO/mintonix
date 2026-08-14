@@ -562,7 +562,7 @@ export async function getThisWeekMatches(
   limit = 12,
 ): Promise<CatalogMatch[]> {
   const { matches } = await getCatalogSnapshot();
-  return thisWeekMatches(matches, { days: 7, limit });
+  return thisWeekMatches(matches, { limit });
 }
 
 /** Featured matches for home: late rounds first (not chronological “recent”). */

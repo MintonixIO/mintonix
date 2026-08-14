@@ -17,6 +17,7 @@ import {
   playerSearchHit,
   resolvePlayerId,
   scoreKind,
+  utcIsoWeekStart,
   thisWeekMatches,
   toDirectoryPlayer,
   topPlayersFromList,
@@ -705,25 +706,41 @@ describe("scoreKind / thisWeek / classifyRivals", () => {
     ).toBe("2-1");
   });
 
-  it("thisWeek prefers dated matches inside the window", () => {
-    const now = Date.parse("2026-08-14T00:00:00Z");
+  it("thisWeek is the ISO calendar week (Mon–Sun UTC), not a rolling 7 days", () => {
+    // Friday 14 Aug 2026 → week is Mon 10 – Sun 16 Aug UTC.
+    const now = Date.parse("2026-08-14T12:00:00Z");
+    expect(new Date(utcIsoWeekStart(now)).toISOString()).toBe(
+      "2026-08-10T00:00:00.000Z",
+    );
     const list = [
+      match({
+        id: "prev-sun",
+        team1Ids: ["a"],
+        team2Ids: ["b"],
+        matchDate: "2026-08-09",
+      }),
+      match({
+        id: "this-mon",
+        team1Ids: ["a"],
+        team2Ids: ["b"],
+        matchDate: "2026-08-10",
+      }),
+      match({
+        id: "this-wed",
+        team1Ids: ["a"],
+        team2Ids: ["b"],
+        matchDate: "2026-08-12",
+      }),
       match({
         id: "old",
         team1Ids: ["a"],
         team2Ids: ["b"],
         matchDate: "2026-01-01",
       }),
-      match({
-        id: "new",
-        team1Ids: ["a"],
-        team2Ids: ["b"],
-        matchDate: "2026-08-12",
-      }),
     ];
     expect(
-      thisWeekMatches(list, { now, days: 7, limit: 5 }).map((m) => m.id),
-    ).toEqual(["new"]);
+      thisWeekMatches(list, { now, limit: 10 }).map((m) => m.id),
+    ).toEqual(["this-wed", "this-mon"]);
   });
 
   it("owns requires 4 meetings, 70%+, and same form band", () => {

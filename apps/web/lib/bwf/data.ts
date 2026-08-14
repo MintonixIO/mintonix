@@ -46,6 +46,7 @@ export {
   toDirectoryPlayer,
   topPlayersFromList,
   thisWeekMatches,
+  utcIsoWeekStart,
   scoreKind,
   gamesWon,
   sameFormBand,

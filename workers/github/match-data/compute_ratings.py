@@ -120,6 +120,14 @@ def replace_table(url: str, headers: dict, table: str, rows: list[dict], on_conf
         )
         if r.status_code in (200, 204):
             break
+        if r.status_code in (404, 400):
+            print(
+                f"  {table}: not available ({r.status_code}). "
+                "Apply supabase/migrations/20260814000000_catalog_ratings.sql "
+                "before ratings can persist.",
+                file=sys.stderr,
+            )
+            r.raise_for_status()
         if r.status_code in (429, 500, 502, 503) and attempt < 5:
             time.sleep(2 ** attempt)
             continue

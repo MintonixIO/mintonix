@@ -51,6 +51,13 @@ class InfoboxDateTests(unittest.TestCase):
     def test_empty(self):
         self.assertEqual(self.s.parse_infobox_date_range("", 2024), (None, None))
 
+    def test_compact_range_does_not_eat_year(self):
+        # "2024 – 3 January" must not parse as days 24–3.
+        a, b = self.s.parse_infobox_date_range("2024 – 3 January", 2024)
+        self.assertEqual(a, "2024-01-03")
+        self.assertEqual(b, "2024-01-03")
+
+
     def test_final_is_last_day(self):
         d = self.s.date_for_round("Final", "2025-01-07", "2025-01-12")
         self.assertEqual(d, "2025-01-12")

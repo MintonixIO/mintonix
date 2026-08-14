@@ -555,18 +555,32 @@ export function topPlayersFromList<
     .slice(0, limit);
 }
 
-/** Matches whose calendar date (or ingest time) falls in the last `days` days. */
+/** Monday 00:00 UTC of the ISO week that contains `nowMs`. */
+export function utcIsoWeekStart(nowMs: number): number {
+  const d = new Date(nowMs);
+  const dow = d.getUTCDay(); // 0 Sun … 6 Sat
+  const mondayOffset = dow === 0 ? -6 : 1 - dow;
+  return Date.UTC(
+    d.getUTCFullYear(),
+    d.getUTCMonth(),
+    d.getUTCDate() + mondayOffset,
+  );
+}
+
+/** Matches whose date (or ingest time) falls in the current ISO week (Mon–Sun UTC). */
 export function thisWeekMatches(
   matches: CatalogMatch[],
-  opts?: { days?: number; now?: number; limit?: number },
+  opts?: { now?: number; limit?: number },
 ): CatalogMatch[] {
-  const days = opts?.days ?? 7;
   const now = opts?.now ?? Date.now();
   const limit = opts?.limit ?? 12;
-  const cutoff = now - days * 24 * 60 * 60 * 1000;
-  const dated = matches.filter((m) => matchChronologyMs(m) >= cutoff);
-  const pool = dated.length > 0 ? dated : formSortMatches(matches);
-  return formSortMatches(pool).slice(0, limit);
+  const weekStart = utcIsoWeekStart(now);
+  const weekEnd = weekStart + 7 * 24 * 60 * 60 * 1000;
+  const dated = matches.filter((m) => {
+    const t = matchChronologyMs(m);
+    return t >= weekStart && t < weekEnd;
+  });
+  return formSortMatches(dated).slice(0, limit);
 }
 
 export function gamesWon(m: CatalogMatch): { w1: number; w2: number } {
