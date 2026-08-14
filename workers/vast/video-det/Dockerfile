@@ -74,8 +74,12 @@ PY
 
 # pycuda has no manylinux wheel — compile it here (g++ / CUDA toolkit) and
 # copy the finished venv into the runtime image. Do not compile on the slim stage.
+# NGC's python3 has no ensurepip/venv until python3.10-venv is installed.
 COPY requirements.txt /tmp/requirements.txt
-RUN python3 -m venv /opt/worker-env \
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3.10-venv \
+    && rm -rf /var/lib/apt/lists/* \
+    && python3 -m venv /opt/worker-env \
     && /opt/worker-env/bin/python -m pip install --no-cache-dir --upgrade pip \
     && /opt/worker-env/bin/python -m pip install --no-cache-dir -r /tmp/requirements.txt \
     && site="$("/opt/worker-env/bin/python" -c "import site; print(site.getsitepackages()[0])")" \
