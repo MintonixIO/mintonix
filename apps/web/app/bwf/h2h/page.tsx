@@ -7,6 +7,7 @@ import {
   searchDirectoryPlayers,
 } from "@/lib/bwf/catalog";
 import { catalogUserError } from "@/lib/bwf/errors";
+import { resolvePlayerId } from "@/lib/bwf/query";
 import type {
   CatalogMatch,
   DirectoryPlayer,
@@ -22,6 +23,16 @@ export const metadata: Metadata = {
 export const revalidate = 300;
 
 const SEED_LIMIT = 80;
+
+function resolveCatalogId(
+  raw: string | undefined,
+  directory: DirectoryPlayer[],
+): string {
+  if (!raw) return "";
+  const hit = resolvePlayerId(raw, directory);
+  if (hit.match) return hit.match.id;
+  return directory.some((p) => p.id === raw) ? raw : "";
+}
 
 function toPicker(p: {
   id: string;
@@ -75,13 +86,16 @@ export default async function BwfH2hPage({
         directory.find((p) => p.id !== defaultA)?.id ??
         defaultA;
 
-      aId = sp.a && byId.has(sp.a) ? sp.a : defaultA;
+      aId = resolveCatalogId(sp.a, directory) || defaultA;
+      const resolvedB = resolveCatalogId(sp.b, directory);
       bId =
-        sp.b && byId.has(sp.b) && sp.b !== aId
-          ? sp.b
+        resolvedB && resolvedB !== aId
+          ? resolvedB
           : directory.find((p) => p.id !== aId)?.id ?? defaultB;
-      a2Id = sp.a2 && byId.has(sp.a2) ? sp.a2 : "";
-      b2Id = sp.b2 && byId.has(sp.b2) ? sp.b2 : "";
+      a2Id = resolveCatalogId(sp.a2, directory);
+      b2Id = resolveCatalogId(sp.b2, directory);
+      if (a2Id === aId || a2Id === bId) a2Id = "";
+      if (b2Id === bId || b2Id === aId || b2Id === a2Id) b2Id = "";
 
       const seedIds = new Set(seed.map((p) => p.id));
       picker = seed.map(toPicker);
@@ -120,6 +134,8 @@ export default async function BwfH2hPage({
       players={picker}
       initialA={aId}
       initialB={bId}
+      initialA2={a2Id}
+      initialB2={b2Id}
       a={h2h.a}
       b={h2h.b}
       meetings={h2h.meetings}

@@ -17,6 +17,7 @@ import {
   playerSearchHit,
   resolvePlayerId,
   scoreKind,
+  resultChip,
   utcIsoWeekStart,
   thisWeekMatches,
   toDirectoryPlayer,
@@ -705,6 +706,33 @@ describe("scoreKind / thisWeek / classifyRivals", () => {
         }),
       ),
     ).toBe("2-1");
+  });
+
+  it("resultChip prefers walkover / retired over scoreline", () => {
+    expect(
+      resultChip(
+        match({
+          id: "wo",
+          team1Ids: ["a"],
+          team2Ids: ["b"],
+          games: [],
+          winner: 1,
+          result: "walkover",
+        }),
+      ),
+    ).toBe("W/O");
+    expect(
+      resultChip(
+        match({
+          id: "rt",
+          team1Ids: ["a"],
+          team2Ids: ["b"],
+          games: [{ t1: 21, t2: 15 }],
+          winner: 1,
+          result: "retired",
+        }),
+      ),
+    ).toBe("ret.");
   });
 
   it("thisWeek is the ISO calendar week (Mon–Sun UTC), not a rolling 7 days", () => {

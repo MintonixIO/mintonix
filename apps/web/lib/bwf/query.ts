@@ -601,6 +601,13 @@ export function scoreKind(m: CatalogMatch): "2-0" | "2-1" | null {
   return lo === 0 ? "2-0" : "2-1";
 }
 
+/** Catalog outcome chip: W/O and retirements first, then 2–0 / 2–1. */
+export function resultChip(m: CatalogMatch): string | null {
+  if (m.result === "walkover") return "W/O";
+  if (m.result === "retired") return "ret.";
+  return scoreKind(m);
+}
+
 export function sameFormBand(
   a: FormRating | null | undefined,
   b: FormRating | null | undefined,

@@ -8,13 +8,13 @@ import {
   Video,
 } from "lucide-react";
 import {
-  BWF_STATUS_UI,
   displayDate,
   formatScoreLine,
   formatTeam,
   isAllowlistedYoutubeUrl,
   playerImageUrl,
   playerWon,
+  resultChip,
   scoreKind,
   type CatalogMatch,
 } from "@/lib/bwf/data";
@@ -33,6 +33,7 @@ export function MatchCard({
   const t1Won = m.winner === 1;
   const t2Won = m.winner === 2;
   const score = formatScoreLine(m.games, m.result);
+  const chip = resultChip(m);
 
   const row = (
     names: string[],
@@ -128,16 +129,12 @@ export function MatchCard({
         <span className="font-mono text-[11px] tabular-nums text-[var(--text-muted)]">
           {score}
         </span>
+        {chip ? (
+          <span className="rounded-full border border-[var(--border-subtle)] bg-[var(--surface-2)] px-2 py-[2px] font-mono text-[10px] uppercase tracking-wide text-[var(--text-secondary)]">
+            {chip}
+          </span>
+        ) : null}
         <div className="flex-1" />
-        <span
-          className={cn(
-            "rounded-full border px-2 py-[2px] font-mono text-[10px] uppercase tracking-wide",
-            BWF_STATUS_UI[m.status]?.className ??
-              "border-[var(--border)] bg-[var(--surface-2)] text-[var(--text-muted)]",
-          )}
-        >
-          {BWF_STATUS_UI[m.status]?.label ?? m.status}
-        </span>
       </div>
 
       <div className="flex flex-wrap items-center gap-2 border-t border-[var(--border-subtle)] px-4 py-3">

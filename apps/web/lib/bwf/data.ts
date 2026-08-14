@@ -48,6 +48,7 @@ export {
   thisWeekMatches,
   utcIsoWeekStart,
   scoreKind,
+  resultChip,
   gamesWon,
   sameFormBand,
   classifyRivals,

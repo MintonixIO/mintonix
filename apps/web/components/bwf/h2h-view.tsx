@@ -17,6 +17,8 @@ export function H2hView({
   players,
   initialA,
   initialB,
+  initialA2 = "",
+  initialB2 = "",
   meetings,
   aWins,
   bWins,
@@ -30,6 +32,8 @@ export function H2hView({
   players: H2hPickerPlayer[];
   initialA: string;
   initialB: string;
+  initialA2?: string;
+  initialB2?: string;
   meetings: CatalogMatch[];
   aWins: number;
   bWins: number;
@@ -44,6 +48,9 @@ export function H2hView({
   const [isPending, startTransition] = useTransition();
   const [pendingA, setPendingA] = useState<string | null>(null);
   const [pendingB, setPendingB] = useState<string | null>(null);
+  const [pendingA2, setPendingA2] = useState<string | null>(null);
+  const [pendingB2, setPendingB2] = useState<string | null>(null);
+  const [showPairs, setShowPairs] = useState(pairMode);
   const [extraLabels, setExtraLabels] = useState<
     Record<string, H2hPickerPlayer>
   >({});
@@ -51,10 +58,15 @@ export function H2hView({
   useEffect(() => {
     setPendingA(null);
     setPendingB(null);
-  }, [initialA, initialB]);
+    setPendingA2(null);
+    setPendingB2(null);
+    setShowPairs(pairMode);
+  }, [initialA, initialB, initialA2, initialB2, pairMode]);
 
   const h2hA = pendingA ?? initialA;
   const h2hB = pendingB ?? initialB;
+  const h2hA2 = pendingA2 ?? initialA2;
+  const h2hB2 = pendingB2 ?? initialB2;
   const pa = a;
   const pb = b;
 
@@ -83,12 +95,21 @@ export function H2hView({
     return [...map.values()];
   })();
 
-  const syncUrl = (aid: string, bid: string) => {
+  const syncUrl = (aid: string, bid: string, a2 = h2hA2, b2 = h2hB2) => {
     setPendingA(aid);
     setPendingB(bid);
+    setPendingA2(a2);
+    setPendingB2(b2);
     startTransition(() => {
-      router.replace(`/bwf/h2h?a=${aid}&b=${bid}`, { scroll: false });
+      const q = new URLSearchParams({ a: aid, b: bid });
+      if (a2) q.set("a2", a2);
+      if (b2) q.set("b2", b2);
+      router.replace(`/bwf/h2h?${q.toString()}`, { scroll: false });
     });
+  };
+
+  const remember = (player: H2hPickerPlayer) => {
+    setExtraLabels((prev) => ({ ...prev, [player.id]: player }));
   };
 
   if (!pa) {
@@ -107,6 +128,12 @@ export function H2hView({
     allPlayers.find((p) => p.id === h2hA)?.name ?? pa.name;
   const displayB =
     allPlayers.find((p) => p.id === h2hB)?.name ?? pb?.name ?? null;
+  const displayA2 =
+    allPlayers.find((p) => p.id === h2hA2)?.name ?? pairAName;
+  const displayB2 =
+    allPlayers.find((p) => p.id === h2hB2)?.name ?? pairBName;
+  const labelA = displayA2 ? `${displayA} / ${displayA2}` : displayA;
+  const labelB = displayB2 && displayB ? `${displayB} / ${displayB2}` : displayB;
 
   return (
     <section
@@ -123,55 +150,107 @@ export function H2hView({
         <p className="mt-[7px] max-w-[60ch] text-[14.5px] leading-[1.55] text-[var(--text-secondary)]">
           Career meetings from the BWF catalog. Same-name players are split by
           association — country shows on every picker row. Search the full
-          directory (type 2+ characters).
+          directory (type 2+ characters). Doubles: add partners for pair vs pair.
         </p>
       </div>
 
-      <div className="mb-4 grid grid-cols-1 items-center gap-4 md:grid-cols-[1fr_auto_1fr]">
-        <div className="flex items-center gap-2.5">
-          <span
-            className="h-2.5 w-2.5 shrink-0 rounded-full"
-            style={{ background: PA }}
-          />
-          <PlayerPicker
-            players={allPlayers}
-            selectedId={h2hA}
-            accent="a"
-            remoteSearch
-            disabled={isPending}
-            onSelect={(player) => {
-              setExtraLabels((prev) => ({ ...prev, [player.id]: player }));
-              let nextB = h2hB;
-              if (nextB === player.id) {
-                const opp = allPlayers.find((x) => x.id !== player.id);
-                if (opp) nextB = opp.id;
-              }
-              syncUrl(player.id, nextB);
-            }}
-          />
+      <div className="mb-4 grid grid-cols-1 items-start gap-4 md:grid-cols-[1fr_auto_1fr]">
+        <div className="space-y-2">
+          <div className="flex items-center gap-2.5">
+            <span
+              className="h-2.5 w-2.5 shrink-0 rounded-full"
+              style={{ background: PA }}
+            />
+            <PlayerPicker
+              players={allPlayers}
+              selectedId={h2hA}
+              accent="a"
+              remoteSearch
+              disabled={isPending}
+              onSelect={(player) => {
+                remember(player);
+                let nextB = h2hB;
+                if (nextB === player.id) {
+                  const opp = allPlayers.find((x) => x.id !== player.id);
+                  if (opp) nextB = opp.id;
+                }
+                const nextA2 = h2hA2 === player.id ? "" : h2hA2;
+                syncUrl(player.id, nextB, nextA2, h2hB2);
+              }}
+            />
+          </div>
+          {showPairs ? (
+            <PlayerPicker
+              players={allPlayers}
+              selectedId={h2hA2}
+              accent="a"
+              excludeId={h2hA}
+              placeholder="Partner (optional)"
+              remoteSearch
+              disabled={isPending}
+              onSelect={(player) => {
+                remember(player);
+                syncUrl(h2hA, h2hB, player.id, h2hB2);
+              }}
+            />
+          ) : null}
         </div>
-        <span className="text-center font-mono text-[13px] text-[var(--text-faint)]">
+        <span className="pt-3 text-center font-mono text-[13px] text-[var(--text-faint)]">
           vs
         </span>
-        <div className="flex items-center gap-2.5">
-          <PlayerPicker
-            players={allPlayers}
-            selectedId={h2hB}
-            accent="b"
-            excludeId={h2hA}
-            placeholder="Select opponent"
-            remoteSearch
-            disabled={isPending}
-            onSelect={(player) => {
-              setExtraLabels((prev) => ({ ...prev, [player.id]: player }));
-              syncUrl(h2hA, player.id);
-            }}
-          />
-          <span
-            className="h-2.5 w-2.5 shrink-0 rounded-full"
-            style={{ background: PB }}
-          />
+        <div className="space-y-2">
+          <div className="flex items-center gap-2.5">
+            <PlayerPicker
+              players={allPlayers}
+              selectedId={h2hB}
+              accent="b"
+              excludeId={h2hA}
+              placeholder="Select opponent"
+              remoteSearch
+              disabled={isPending}
+              onSelect={(player) => {
+                remember(player);
+                const nextB2 = h2hB2 === player.id ? "" : h2hB2;
+                syncUrl(h2hA, player.id, h2hA2, nextB2);
+              }}
+            />
+            <span
+              className="h-2.5 w-2.5 shrink-0 rounded-full"
+              style={{ background: PB }}
+            />
+          </div>
+          {showPairs ? (
+            <PlayerPicker
+              players={allPlayers}
+              selectedId={h2hB2}
+              accent="b"
+              excludeId={h2hB}
+              placeholder="Partner (optional)"
+              remoteSearch
+              disabled={isPending}
+              onSelect={(player) => {
+                remember(player);
+                syncUrl(h2hA, h2hB, h2hA2, player.id);
+              }}
+            />
+          ) : null}
         </div>
+      </div>
+      <div className="mb-4">
+        <button
+          type="button"
+          onClick={() => {
+            if (showPairs) {
+              setShowPairs(false);
+              syncUrl(h2hA, h2hB, "", "");
+            } else {
+              setShowPairs(true);
+            }
+          }}
+          className="inline-flex min-h-10 items-center rounded-[10px] border border-[var(--border)] bg-[var(--surface-1)] px-3 text-[12.5px] text-[var(--text-secondary)] hover:border-[var(--border-strong)] hover:text-[var(--text-strong)]"
+        >
+          {showPairs ? "Person vs person" : "Compare as pairs"}
+        </button>
       </div>
 
       <div className="mb-3.5 grid gap-3.5 md:grid-cols-2">
@@ -187,7 +266,7 @@ export function H2hView({
                 className="mx-auto mb-2.5"
               />
               <div className="font-display text-sm font-semibold text-[var(--text-strong)]">
-                {displayA}
+                {labelA}
                 {pa.country ? (
                   <span className="ml-1.5 font-mono text-[10.5px] font-normal uppercase text-[var(--text-faint)]">
                     {pa.country}
@@ -225,7 +304,7 @@ export function H2hView({
               {displayB ? (
                 <>
                   <Avatar
-                    name={displayB}
+                    name={labelB ?? displayB}
                     src={
                       pb && h2hB === pb.id
                         ? (pb.imageUrl ?? undefined)
@@ -235,7 +314,7 @@ export function H2hView({
                     className="mx-auto mb-2.5"
                   />
                   <div className="font-display text-sm font-semibold text-[var(--text-strong)]">
-                    {displayB}
+                    {labelB}
                     {pb?.country ? (
                       <span className="ml-1.5 font-mono text-[10.5px] font-normal uppercase text-[var(--text-faint)]">
                         {pb.country}

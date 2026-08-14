@@ -6,6 +6,7 @@ import {
   Flame,
   Clapperboard,
   Play,
+  Swords,
   Video,
 } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
@@ -17,7 +18,7 @@ import {
   formatTeam,
   parseYoutubeUrl,
   playerImageUrl,
-  scoreKind,
+  resultChip,
   type CatalogMatch,
 } from "@/lib/bwf/data";
 import { PA, PB } from "@/components/bwf/tokens";
@@ -33,7 +34,7 @@ function countryOf(
 export function MatchDetail({ m }: { m: CatalogMatch }) {
   const duration = formatDuration(m.durationSec);
   const youtube = parseYoutubeUrl(m.sourceUrl);
-  const kind = scoreKind(m);
+  const chip = resultChip(m);
   const isDoubles = m.team1.length > 1 || m.team2.length > 1;
 
   const side = (
@@ -169,9 +170,9 @@ export function MatchDetail({ m }: { m: CatalogMatch }) {
           <span className="font-display text-lg font-semibold tabular-nums text-[var(--text-strong)]">
             {formatScoreLine(m.games, m.result)}
           </span>
-          {kind ? (
+          {chip ? (
             <span className="rounded-full border border-[var(--border-subtle)] bg-[var(--surface-2)] px-2.5 py-1 font-mono text-xs text-[var(--text-secondary)]">
-              {kind}
+              {chip}
             </span>
           ) : null}
           {m.threeGames ? (
@@ -189,11 +190,11 @@ export function MatchDetail({ m }: { m: CatalogMatch }) {
           <div className="flex-1" />
           <Link
             href={`/match-viewer/${m.id}`}
-            className="inline-flex min-h-10 items-center gap-2 rounded-[10px] bg-[var(--brand)] px-3.5 py-2 text-[13px] font-medium text-[var(--text-on-blue)] shadow-[0_4px_14px_rgba(54,147,255,0.22)] hover:bg-[var(--brand-hover)]"
+            className="inline-flex min-h-10 items-center gap-1.5 text-[13px] text-[var(--text-link)] hover:text-[var(--brand)]"
             title="Synthetic demo analysis — not pipeline output"
           >
-            <Play className="h-4 w-4 fill-current" />
-            Demo match viewer
+            <Play className="h-4 w-4" />
+            Demo viewer
           </Link>
         </div>
       </div>
