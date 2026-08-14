@@ -72,30 +72,32 @@ if not (py_dst / "tensorrt").exists():
 print("tensorrt", tensorrt.__version__)
 PY
 
+# pycuda has no manylinux wheel — compile it here (g++ / CUDA toolkit) and
+# copy the finished venv into the runtime image. Do not compile on the slim stage.
+COPY requirements.txt /tmp/requirements.txt
+RUN python3 -m venv /opt/worker-env \
+    && /opt/worker-env/bin/python -m pip install --no-cache-dir --upgrade pip \
+    && /opt/worker-env/bin/python -m pip install --no-cache-dir -r /tmp/requirements.txt \
+    && site="$("/opt/worker-env/bin/python" -c "import site; print(site.getsitepackages()[0])")" \
+    && cp -a /opt/trt-runtime/python/. "$site/" \
+    && /opt/worker-env/bin/python -c "import tensorrt, cv2, fastapi; print('tensorrt', tensorrt.__version__)"
+
 FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04
 
 ENV NVIDIA_REQUIRE_CUDA="cuda>=12.4" \
     NVIDIA_DRIVER_CAPABILITIES=compute,utility
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 python3-pip python3-venv python-is-python3 \
+    python3 python-is-python3 \
     curl ca-certificates openssl \
     libgomp1 libglib2.0-0 libgl1 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=trt /opt/trt-runtime/lib/ /usr/local/lib/trt/
+COPY --from=trt /opt/worker-env/ /opt/worker-env/
 RUN printf '/usr/local/lib/trt\n' > /etc/ld.so.conf.d/trt.conf && ldconfig
 
 WORKDIR /app
-
-COPY requirements.txt .
-COPY --from=trt /opt/trt-runtime/python/ /tmp/trt-python/
-RUN python3 -m venv /opt/worker-env \
-    && /opt/worker-env/bin/python -m pip install --no-cache-dir --upgrade pip \
-    && /opt/worker-env/bin/python -m pip install --no-cache-dir -r requirements.txt \
-    && cp -a /tmp/trt-python/. /opt/worker-env/lib/python3.10/site-packages/ \
-    && rm -rf /tmp/trt-python \
-    && /opt/worker-env/bin/python -c "import tensorrt; print('tensorrt', tensorrt.__version__)"
 
 # Product path only (see .dockerignore).
 COPY . .
