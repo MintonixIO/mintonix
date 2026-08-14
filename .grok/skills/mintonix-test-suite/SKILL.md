@@ -109,7 +109,7 @@ After normalize **success** callback: job **`stage=detect`, `status=queued`**, m
 |--|--------|
 | Input | `normalized.mp4` + `annotation.json` + `preprocess-log.json` (jobs presigns all three) |
 | Output | **one** `detections.json` |
-| Content | **Engine envelope:** `fps`/`width`/`height`, `segments[]` (islands + scoreboard OCR), `frames[]` (pose + shuttle) |
+| Content | **Engine envelope:** `fps`/`width`/`height`, `segments[]` (islands + scoreboard OCR), `rallies[]` (same-score islands, at most one island between), `frames[]` (pose + shuttle) |
 | ReID | Optional `player_mask_url` on worker; **jobs does not presign it**. Not driven by `annotation.json` labels. |
 | Analyze / Engine | Unwired — do not expect `analysis.json` / `3d_reconstruction.json` |
 
@@ -414,8 +414,9 @@ When reporting “test suite” on a PR: include **both** CI rollup and runtime 
 When the user asks whether detect “really worked,” not only that keys exist:
 
 - `detections.json` is frame-aligned to **`normalized.mp4`** (BWF: already the valid-frames cut).
-- Required keys: `fps`, `width`, `height`, non-empty `segments[]`, non-empty `frames[]`.
+- Required keys: `fps`, `width`, `height`, non-empty `segments[]`, non-empty `rallies[]`, non-empty `frames[]`.
 - `segments[]` 1:1 with preprocess islands (`frame_shifts[].new_*`); user / empty shifts → one full-video segment.
+- `rallies[]` groups same-score islands with at most one island between them.
 - Each segment has `score.t1` / `score.t2` (low `score_conf` is OK; do not require perfect OCR).
 - **Pose + shuttle** coverage (shuttle top-K UV `[0,1]`).
 - Optional ReID / non-null `player_id` is **not** required for MVP.

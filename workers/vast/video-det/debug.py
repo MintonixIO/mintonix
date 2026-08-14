@@ -7,6 +7,8 @@ Writes efficiency notes comparing download throughput to the speedtest
 baseline and detect wall time to source duration.
 
   python debug.py /data/normalized.mp4
+  python debug.py /data/normalized.mp4 --annotation /data/annotation.json \\
+      --preprocess-log /data/preprocess-log.json
   python debug.py 'https://…/normalized.mp4' --out ./debug-detect
   python debug.py 'https://youtu.be/…' --out ./debug-yt
   python debug.py ./sample.mp4 --skip-speedtest
@@ -554,14 +556,33 @@ def _stream_detections_json(
     )
 
 
+def _load_json_file(path: Path | None) -> dict[str, Any] | None:
+    if path is None:
+        return None
+    p = Path(path).expanduser()
+    if not p.is_file():
+        raise RuntimeError(f"JSON sidecar not found: {p}")
+    data = json.loads(p.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise RuntimeError(f"JSON sidecar must be an object: {p}")
+    return data
+
+
+def _discover_sidecar(video_path: Path, name: str) -> Path | None:
+    candidate = video_path.parent / name
+    return candidate if candidate.is_file() else None
+
+
 def run_detect_job(
     *,
     input_url: str,
     output_path: Path,
     detector: VideoDetector,
     request_id: str = "debug",
+    annotation: dict[str, Any] | None = None,
+    preprocess_log: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Download → detect → write detections.json (no callback)."""
+    """Download → detect → write Engine detections.json (no callback)."""
     t0 = time.monotonic()
     stage_timings: dict[str, float] = {}
 
@@ -590,6 +611,8 @@ def run_detect_job(
             output_path,
             request_id=request_id,
             video_path=video_tmp,
+            annotation=annotation,
+            preprocess_log=preprocess_log,
         )
         stage_timings["detect_sec"] = round(time.monotonic() - t_det, 3)
 
@@ -637,6 +660,8 @@ def run_debug(
     *,
     sample_interval: float = 0.5,
     skip_speedtest: bool = False,
+    annotation_path: str | None = None,
+    preprocess_log_path: str | None = None,
 ) -> dict[str, Any]:
     os.makedirs(out_dir, exist_ok=True)
     os.environ["ALLOW_FILE_URLS"] = "1"
@@ -664,6 +689,30 @@ def run_debug(
         input_url = _input_url(input_spec, stage_dir)
         log.info("input_url: %s", _redact_url(input_url))
 
+        annotation = (
+            _load_json_file(Path(annotation_path)) if annotation_path else None
+        )
+        preprocess_log = (
+            _load_json_file(Path(preprocess_log_path))
+            if preprocess_log_path
+            else None
+        )
+        local_src = Path(input_spec).expanduser()
+        if annotation is None and local_src.is_file():
+            found = _discover_sidecar(local_src, "annotation.json")
+            if found is not None:
+                annotation = _load_json_file(found)
+                log.info("annotation: %s", found)
+        if preprocess_log is None and local_src.is_file():
+            found = _discover_sidecar(local_src, "preprocess-log.json")
+            if found is not None:
+                preprocess_log = _load_json_file(found)
+                log.info("preprocess-log: %s", found)
+        if annotation is None:
+            log.warning("no annotation.json — scoreboard OCR will be 0/0")
+        if preprocess_log is None:
+            log.warning("no preprocess-log.json — one fallback segment")
+
         log.info("loading VideoDetector …")
         t_load = time.monotonic()
         detector = VideoDetector.from_config(cfg)
@@ -681,6 +730,8 @@ def run_debug(
                 output_path=output_path,
                 detector=detector,
                 request_id="debug",
+                annotation=annotation,
+                preprocess_log=preprocess_log,
             )
         finally:
             resources = mon.stop()
@@ -743,6 +794,16 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="skip network speedtest baseline",
     )
+    p.add_argument(
+        "--annotation",
+        default=None,
+        help="annotation.json (scoreboard crop). Default: sibling of local video",
+    )
+    p.add_argument(
+        "--preprocess-log",
+        default=None,
+        help="preprocess-log.json (frame_shifts). Default: sibling of local video",
+    )
     args = p.parse_args(argv)
 
     logging.basicConfig(
@@ -756,6 +817,8 @@ def main(argv: list[str] | None = None) -> int:
             os.path.abspath(args.out),
             sample_interval=args.sample_interval,
             skip_speedtest=args.skip_speedtest,
+            annotation_path=args.annotation,
+            preprocess_log_path=args.preprocess_log,
         )
     except Exception as e:
         log.exception("debug failed: %s", e)

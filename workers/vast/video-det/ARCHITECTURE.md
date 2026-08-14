@@ -57,8 +57,10 @@ jobs/dispatch
 vast PyWorker (worker.py)  ──proxy──►  server.py
   │
   ├─ GET input_url          download video (HTTP stream or file://)
-  ├─ VideoDetector          single-thread OpenCV: pose then shuttle
-  ├─ stream detections.json  (chunked write, then streaming PUT)
+  ├─ GET annotation_url     optional; scoreboard crop for OCR
+  ├─ GET preprocess_log_url optional; frame_shifts → segments[]
+  ├─ VideoDetector          OpenCV decode; pose then shuttle (one GPU)
+  ├─ stream detections.json  (meta + segments + rallies + frames)
   └─ POST callback_url      Bearer callback_token
        { request_id, status: "success"|"failed", frame_count?, error? }
             │
@@ -75,6 +77,8 @@ vast PyWorker (worker.py)  ──proxy──►  server.py
   "request_id": "uuid",                 // job_id
   "input_url": "https://…",             // presigned GET or file://
   "output_upload_url": "https://…",     // presigned PUT or file://
+  "annotation_url": "https://…",        // optional presigned GET
+  "preprocess_log_url": "https://…",    // optional presigned GET
   "callback_url": "https://…/functions/v1/jobs/callback",
   "callback_token": "<jwt>"
 }
@@ -109,6 +113,7 @@ missing. Frame indices are always on the **`normalized.mp4` timeline**
 | `width` | int | **yes** | Frame width (pixels) |
 | `height` | int | **yes** | Frame height (pixels) |
 | `segments` | array | **yes** | Non-empty; one OCR unit per preprocess island |
+| `rallies` | array | **yes** | Same-score islands with at most one island between them |
 | `frames` | array | **yes** | Non-empty; per-frame pose + shuttle |
 
 ```jsonc
@@ -120,6 +125,10 @@ missing. Frame indices are always on the **`normalized.mp4` timeline**
   "segments": [
     { "start_frame": 0, "end_frame": 180, "score": { "t1": 5, "t2": 3 }, "score_conf": 0.92 },
     { "start_frame": 181, "end_frame": 240, "score": { "t1": 5, "t2": 3 }, "score_conf": 0.88 },
+    { "start_frame": 241, "end_frame": 400, "score": { "t1": 5, "t2": 4 }, "score_conf": 0.91 }
+  ],
+  "rallies": [
+    { "start_frame": 0, "end_frame": 240, "score": { "t1": 5, "t2": 3 }, "score_conf": 0.92 },
     { "start_frame": 241, "end_frame": 400, "score": { "t1": 5, "t2": 4 }, "score_conf": 0.91 }
   ],
   "frames": [
@@ -157,13 +166,19 @@ One entry per **preprocess court-visible island** (`preprocess-log.json`
 | `score.t2` | int ≥ 0 | **yes** | Row/team 2 (bottom of scoreboard) |
 | `score_conf` | number ∈ [0,1] | no | OCR confidence (also accepted as `score.conf`) |
 
-Engine merges consecutive segments with the **same** `(t1, t2)` into one
-**rally** (mid-rally cutaways stay one physics run). Detect does **not**
-emit rallies, video bytes, or `preprocess-log.json`.
-
 User-upload / missing `frame_shifts`: one fallback segment covering the full
 decoded video. Missing crop or unreadable digits: `t1`/`t2` = 0 with low
 `score_conf` — never invent high-confidence scores.
+
+### `rallies[]` (physics run)
+
+Same fields as a segment. Detect groups islands with the **same** `(t1, t2)`
+when their index distance is **at most 2** (adjacent, or one island
+between). The rally span is min(start)…max(end) of the group so a single
+mid-rally cutaway stays one physics run. Same score farther away is a new
+rally. Engine should consume ``rallies[]`` — do not merge every equal
+score across the match. Detect does **not** emit video bytes or
+`preprocess-log.json`.
 
 ### `frames[]` (geometry)
 
@@ -195,25 +210,27 @@ recall — not a single tracked point. Precision is Engine/analyze's job.
 server.py → DetectConfig.from_env() → detect.VideoDetector
               single-thread OpenCV VideoCapture:
               read up to chunk_size frames (+ one peek for shuttle next):
-              main thread, **serial on one GPU**:
+              **serial on one GPU** (shared CUDA context + lock):
               ├─ pose.PoseEngine.run_batch (pad last incomplete engine batch)
               │    detect/pose.py to_pose_result normalizes pixels → [0,1]
               └─ detect/shuttle.py TrackNetV5 **stride-1 sliding windows**
                    for global frame i: triplet (i-1, i, i+1), **center** heatmap
                    prev/next from peek + previous chunk last frame
-                   list edges pad by repeating edge; micro-batch ≤16 triplets
-                   PyTorch path (not TRT) — known gap vs pose
+                   list edges pad by repeating edge; micro-batch ≤48 triplets
+                   TensorRT only (`SHUTTLE_ENGINE`) — no `.pt` fallback
 ```
 
 **One product path:** OpenCV frame index is the sole authority for pose and
 shuttle. No producer thread, no second VideoCapture pass, no multi-ffmpeg
 product feed. Zero-frame videos fail the job.
 
-**Serial pose → shuttle (intentional):** both models share one GPU.
+**Serial pose → shuttle (intentional):** both models share one GPU. The
+image sets `PARALLEL_DETECT=0`. If enabled, a process-wide GPU lock still
+prevents concurrent TRT execute. CUDA context is detached after load so
+`/detect/sync` (threadpool) can push it.
 
-Engine tensor shape is the authority for batch/imgsz after load.
-Shuttle requires CUDA at construction (GPU worker) and remains **PyTorch**
-(TrackNetV5 `.pt`); full TensorRT export is a known deferred project.
+Engine tensor shape and **binding dtype** (FLOAT or HALF) are the authority
+after load. Host buffers are sized from `engine.get_tensor_dtype`.
 
 ---
 
@@ -228,7 +245,8 @@ Matches the proven **normalize** pattern:
 | `worker.py` | PyWorker: load reporting, proxy to model server |
 | `server.py` | FastAPI `/detect/sync` + `/health` (lifespan model load) |
 | `io_util.py` | stream download / upload / callback (`file://` + HTTP) |
-| `detect/` | VideoDetector, shuttle, types |
+| `detect/` | VideoDetector, shuttle, types, Engine output |
+| `trt_io.py` | Shared CUDA context + TRT binding dtype helpers |
 | `pose/` | PoseEngine + TRT runner + export helpers |
 | `tools/` | visualize + non-product `ffmpeg_pose_bench/` |
 | `/app/sample.mp4` | Local benchmark input (`BENCHMARK_INPUT_URL`) |
@@ -250,12 +268,13 @@ workers/vast/video-det/
 ├── server.py           # FastAPI job boundary (lifespan startup)
 ├── worker.py           # PyWorker config
 ├── io_util.py          # file:// + HTTP transport (stream GET/PUT)
+├── trt_io.py           # CUDA context push/pop + FLOAT/HALF bindings
 ├── entrypoint.sh
 ├── start_server.sh
 ├── detect/             # VideoDetector, shuttle, types, Engine output
-│   ├── segments.py     # islands from frame_shifts → segments[]
+│   ├── segments.py     # islands from frame_shifts → segments[] + rallies[]
 │   ├── scoreboard.py   # annotation crop + lightweight digit OCR
-│   ├── output.py       # write detections.json (meta + segments + frames)
+│   ├── output.py       # write detections.json (meta + segments + rallies + frames)
 │   └── tracknet.py     # TrackNetV5 topology (export tools only; not product)
 ├── pose/               # PoseEngine + TRT runner + export
 ├── tools/
@@ -300,9 +319,9 @@ workers/vast/video-det/
   - `tracknetv5_fp16_b48.engine` (`SHUTTLE_ENGINE`)
 - Detect env (see `detect/config.py` + Dockerfile): `POSE_ENGINE`,
   `SHUTTLE_ENGINE`, `POSE_CONF`, batching / overlap flags.
-  Startup **fails** if engines are missing or fail to load unless
-  `ALLOW_MISSING_MODELS=1` (CI unit tests). `/health` returns **503** when
-  models are not loaded.
+  `PARALLEL_DETECT` defaults to **0** (one GPU). Startup **fails** if
+  engines are missing or fail to load unless `ALLOW_MISSING_MODELS=1`
+  (CI unit tests). `/health` returns **503** when models are not loaded.
 - `ALLOW_FILE_URLS=1` required for `file://` benchmark I/O (set in Dockerfile for
   `sample.mp4`). **Reads** allowlisted under `/app`, `/tmp`, or
   `tempfile.gettempdir()`. **Writes** allowlisted under `/tmp` /
@@ -332,7 +351,7 @@ frame with default K=8 shuttle peaks and up to 4 poses × 17 kpts:
 |---|---|
 | ~bytes / frame | ~2–4 KiB JSON (varies with pose count) |
 | 30 min @ 30 fps | ~54k frames → ~100–200 MiB JSON |
-| Peak worker RAM | video file + one chunk of BGR (~48×1080p) + one peek frame + TrackNet micro-batch (≤16 triplets) + output file |
+| Peak worker RAM | video file + one chunk of BGR (~48×1080p) + one peek frame + TrackNet micro-batch (≤48 triplets) + output file |
 
 Analyze should stream-parse the frames array rather than loading whole files
 when matches grow long.

@@ -1,5 +1,9 @@
 """
-Export yolo26x-pose.pt → TensorRT INT8 engine.
+Export yolo26x-pose.pt → TensorRT engine (research / rebuild helper).
+
+Product bake (see models/MANIFEST.json) is FP16, batch 16, imgsz 640. This
+script's defaults (INT8, batch 8, imgsz 960) are for local rebuilds — set
+POSE_USE_INT8=0 POSE_BATCH=16 POSE_IMGSZ=640 to match the image.
 
 Engines are GPU-arch + TensorRT-version specific. Build on a host that matches
 the product image (`nvcr.io/nvidia/tensorrt:24.04-py3`) and the target vast GPU

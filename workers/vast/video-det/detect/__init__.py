@@ -95,6 +95,11 @@ class VideoDetector:
 
         self.pose = PoseEngine(pose_path, conf=config.conf)
         self.shuttle = ShuttleDetector(shuttle_path)
+        # Lifespan thread must not keep the CUDA context current — /detect/sync
+        # runs on a threadpool thread and PARALLEL_DETECT uses more threads.
+        from trt_io import detach_current_context
+
+        detach_current_context()
         self.pose_batch = self.pose.batch_size
         self.overlap_decode = _env_flag("OVERLAP_DECODE")
         self.parallel_detect = _env_flag("PARALLEL_DETECT")

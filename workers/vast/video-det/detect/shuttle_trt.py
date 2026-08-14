@@ -10,6 +10,8 @@ from pathlib import Path
 
 import numpy as np
 
+from trt_io import acquire_device_context, gpu_execute, host_dtype, nbytes
+
 log = logging.getLogger("video-det.shuttle_trt")
 
 _INPUT_H = 288
@@ -25,18 +27,7 @@ class TrackNetTrtRunner:
         import pycuda.driver as cuda
         import tensorrt as trt
 
-        # Init CUDA driver once per process (safe if already init).
-        try:
-            cuda.init()
-        except Exception:  # noqa: BLE001
-            pass
-        if not cuda.Device.count():
-            raise RuntimeError("ShuttleDetector requires a CUDA device")
-        # Keep a context for this process; autoinit may already have one.
-        try:
-            cuda.Context.get_current()
-        except cuda.LogicError:
-            cuda.Device(0).make_context()
+        self.cuda_ctx = acquire_device_context()
 
         path = Path(engine_path)
         if not path.is_file():
@@ -76,24 +67,27 @@ class TrackNetTrtRunner:
             out_shape = (self.batch, _OUT_CH, _INPUT_H, _INPUT_W)
         self.out_shape = out_shape
 
-        self._in_nbytes = int(np.prod(concrete_in)) * 4
-        self._out_nbytes = int(np.prod(out_shape)) * 4
+        self.in_np_dtype = host_dtype(engine.get_tensor_dtype(self.in_name))
+        self.out_np_dtype = host_dtype(engine.get_tensor_dtype(self.out_name))
+        self._in_nbytes = nbytes(concrete_in, self.in_np_dtype)
+        self._out_nbytes = nbytes(out_shape, self.out_np_dtype)
         self.d_in = cuda.mem_alloc(self._in_nbytes)
         self.d_out = cuda.mem_alloc(self._out_nbytes)
         self.stream = cuda.Stream()
         self.context.set_tensor_address(self.in_name, int(self.d_in))
         self.context.set_tensor_address(self.out_name, int(self.d_out))
 
-        # Host staging (page-locked when possible).
-        self.h_in = cuda.pagelocked_empty(concrete_in, dtype=np.float32)
-        self.h_out = cuda.pagelocked_empty(out_shape, dtype=np.float32)
+        self.h_in = cuda.pagelocked_empty(concrete_in, dtype=self.in_np_dtype)
+        self.h_out = cuda.pagelocked_empty(out_shape, dtype=self.out_np_dtype)
 
         log.info(
-            "TrackNetTrtRunner: %s batch=%d in=%s out=%s",
+            "TrackNetTrtRunner: %s batch=%d in=%s/%s out=%s/%s",
             path.name,
             self.batch,
             concrete_in,
+            self.in_np_dtype,
             out_shape,
+            self.out_np_dtype,
         )
 
     def forward(self, batch: np.ndarray) -> np.ndarray:
@@ -116,16 +110,17 @@ class TrackNetTrtRunner:
         if n > self.batch:
             raise RuntimeError(f"batch {n} > engine batch {self.batch}")
 
-        arr = np.ascontiguousarray(arr, dtype=np.float32)
+        arr = np.ascontiguousarray(arr, dtype=self.in_np_dtype)
         if n < self.batch:
             pad = np.repeat(arr[-1:], self.batch - n, axis=0)
             arr = np.concatenate([arr, pad], axis=0)
 
-        np.copyto(self.h_in, arr)
-        cuda.memcpy_htod_async(self.d_in, self.h_in, self.stream)
-        ok = self.context.execute_async_v3(self.stream.handle)
-        if not ok:
-            raise RuntimeError("TrackNet TRT execute_async_v3 failed")
-        cuda.memcpy_dtoh_async(self.h_out, self.d_out, self.stream)
-        self.stream.synchronize()
-        return np.array(self.h_out[:n], copy=True)
+        with gpu_execute(self.cuda_ctx):
+            np.copyto(self.h_in, arr)
+            cuda.memcpy_htod_async(self.d_in, self.h_in, self.stream)
+            ok = self.context.execute_async_v3(self.stream.handle)
+            if not ok:
+                raise RuntimeError("TrackNet TRT execute_async_v3 failed")
+            cuda.memcpy_dtoh_async(self.h_out, self.d_out, self.stream)
+            self.stream.synchronize()
+            return np.array(self.h_out[:n], copy=True).astype(np.float32, copy=False)

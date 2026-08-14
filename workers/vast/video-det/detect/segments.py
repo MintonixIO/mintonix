@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Mapping, Sequence
 
+from .types import json_float
+
 
 def islands_from_frame_shifts(
     frame_shifts: Sequence[Mapping[str, Any]] | None,
@@ -69,11 +71,7 @@ def build_segments(
         }
         conf = sc.get("score_conf", sc.get("conf"))
         if conf is not None:
-            try:
-                c = float(conf)
-            except (TypeError, ValueError):
-                c = 0.0
-            entry["score_conf"] = max(0.0, min(1.0, c))
+            entry["score_conf"] = max(0.0, min(1.0, json_float(conf)))
         segments.append(entry)
     return segments
 
@@ -83,6 +81,115 @@ def representative_frame(start: int, end: int) -> int:
     if end < start:
         return max(0, start)
     return start + (end - start) // 2
+
+
+# Island index distance: |i-j| < 3 is "less than 2 islands apart" — at most
+# one island between them. Same (t1, t2) islands within that window form one
+# rally (mid-rally cutaway included in the span). Farther repeats stay split.
+MAX_RALLY_ISLAND_GAP = 2
+
+
+def _segment_score(seg: Mapping[str, Any]) -> tuple[int, int]:
+    raw = seg.get("score")
+    if isinstance(raw, Mapping):
+        try:
+            return max(0, int(raw.get("t1", 0))), max(0, int(raw.get("t2", 0)))
+        except (TypeError, ValueError):
+            return 0, 0
+    return 0, 0
+
+
+def _segment_conf(seg: Mapping[str, Any]) -> float | None:
+    raw = seg.get("score_conf", seg.get("conf"))
+    if raw is None:
+        return None
+    try:
+        return max(0.0, min(1.0, float(raw)))
+    except (TypeError, ValueError):
+        return None
+
+
+def rallies_from_segments(
+    segments: Sequence[Mapping[str, Any]],
+    *,
+    max_gap: int = MAX_RALLY_ISLAND_GAP,
+) -> list[dict[str, Any]]:
+    """Group islands into rallies by same score within ``max_gap`` index distance.
+
+    ``max_gap=2`` means |i-j| <= 2: adjacent islands, or one island between.
+    The rally span is min(start)…max(end) of the component so a single
+    intervening cutaway stays one physics run. Same score farther away is a
+    new rally (avoids merging an entire 0–0 OCR-failure match into one run
+    across distant islands — adjacent 0–0 islands still chain).
+    """
+    n = len(segments)
+    if n == 0:
+        return []
+    parent = list(range(n))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(a: int, b: int) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    scores = [_segment_score(s) for s in segments]
+    for i in range(n):
+        for j in range(i + 1, min(n, i + max_gap + 1)):
+            if scores[i] == scores[j]:
+                union(i, j)
+
+    groups: dict[int, list[int]] = {}
+    for i in range(n):
+        groups.setdefault(find(i), []).append(i)
+
+    raw: list[dict[str, Any]] = []
+    for idxs in groups.values():
+        lo, hi = min(idxs), max(idxs)
+        # Absorb islands between the grouped same-score members (the cutaway).
+        covered = list(range(lo, hi + 1))
+        members = [segments[k] for k in covered]
+        try:
+            start = min(int(m["start_frame"]) for m in members)
+            end = max(int(m["end_frame"]) for m in members)
+        except (KeyError, TypeError, ValueError):
+            continue
+        t1, t2 = scores[idxs[0]]
+        entry: dict[str, Any] = {
+            "start_frame": start,
+            "end_frame": end,
+            "score": {"t1": t1, "t2": t2},
+            "_lo": lo,
+            "_hi": hi,
+        }
+        confs = [
+            c
+            for c in (_segment_conf(segments[i]) for i in idxs)
+            if c is not None
+        ]
+        if confs:
+            entry["score_conf"] = max(confs)
+        raw.append(entry)
+
+    # Drop a component fully inside a wider one (cutaway singleton).
+    raw.sort(key=lambda r: (r["_lo"], -(r["_hi"] - r["_lo"])))
+    kept: list[dict[str, Any]] = []
+    for entry in raw:
+        if any(entry["_lo"] >= k["_lo"] and entry["_hi"] <= k["_hi"] for k in kept):
+            continue
+        kept.append(entry)
+    rallies: list[dict[str, Any]] = []
+    for entry in kept:
+        entry.pop("_lo", None)
+        entry.pop("_hi", None)
+        rallies.append(entry)
+    rallies.sort(key=lambda r: (r["start_frame"], r["end_frame"]))
+    return rallies
 
 
 def clamp_segments_to_frame_count(

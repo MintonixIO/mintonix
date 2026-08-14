@@ -1,5 +1,15 @@
+import math
 from dataclasses import dataclass
 from typing import Optional
+
+
+def json_float(value: object, default: float = 0.0) -> float:
+    """Finite float for JSON (NaN/Inf → default). ``json.dumps`` emits invalid NaN."""
+    try:
+        out = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+    return out if math.isfinite(out) else default
 
 
 @dataclass
@@ -41,15 +51,25 @@ class FrameResult:
 
     def to_dict(self) -> dict:
         return {
-            "frame": self.frame,
+            "frame": int(self.frame),
             "poses": [
                 {
-                    "keypoints": [[kp.x, kp.y, kp.conf] for kp in p.keypoints],
-                    "bbox": list(p.bbox),
-                    "conf": p.conf,
+                    "keypoints": [
+                        [json_float(kp.x), json_float(kp.y), json_float(kp.conf)]
+                        for kp in p.keypoints
+                    ],
+                    "bbox": [json_float(v) for v in p.bbox],
+                    "conf": json_float(p.conf),
                     "player_id": p.player_id,
                 }
                 for p in self.poses
             ],
-            "shuttle": [{"x": c.x, "y": c.y, "conf": c.conf} for c in self.shuttle],
+            "shuttle": [
+                {
+                    "x": json_float(c.x),
+                    "y": json_float(c.y),
+                    "conf": json_float(c.conf),
+                }
+                for c in self.shuttle
+            ],
         }

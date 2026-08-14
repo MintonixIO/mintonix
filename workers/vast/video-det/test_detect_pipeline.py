@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import unittest
 from pathlib import Path
@@ -46,6 +47,27 @@ class TestFrameResultJson(unittest.TestCase):
         self.assertEqual(len(d["poses"][0]["keypoints"]), 17)
         self.assertEqual(len(d["shuttle"]), 2)
         self.assertEqual(d["shuttle"][0]["x"], 0.4)
+
+    def test_to_dict_sanitizes_nan_inf(self) -> None:
+        fr = FrameResult(
+            frame=0,
+            poses=[
+                PoseResult(
+                    keypoints=[Keypoint(float("nan"), float("inf"), 0.9)] * 17,
+                    bbox=(0.0, float("nan"), 0.5, 0.5),
+                    conf=float("nan"),
+                    player_id=None,
+                )
+            ],
+            shuttle=[ShuttleCandidate(float("inf"), 0.2, float("nan"))],
+        )
+        d = fr.to_dict()
+        raw = json.dumps(d)
+        self.assertNotIn("NaN", raw)
+        self.assertNotIn("Infinity", raw)
+        self.assertEqual(d["poses"][0]["keypoints"][0][0], 0.0)
+        self.assertEqual(d["shuttle"][0]["x"], 0.0)
+        self.assertEqual(d["shuttle"][0]["conf"], 0.0)
 
 
 class TestDetectConfig(unittest.TestCase):
@@ -492,6 +514,55 @@ class TestVideoDetectorSinglePassMock(unittest.TestCase):
         root = P(__file__).resolve().parent
         self.assertIsNone(importlib.util.find_spec("detect.reid"))
         self.assertFalse((root / "detect" / "reid.py").exists())
+
+
+class TestTrtIo(unittest.TestCase):
+    def test_host_dtype_float_and_half(self) -> None:
+        from trt_io import host_dtype, nbytes
+
+        self.assertEqual(host_dtype("DataType.FLOAT"), np.dtype(np.float32))
+        self.assertEqual(host_dtype("HALF"), np.dtype(np.float16))
+        self.assertEqual(nbytes((2, 3, 4), np.dtype(np.float32)), 2 * 3 * 4 * 4)
+        self.assertEqual(nbytes((2, 3, 4), np.dtype(np.float16)), 2 * 3 * 4 * 2)
+
+    def test_host_dtype_rejects_int8(self) -> None:
+        from trt_io import host_dtype
+
+        with self.assertRaises(RuntimeError):
+            host_dtype("INT8")
+
+
+class TestJsonFloat(unittest.TestCase):
+    def test_finite_and_fallback(self) -> None:
+        from detect.types import json_float
+
+        self.assertEqual(json_float(1.5), 1.5)
+        self.assertEqual(json_float(float("nan")), 0.0)
+        self.assertEqual(json_float(float("inf"), default=0.0), 0.0)
+        self.assertEqual(json_float("nope"), 0.0)
+
+
+class TestProbeVideo(unittest.TestCase):
+    def test_reads_dimensions_from_written_video(self) -> None:
+        import tempfile
+
+        import cv2
+
+        from detect.output import probe_video
+
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "tiny.mp4"
+            w = cv2.VideoWriter(
+                str(path), cv2.VideoWriter_fourcc(*"mp4v"), 12.0, (64, 48)
+            )
+            frame = np.zeros((48, 64, 3), dtype=np.uint8)
+            for _ in range(3):
+                w.write(frame)
+            w.release()
+            meta = probe_video(path)
+            self.assertEqual(meta["width"], 64)
+            self.assertEqual(meta["height"], 48)
+            self.assertGreater(meta["fps"], 0.0)
 
 
 if __name__ == "__main__":

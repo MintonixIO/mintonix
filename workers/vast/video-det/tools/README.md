@@ -14,6 +14,13 @@ pose uses `pose.trt_runtime._TrtRunner.infer` only.
 python -c "from tools.ffmpeg_pose_bench.ffmpeg_feed import run_ffmpeg_pose"
 ```
 
+## `run_ds1_eval.py` / `remote_ds1_bootstrap.sh`
+
+GPU-host eval. Writes the **Engine** `detections.json` (meta + `segments` +
+`rallies` + `frames`) via the same writer as `server.py`. Requires
+`POSE_ENGINE` + `SHUTTLE_ENGINE` (no `.pt`). Optional `--annotation` and
+`--preprocess-log` (bootstrap picks them up from `$DS1/` when present).
+
 ## `visualize_detections.py`
 
 Overlay product `detections.json` (pose + shuttle) on a match video for quality review.
@@ -23,7 +30,7 @@ Overlay product `detections.json` (pose + shuttle) on a match video for quality 
 | | |
 |---|---|
 | Video | e.g. `matches/…/normalized.mp4` |
-| Detections | product JSON: `{ "job_id", "frames": [ { frame, poses, shuttle } ] }` |
+| Detections | product JSON: `{ "job_id", "fps", "width", "height", "segments", "rallies", "frames" }` (overlay uses `frames[]`) |
 
 Coords are **normalized [0,1]** of the source frame for both pose and shuttle peaks.
 

@@ -20,6 +20,7 @@ from detect.segments import (
     clamp_segments_to_frame_count,
     fallback_island,
     islands_from_frame_shifts,
+    rallies_from_segments,
     representative_frame,
 )
 from detect.types import FrameResult, ShuttleCandidate
@@ -164,6 +165,57 @@ class TestPreprocessLog(unittest.TestCase):
         self.assertEqual(parse_preprocess_log(None), [])
 
 
+class TestRallies(unittest.TestCase):
+    def _seg(self, start: int, end: int, t1: int, t2: int, conf: float = 0.9):
+        return {
+            "start_frame": start,
+            "end_frame": end,
+            "score": {"t1": t1, "t2": t2},
+            "score_conf": conf,
+        }
+
+    def test_adjacent_same_score_merges(self) -> None:
+        segs = [
+            self._seg(0, 10, 5, 3),
+            self._seg(11, 20, 5, 3),
+        ]
+        rallies = rallies_from_segments(segs)
+        self.assertEqual(len(rallies), 1)
+        self.assertEqual(rallies[0]["start_frame"], 0)
+        self.assertEqual(rallies[0]["end_frame"], 20)
+        self.assertEqual(rallies[0]["score"], {"t1": 5, "t2": 3})
+
+    def test_one_island_between_same_score_merges(self) -> None:
+        segs = [
+            self._seg(0, 10, 5, 3, 0.9),
+            self._seg(11, 15, 0, 0, 0.1),
+            self._seg(16, 30, 5, 3, 0.8),
+        ]
+        rallies = rallies_from_segments(segs)
+        # One intervening island is absorbed into the same physics run.
+        self.assertEqual(len(rallies), 1)
+        self.assertEqual(rallies[0]["start_frame"], 0)
+        self.assertEqual(rallies[0]["end_frame"], 30)
+        self.assertEqual(rallies[0]["score"], {"t1": 5, "t2": 3})
+        self.assertEqual(rallies[0]["score_conf"], 0.9)
+
+    def test_two_islands_between_same_score_stay_split(self) -> None:
+        segs = [
+            self._seg(0, 10, 5, 3),
+            self._seg(11, 15, 0, 0),
+            self._seg(16, 20, 1, 0),
+            self._seg(21, 40, 5, 3),
+        ]
+        rallies = rallies_from_segments(segs)
+        fives = [r for r in rallies if r["score"] == {"t1": 5, "t2": 3}]
+        self.assertEqual(len(fives), 2)
+        self.assertEqual(fives[0]["end_frame"], 10)
+        self.assertEqual(fives[1]["start_frame"], 21)
+
+    def test_empty(self) -> None:
+        self.assertEqual(rallies_from_segments([]), [])
+
+
 class TestWriteDetectionsJson(unittest.TestCase):
     def test_engine_envelope(self) -> None:
         frames = [
@@ -195,7 +247,15 @@ class TestWriteDetectionsJson(unittest.TestCase):
             )
             self.assertEqual(n, 3)
             body = json.loads(dest.read_text())
-            for key in ("job_id", "fps", "width", "height", "segments", "frames"):
+            for key in (
+                "job_id",
+                "fps",
+                "width",
+                "height",
+                "segments",
+                "rallies",
+                "frames",
+            ):
                 self.assertIn(key, body)
             self.assertEqual(body["job_id"], "job-9")
             self.assertEqual(body["width"], 1920)
@@ -203,6 +263,8 @@ class TestWriteDetectionsJson(unittest.TestCase):
             self.assertEqual(len(body["frames"]), 3)
             self.assertEqual(body["frames"][0]["frame"], 0)
             self.assertEqual(body["segments"][0]["end_frame"], 2)  # clamped
+            self.assertEqual(len(body["rallies"]), 1)
+            self.assertEqual(body["rallies"][0]["end_frame"], 2)
             self.assertFalse(dest.with_suffix(".json.frames.partial").exists())
 
     def test_empty_segments_fallback(self) -> None:
@@ -223,6 +285,23 @@ class TestWriteDetectionsJson(unittest.TestCase):
             self.assertEqual(body["fps"], 30.0)  # default when probe missing
             self.assertEqual(len(body["segments"]), 1)
             self.assertEqual(body["segments"][0]["end_frame"], 0)
+            self.assertEqual(len(body["rallies"]), 1)
+
+
+class TestDebugSidecars(unittest.TestCase):
+    def test_discover_and_load(self) -> None:
+        import debug as debug_mod
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "annotation.json").write_text('{"court":{}}', encoding="utf-8")
+            video = root / "normalized.mp4"
+            video.write_bytes(b"x")
+            found = debug_mod._discover_sidecar(video, "annotation.json")
+            self.assertEqual(found, root / "annotation.json")
+            self.assertIsNone(debug_mod._discover_sidecar(video, "preprocess-log.json"))
+            data = debug_mod._load_json_file(found)
+            self.assertEqual(data, {"court": {}})
 
 
 if __name__ == "__main__":

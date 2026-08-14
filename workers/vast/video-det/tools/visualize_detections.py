@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Overlay pose + shuttle detections onto a match video for quality review.
 
-Reads product `detections.json` (`job_id` + `frames[]`; ignores `segments`) and draws:
+Reads product `detections.json` (`job_id` + `frames[]`; ignores `segments` /
+`rallies`) and draws:
   - pose: COCO-17 skeleton, keypoints, bbox, conf / player_id
   - shuttle: top-K peaks as colored rings (rank-coded), conf labels
 

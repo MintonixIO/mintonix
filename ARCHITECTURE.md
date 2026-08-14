@@ -204,7 +204,7 @@ PyWorker may wrap as `{ input: env }`.
   "callback_token": "<HS256 JWT>"
 }
 // Worker route: POST /detect/sync (video-det)
-// detections.json: fps/width/height + segments[] (islands + OCR) + frames[]
+// detections.json: fps/width/height + segments[] + rallies[] + frames[]
 ```
 
 #### Worker → `jobs/callback` (Bearer `callback_token`)
@@ -275,7 +275,7 @@ Regression *to* stage S deletes S outputs **and** every later stage's outputs.
 | Stage | Worker | Status | In | Out |
 |---|---|---|---|---|
 | `normalize` | `workers/vast/video-preprocess` (`POST /preprocess/sync`) | ✅ | original / YouTube URL (worker yt-dlp ✅); always annotation.json (corners + net poles for later stages). Path: YouTube→BWF court cut, B2/CDN→full encode; `file://` not supported | normalized.mp4, thumbnail.jpg, preprocess-log.json |
-| `detect` | `workers/vast/video-det` | 🚧 worker + `STAGES.detect` wired; Engine envelope live | normalized.mp4 + annotation.json + preprocess-log.json | detections.json (`fps`/`width`/`height`, `segments[]` islands + scoreboard OCR, `frames[]` pose + TrackNetV5 **top-K shuttle** UV [0,1]; `player_id` always null). `server.py` + `detect/` + `pose/` |
+| `detect` | `workers/vast/video-det` | 🚧 worker + `STAGES.detect` wired; Engine envelope live | normalized.mp4 + annotation.json + preprocess-log.json | detections.json (`fps`/`width`/`height`, `segments[]` islands + scoreboard OCR, `rallies[]` same-score islands with at most one island between them, `frames[]` pose + TrackNetV5 **top-K shuttle** UV [0,1]; `player_id` always null). TRT-only pose + shuttle. `server.py` + `detect/` + `pose/` |
 | `analyze` | `workers/…/analysis` | 📐 | detections.json + annotation.json | analysis.json: 3D shuttle trajectory (physics fit), player ground-plane positions (homography), metrics (TBD) |
 
 `analyze` is CPU-dominant (geometry + curve fitting, no NN inference) — it can

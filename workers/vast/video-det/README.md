@@ -10,7 +10,7 @@ and a single-use `callback_token`.
 |---|---|
 | **Stage** | `detect` (after `normalize`; MVP terminal → match `ready`) |
 | **In** | `normalized.mp4` + `annotation.json` + `preprocess-log.json` (presigned GET) |
-| **Out** | `detections.json` (presigned PUT; Engine envelope: meta + `segments` + `frames`) |
+| **Out** | `detections.json` (presigned PUT; Engine envelope: meta + `segments` + `rallies` + `frames`) |
 | **HTTP** | `POST /detect/sync` (PyWorker → FastAPI model server) |
 | **Dispatcher** | `supabase/functions/jobs` → `STAGES.detect` |
 
@@ -63,8 +63,18 @@ Callback body: `{ "request_id", "status": "success"|"failed", … }` — see roo
 [`ARCHITECTURE.md`](../../../ARCHITECTURE.md) § One job contract.
 
 Output: Engine `detections.json` — `fps`/`width`/`height`, `segments[]`
-(islands + scoreboard OCR), `frames[]` (pose + top-K shuttle UV `[0,1]`).
+(islands + scoreboard OCR), `rallies[]` (same-score islands with at most
+one island between them), `frames[]` (pose + top-K shuttle UV `[0,1]`).
 Full shape in [ARCHITECTURE.md](ARCHITECTURE.md).
+
+Local debug (GPU host, same Engine writer as the server):
+
+```bash
+python3 debug.py /data/normalized.mp4 --out ./debug-detect \
+  --annotation /data/annotation.json \
+  --preprocess-log /data/preprocess-log.json
+# Sidecars next to a local video are picked up automatically if flags omitted.
+```
 
 ## Local tests
 

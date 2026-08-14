@@ -2,9 +2,9 @@
 
 Focused suites (same package dir, auto-discovered by pytest/unittest):
   - test_io_util.py           I/O, safe_error_message, upload/download
-  - test_detect_pipeline.py   pose/shuttle/ReID/chunk/VideoDetector
+  - test_detect_pipeline.py   pose/shuttle/chunk/VideoDetector/TRT I/O helpers
   - test_server_contract.py   FastAPI health/startup/product imports
-  - test_segments.py          Engine segments / scoreboard / detections envelope
+  - test_segments.py          Engine segments / rallies / scoreboard / envelope
 
 Run from this directory:
   python -m pytest test_*.py -q

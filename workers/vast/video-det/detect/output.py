@@ -19,9 +19,10 @@ from .segments import (
     clamp_segments_to_frame_count,
     fallback_island,
     islands_from_frame_shifts,
+    rallies_from_segments,
     representative_frame,
 )
-from .types import FrameResult
+from .types import FrameResult, json_float
 
 log = logging.getLogger("video-det.output")
 
@@ -42,6 +43,10 @@ def probe_video(path: Path) -> dict[str, Any]:
         h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
         fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
         n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        if w <= 0 or h <= 0:
+            ok, frame = cap.read()
+            if ok and frame is not None and frame.size:
+                h, w = int(frame.shape[0]), int(frame.shape[1])
         meta["width"] = max(0, w)
         meta["height"] = max(0, h)
         meta["fps"] = float(fps) if fps > 0 else 0.0
@@ -143,9 +148,10 @@ def write_detections_json(
     """Stream-write Engine ``detections.json``. Returns frame count.
 
     Required top-level fields: ``job_id``, ``fps``, ``width``, ``height``,
-    ``segments``, ``frames``. Frames are written incrementally so long matches
-    stay memory-bounded. Segments are finalized after the stream so
-    ``end_frame`` can clamp to the true last decoded index.
+    ``segments``, ``rallies``, ``frames``. Frames are written incrementally so
+    long matches stay memory-bounded. Segments are finalized after the stream
+    so ``end_frame`` can clamp to the true last decoded index. Rallies group
+    same-score islands with at most one island between them.
     """
     # Buffer frame dicts only as JSON lines on a side file, then assemble —
     # avoids holding all FrameResult objects while still knowing frame_count
@@ -172,12 +178,27 @@ def write_detections_json(
             )
         if frame_count > 0 and not final_segments:
             raise RuntimeError("detections.json requires non-empty segments")
+        final_rallies = rallies_from_segments(final_segments)
+        if frame_count > 0 and not final_rallies:
+            raise RuntimeError("detections.json requires non-empty rallies")
 
-        out_fps = float(fps) if fps and fps > 0 else 0.0
+        out_fps = json_float(fps)
         if out_fps <= 0 and frame_count > 0:
             # Last resort so Engine gets a number; 30 is common delivery default.
             out_fps = 30.0
             log.warning("video fps missing; defaulting detections.fps=30")
+        out_w = max(0, int(width))
+        out_h = max(0, int(height))
+        if frame_count > 0 and (out_w <= 0 or out_h <= 0):
+            probed = probe_video(video_path)
+            out_w = max(out_w, int(probed.get("width") or 0))
+            out_h = max(out_h, int(probed.get("height") or 0))
+            if out_w <= 0 or out_h <= 0:
+                log.warning(
+                    "video width/height missing after probe; writing %dx%d",
+                    out_w,
+                    out_h,
+                )
 
         with dest.open("w", encoding="utf-8") as f:
             f.write("{")
@@ -186,11 +207,13 @@ def write_detections_json(
             f.write(',"fps":')
             f.write(json.dumps(out_fps))
             f.write(',"width":')
-            f.write(json.dumps(int(width)))
+            f.write(json.dumps(out_w))
             f.write(',"height":')
-            f.write(json.dumps(int(height)))
+            f.write(json.dumps(out_h))
             f.write(',"segments":')
             f.write(json.dumps(final_segments, separators=(",", ":")))
+            f.write(',"rallies":')
+            f.write(json.dumps(final_rallies, separators=(",", ":")))
             f.write(',"frames":[')
             if frame_count > 0:
                 with side.open("r", encoding="utf-8") as pf:

@@ -180,6 +180,8 @@ class TestServerHealthAndStartup(unittest.TestCase):
             self.assertEqual(len(body["frames"]), 2)
             self.assertEqual(len(body["segments"]), 1)
             self.assertEqual(body["segments"][0]["score"], {"t1": 5, "t2": 3})
+            self.assertEqual(len(body["rallies"]), 1)
+            self.assertEqual(body["rallies"][0]["score"], {"t1": 5, "t2": 3})
         server_mod._detector = None
 
     def test_uses_lifespan_not_on_event(self) -> None:
@@ -255,6 +257,7 @@ class TestProductImports(unittest.TestCase):
             root / "server.py",
             root / "worker.py",
             root / "io_util.py",
+            root / "trt_io.py",
             *sorted((root / "detect").glob("*.py")),
             root / "pose" / "engine.py",
             root / "pose" / "__init__.py",

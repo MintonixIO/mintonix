@@ -11,6 +11,8 @@ from pathlib import Path
 
 import numpy as np
 
+from trt_io import acquire_device_context, gpu_execute, host_dtype, nbytes
+
 from .letterbox import IMGSZ
 
 CHANNELS = 3
@@ -45,17 +47,7 @@ class _TrtRunner:
         import pycuda.driver as cuda
         import tensorrt as trt
 
-        try:
-            cuda.init()
-        except Exception:  # noqa: BLE001
-            pass
-        if not cuda.Device.count():
-            raise RuntimeError("PoseEngine requires a CUDA device")
-        try:
-            cuda.Context.get_current()
-        except cuda.LogicError:
-            cuda.Device(0).make_context()
-
+        self.cuda_ctx = acquire_device_context()
         self.engine = engine
         self.batch = batch
         self.imgsz = int(imgsz)
@@ -85,19 +77,21 @@ class _TrtRunner:
         self.out_shape = out_shape
 
         in_shape = (batch, CHANNELS, self.imgsz, self.imgsz)
-        self._in_nbytes = int(np.prod(in_shape)) * 4
-        self._out_nbytes = int(np.prod(out_shape)) * 4
+        self.in_np_dtype = host_dtype(engine.get_tensor_dtype(self.in_name))
+        self.out_np_dtype = host_dtype(engine.get_tensor_dtype(self.out_name))
+        self._in_nbytes = nbytes(in_shape, self.in_np_dtype)
+        self._out_nbytes = nbytes(out_shape, self.out_np_dtype)
         self.d_in = cuda.mem_alloc(self._in_nbytes)
         self.d_out = cuda.mem_alloc(self._out_nbytes)
         self.stream = cuda.Stream()
         self.context.set_tensor_address(self.in_name, int(self.d_in))
         self.context.set_tensor_address(self.out_name, int(self.d_out))
 
-        self.h_in = cuda.pagelocked_empty(in_shape, dtype=np.float32)
-        self.h_out = cuda.pagelocked_empty(out_shape, dtype=np.float32)
+        self.h_in = cuda.pagelocked_empty(in_shape, dtype=self.in_np_dtype)
+        self.h_out = cuda.pagelocked_empty(out_shape, dtype=self.out_np_dtype)
 
     def infer(self, host_arr: np.ndarray) -> np.ndarray:
-        """Run one full batch: host NHWC uint8 → host float TRT output."""
+        """Run one full batch: host NHWC uint8 → host float32 TRT output."""
         import pycuda.driver as cuda
 
         arr = np.asarray(host_arr)
@@ -106,21 +100,23 @@ class _TrtRunner:
                 f"expected host NHWC ({self.batch},{self.imgsz},{self.imgsz},3), "
                 f"got {arr.shape}"
             )
-        # NHWC uint8 → NCHW float32 on host (letterbox already applied).
+        # NHWC uint8 → NCHW float on host (letterbox already applied).
         nchw = (
             arr.astype(np.float32)
             .transpose(0, 3, 1, 2)
             .copy()
             / 255.0
         )
-        np.copyto(self.h_in, nchw)
-        cuda.memcpy_htod_async(self.d_in, self.h_in, self.stream)
-        ok = self.context.execute_async_v3(self.stream.handle)
-        if not ok:
-            raise RuntimeError("Pose TRT execute_async_v3 failed")
-        cuda.memcpy_dtoh_async(self.h_out, self.d_out, self.stream)
-        self.stream.synchronize()
-        return np.array(self.h_out, copy=True)
+        nchw = np.ascontiguousarray(nchw, dtype=self.in_np_dtype)
+        with gpu_execute(self.cuda_ctx):
+            np.copyto(self.h_in, nchw)
+            cuda.memcpy_htod_async(self.d_in, self.h_in, self.stream)
+            ok = self.context.execute_async_v3(self.stream.handle)
+            if not ok:
+                raise RuntimeError("Pose TRT execute_async_v3 failed")
+            cuda.memcpy_dtoh_async(self.h_out, self.d_out, self.stream)
+            self.stream.synchronize()
+            return np.array(self.h_out, copy=True).astype(np.float32, copy=False)
 
 
 # Back-compat alias for research tools / older imports.
