@@ -9,8 +9,12 @@ still-wrapped body):
     POST /detect/sync
         {
           "request_id": "...",                 # job_id
-          "input_url": "...",                  # presigned GET or file://
+          "input_url": "...",                  # presigned GET or file:// normalized.mp4
           "output_upload_url": "...",          # presigned PUT or file:// for detections.json
+          "annotation_url": "...",             # optional presigned GET annotation.json
+          "preprocess_log_url": "...",         # optional presigned GET preprocess-log.json
+          "annotation": { … },                 # optional inline (tests / local)
+          "preprocess_log": { … },             # optional inline (tests / local)
           "callback_url": "...",               # jobs/callback
           "callback_token": "..."              # Bearer token (HMAC JWT)
         }
@@ -47,6 +51,11 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
 from detect import DetectConfig, VideoDetector
+from detect.output import (
+    build_segments_for_video,
+    probe_video,
+    write_detections_json,
+)
 from io_util import download, post_callback, safe_error_message, upload_file
 
 _DEFAULT_CALLBACK_PATH_SUFFIX = "/functions/v1/jobs/callback"
@@ -192,12 +201,25 @@ async def detect_sync(request: Request) -> JSONResponse:
 
     # Job work is blocking (download + GPU); run off the event loop. Callback
     # POSTs inside the thread so a disconnected dispatcher still gets the result.
+    annotation = body.get("annotation") if isinstance(body.get("annotation"), dict) else None
+    preprocess_log = (
+        body.get("preprocess_log")
+        if isinstance(body.get("preprocess_log"), dict)
+        else None
+    )
+    annotation_url = body.get("annotation_url")
+    preprocess_log_url = body.get("preprocess_log_url")
+
     def run_and_report() -> dict:
         try:
             result = _run_job(
                 request_id=request_id,
                 input_url=input_url,
                 output_upload_url=output_upload_url,
+                annotation=annotation,
+                preprocess_log=preprocess_log,
+                annotation_url=annotation_url,
+                preprocess_log_url=preprocess_log_url,
             )
         except Exception as e:
             err = safe_error_message(e)
@@ -247,11 +269,33 @@ async def detect_sync(request: Request) -> JSONResponse:
 # Job body
 # ---------------------------------------------------------------------------
 
+def _download_json(url: str | None, *, label: str) -> dict | None:
+    """Best-effort GET of a small JSON sidecar. Missing URL or HTTP fail → None."""
+    if not url or not isinstance(url, str):
+        return None
+    fd, name = tempfile.mkstemp(suffix=".json")
+    os.close(fd)
+    tmp = Path(name)
+    try:
+        download(url, tmp, max_bytes=32 * 1024 * 1024)
+        data = json.loads(tmp.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except Exception as e:  # noqa: BLE001
+        log.warning("optional %s download failed: %s", label, safe_error_message(e))
+        return None
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
 def _run_job(
     *,
     request_id: str | None,
     input_url: str,
     output_upload_url: str,
+    annotation: dict | None = None,
+    preprocess_log: dict | None = None,
+    annotation_url: str | None = None,
+    preprocess_log_url: str | None = None,
 ) -> dict:
     assert _detector is not None
     t0 = time.monotonic()
@@ -266,8 +310,29 @@ def _run_job(
     try:
         download(input_url, video_tmp)
 
+        if annotation is None:
+            annotation = _download_json(annotation_url, label="annotation.json")
+        if preprocess_log is None:
+            preprocess_log = _download_json(
+                preprocess_log_url, label="preprocess-log.json"
+            )
+
+        meta = probe_video(video_tmp)
+        segments = build_segments_for_video(
+            video_path=video_tmp,
+            annotation=annotation,
+            preprocess_log=preprocess_log,
+            frame_count_hint=int(meta.get("frame_count_hint") or 0),
+        )
+
         frame_count = _stream_detections_json(
-            json_tmp, request_id=request_id, video_path=video_tmp
+            json_tmp,
+            request_id=request_id,
+            video_path=video_tmp,
+            segments=segments,
+            fps=float(meta.get("fps") or 0.0),
+            width=int(meta.get("width") or 0),
+            height=int(meta.get("height") or 0),
         )
         if frame_count == 0:
             raise RuntimeError("no frames decoded from video")
@@ -275,9 +340,10 @@ def _run_job(
 
         elapsed = time.monotonic() - t0
         log.info(
-            "detect(done): request_id=%s frames=%d elapsed=%.1fs",
+            "detect(done): request_id=%s frames=%d segments=%d elapsed=%.1fs",
             request_id,
             frame_count,
+            len(segments),
             elapsed,
         )
         return {"frame_count": frame_count, "elapsed_sec": round(elapsed, 3)}
@@ -291,24 +357,23 @@ def _stream_detections_json(
     *,
     request_id: str | None,
     video_path: Path,
+    segments: list | None = None,
+    fps: float = 0.0,
+    width: int = 0,
+    height: int = 0,
 ) -> int:
-    """Write detections.json incrementally so long matches stay memory-bounded."""
+    """Write Engine detections.json (meta + segments + streamed frames)."""
     assert _detector is not None
-    frame_count = 0
-    first = True
-    with dest.open("w", encoding="utf-8") as f:
-        f.write('{"job_id":')
-        f.write(json.dumps(request_id))
-        f.write(',"frames":[')
-        for chunk_results in _detector.run(video_path):
-            for fr in chunk_results:
-                if not first:
-                    f.write(",")
-                f.write(json.dumps(fr.to_dict(), separators=(",", ":")))
-                first = False
-                frame_count += 1
-        f.write("]}")
-    return frame_count
+    return write_detections_json(
+        dest,
+        request_id=request_id,
+        video_path=video_path,
+        frame_chunks=_detector.run(video_path),
+        segments=segments or [],
+        fps=fps,
+        width=width,
+        height=height,
+    )
 
 
 if __name__ == "__main__":

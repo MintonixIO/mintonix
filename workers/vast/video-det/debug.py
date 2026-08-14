@@ -525,23 +525,33 @@ def _stream_detections_json(
     *,
     request_id: str,
     video_path: Path,
+    annotation: dict[str, Any] | None = None,
+    preprocess_log: dict[str, Any] | None = None,
 ) -> int:
-    """Same incremental JSON writer as server._stream_detections_json."""
-    frame_count = 0
-    first = True
-    with dest.open("w", encoding="utf-8") as f:
-        f.write('{"job_id":')
-        f.write(json.dumps(request_id))
-        f.write(',"frames":[')
-        for chunk_results in detector.run(video_path):
-            for fr in chunk_results:
-                if not first:
-                    f.write(",")
-                f.write(json.dumps(fr.to_dict(), separators=(",", ":")))
-                first = False
-                frame_count += 1
-        f.write("]}")
-    return frame_count
+    """Same Engine writer as server._stream_detections_json."""
+    from detect.output import (
+        build_segments_for_video,
+        probe_video,
+        write_detections_json,
+    )
+
+    meta = probe_video(video_path)
+    segments = build_segments_for_video(
+        video_path=video_path,
+        annotation=annotation,
+        preprocess_log=preprocess_log,
+        frame_count_hint=int(meta.get("frame_count_hint") or 0),
+    )
+    return write_detections_json(
+        dest,
+        request_id=request_id,
+        video_path=video_path,
+        frame_chunks=detector.run(video_path),
+        segments=segments,
+        fps=float(meta.get("fps") or 0.0),
+        width=int(meta.get("width") or 0),
+        height=int(meta.get("height") or 0),
+    )
 
 
 def run_detect_job(

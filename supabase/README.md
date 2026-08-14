@@ -224,7 +224,7 @@ normalized.mp4            primary cleaned asset (full normalize OR BWF cut)
 thumbnail.jpg
 preprocess-log.json       frame shifts + worker fingerprint + stage timings
 annotation.json           court geometry + player labels (single file)
-detections.json           detect output
+detections.json           detect output (Engine: meta + segments + frames)
 analysis.json             analyze output
 ```
 

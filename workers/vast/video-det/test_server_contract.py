@@ -156,12 +156,30 @@ class TestServerHealthAndStartup(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             dest = Path(td) / "d.json"
             n = server_mod._stream_detections_json(
-                dest, request_id="job-1", video_path=Path(td) / "v.mp4"
+                dest,
+                request_id="job-1",
+                video_path=Path(td) / "v.mp4",
+                segments=[
+                    {
+                        "start_frame": 0,
+                        "end_frame": 1,
+                        "score": {"t1": 5, "t2": 3},
+                        "score_conf": 0.9,
+                    }
+                ],
+                fps=30.0,
+                width=1920,
+                height=1080,
             )
             self.assertEqual(n, 2)
             body = json.loads(dest.read_text())
             self.assertEqual(body["job_id"], "job-1")
+            self.assertEqual(body["fps"], 30.0)
+            self.assertEqual(body["width"], 1920)
+            self.assertEqual(body["height"], 1080)
             self.assertEqual(len(body["frames"]), 2)
+            self.assertEqual(len(body["segments"]), 1)
+            self.assertEqual(body["segments"][0]["score"], {"t1": 5, "t2": 3})
         server_mod._detector = None
 
     def test_uses_lifespan_not_on_event(self) -> None:

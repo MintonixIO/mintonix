@@ -326,12 +326,23 @@ const STAGES: Record<string, {
       const prefix = job.b2_prefix;
       // Always normalized.mp4 (BWF court cut or full user encode).
       // player_id in detections.json stays null (ReID not in product path).
+      // annotation + preprocess-log let detect emit Engine segments[]
+      // (islands + scoreboard OCR) without B2 credentials on the GPU.
+      const [input_url, output_upload_url, annotation_url, preprocess_log_url] =
+        await Promise.all([
+          presign(`${prefix}normalized.mp4`, "GET"),
+          presign(`${prefix}detections.json`, "PUT"),
+          presign(`${prefix}annotation.json`, "GET"),
+          presign(`${prefix}preprocess-log.json`, "GET"),
+        ]);
       return {
         request_id: job.job_id,
         callback_url: `${Deno.env.get("SUPABASE_URL")}/functions/v1/jobs/callback`,
         callback_token: token,
-        input_url: await presign(`${prefix}normalized.mp4`, "GET"),
-        output_upload_url: await presign(`${prefix}detections.json`, "PUT"),
+        input_url,
+        output_upload_url,
+        annotation_url,
+        preprocess_log_url,
       };
     },
 

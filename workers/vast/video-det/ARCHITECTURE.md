@@ -95,11 +95,33 @@ Auth: `Authorization: Bearer <callback_token>` (not a body field).
 
 ## Output schema (`detections.json`)
 
-One JSON for pose + shuttle (frame-aligned). Analyze consumes this single asset.
+Engine contract: one JSON so 3D reconstruction can form **rallies** from
+scoreboard-scored court islands. Engine fails loud if required fields are
+missing. Frame indices are always on the **`normalized.mp4` timeline**
+(0-based) — the same indices pose/shuttle already use.
+
+### Top level
+
+| Field | Type | Required | Notes |
+|-------|------|----------|--------|
+| `job_id` | string \| null | no | Echo of detect `request_id` |
+| `fps` | number | **yes** | Delivery fps of the video actually decoded |
+| `width` | int | **yes** | Frame width (pixels) |
+| `height` | int | **yes** | Frame height (pixels) |
+| `segments` | array | **yes** | Non-empty; one OCR unit per preprocess island |
+| `frames` | array | **yes** | Non-empty; per-frame pose + shuttle |
 
 ```jsonc
 {
   "job_id": "uuid",
+  "fps": 30,
+  "width": 1920,
+  "height": 1080,
+  "segments": [
+    { "start_frame": 0, "end_frame": 180, "score": { "t1": 5, "t2": 3 }, "score_conf": 0.92 },
+    { "start_frame": 181, "end_frame": 240, "score": { "t1": 5, "t2": 3 }, "score_conf": 0.88 },
+    { "start_frame": 241, "end_frame": 400, "score": { "t1": 5, "t2": 4 }, "score_conf": 0.91 }
+  ],
   "frames": [
     {
       "frame": 0,
@@ -120,8 +142,44 @@ One JSON for pose + shuttle (frame-aligned). Analyze consumes this single asset.
 }
 ```
 
+### `segments[]` (OCR unit)
+
+One entry per **preprocess court-visible island** (`preprocess-log.json`
+`frame_shifts[]` → `new_start` / `new_end`). Detect OCRs the BWF scoreboard
+(top-left crop from `annotation.json`) once per island.
+
+| Field | Type | Required | Notes |
+|-------|------|----------|--------|
+| `start_frame` | int ≥ 0 | **yes** | Inclusive, normalized timeline |
+| `end_frame` | int ≥ 0 | **yes** | Inclusive; `end_frame >= start_frame` |
+| `score` | object | **yes** | Scoreboard points while this island was shown |
+| `score.t1` | int ≥ 0 | **yes** | Row/team 1 (top of scoreboard) |
+| `score.t2` | int ≥ 0 | **yes** | Row/team 2 (bottom of scoreboard) |
+| `score_conf` | number ∈ [0,1] | no | OCR confidence (also accepted as `score.conf`) |
+
+Engine merges consecutive segments with the **same** `(t1, t2)` into one
+**rally** (mid-rally cutaways stay one physics run). Detect does **not**
+emit rallies, video bytes, or `preprocess-log.json`.
+
+User-upload / missing `frame_shifts`: one fallback segment covering the full
+decoded video. Missing crop or unreadable digits: `t1`/`t2` = 0 with low
+`score_conf` — never invent high-confidence scores.
+
+### `frames[]` (geometry)
+
+| Field | Type | Required | Notes |
+|-------|------|----------|--------|
+| `frame` | int | **yes** | Unique index in normalized video |
+| `poses` | array | **yes** | 0–N persons (may be empty) |
+| `poses[].keypoints` | 17×`[x,y,conf]` | **yes** if pose present | COCO-17, **normalized [0,1]** |
+| `poses[].bbox` | `[x1,y1,x2,y2]` | no | Normalized |
+| `poses[].conf` | number | no | Detection confidence |
+| `poses[].player_id` | int \| null | no | Often null |
+| `shuttle` | array | **yes** | Top-K candidates, may be `[]` |
+| `shuttle[].x/y/conf` | number | **yes** each | Normalized UV + conf |
+
 Shuttle is **top-K heatmap peaks** (default K=8, min_conf=0.05) for high
-recall — not a single tracked point. Precision is analyze's job.
+recall — not a single tracked point. Precision is Engine/analyze's job.
 
 ---
 
@@ -194,7 +252,10 @@ workers/vast/video-det/
 ├── io_util.py          # file:// + HTTP transport (stream GET/PUT)
 ├── entrypoint.sh
 ├── start_server.sh
-├── detect/             # VideoDetector, shuttle, types
+├── detect/             # VideoDetector, shuttle, types, Engine output
+│   ├── segments.py     # islands from frame_shifts → segments[]
+│   ├── scoreboard.py   # annotation crop + lightweight digit OCR
+│   ├── output.py       # write detections.json (meta + segments + frames)
 │   └── tracknet.py     # TrackNetV5 topology (export tools only; not product)
 ├── pose/               # PoseEngine + TRT runner + export
 ├── tools/

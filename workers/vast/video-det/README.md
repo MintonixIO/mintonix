@@ -9,8 +9,8 @@ and a single-use `callback_token`.
 | | |
 |---|---|
 | **Stage** | `detect` (after `normalize`; MVP terminal → match `ready`) |
-| **In** | `normalized.mp4` (presigned GET) |
-| **Out** | `detections.json` (presigned PUT) |
+| **In** | `normalized.mp4` + `annotation.json` + `preprocess-log.json` (presigned GET) |
+| **Out** | `detections.json` (presigned PUT; Engine envelope: meta + `segments` + `frames`) |
 | **HTTP** | `POST /detect/sync` (PyWorker → FastAPI model server) |
 | **Dispatcher** | `supabase/functions/jobs` → `STAGES.detect` |
 
@@ -50,8 +50,10 @@ Inner envelope (jobs may wrap as `{ input: … }`):
 ```jsonc
 {
   "request_id": "<job_id>",
-  "input_url": "https://…",              // presigned GET or file://
-  "output_upload_url": "https://…",      // presigned PUT or file://
+  "input_url": "https://…",              // presigned GET normalized.mp4
+  "output_upload_url": "https://…",      // presigned PUT detections.json
+  "annotation_url": "https://…",         // presigned GET annotation.json
+  "preprocess_log_url": "https://…",     // presigned GET preprocess-log.json
   "callback_url": "https://…/functions/v1/jobs/callback",
   "callback_token": "<jwt>"
 }
@@ -60,8 +62,9 @@ Inner envelope (jobs may wrap as `{ input: … }`):
 Callback body: `{ "request_id", "status": "success"|"failed", … }` — see root
 [`ARCHITECTURE.md`](../../../ARCHITECTURE.md) § One job contract.
 
-Output: frame-aligned pose + top-K shuttle candidates in source-frame UV
-`[0,1]`. Full shape in [ARCHITECTURE.md](ARCHITECTURE.md).
+Output: Engine `detections.json` — `fps`/`width`/`height`, `segments[]`
+(islands + scoreboard OCR), `frames[]` (pose + top-K shuttle UV `[0,1]`).
+Full shape in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Local tests
 
@@ -70,7 +73,7 @@ CPU-safe tests (no GPU required for contract / pure logic):
 ```bash
 cd workers/vast/video-det
 python3 -m unittest test_contract.py test_io_util.py test_server_contract.py \
-  test_detect_pipeline.py -v
+  test_detect_pipeline.py test_segments.py -v
 ```
 
 GPU / TensorRT engine build and full e2e remain environment-specific (see

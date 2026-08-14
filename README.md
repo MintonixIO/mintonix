@@ -145,7 +145,7 @@ Move fixed items to the module's *Resolved* list with the fixing commit.
 - [x] **P0** Upload retries on single PUT and multipart parts/complete.
 - [x] **P1** Fail fast without NVENC before download (GPU required for encode + BWF NVDEC).
 - [x] **P1** Span-trim select encode for BWF court ranges (single best multi-range path).
-- [x] **P2** Score-timeline / scoreboard OCR — **deferred** (BWF is court-only → `normalized.mp4` + `preprocess-log.json`).
+- [x] **P2** Score-timeline / scoreboard OCR — detect emits `segments[]` (island + `score.t1/t2`) in `detections.json` for Engine rallies.
 
 **Resolved:** —
 

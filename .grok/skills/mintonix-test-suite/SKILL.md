@@ -60,7 +60,7 @@ Canonical shape (worker + harness + docs):
 |---|---|---|
 | **`court.corners`** | **Yes** — exactly 4 points TL→TR→BR→BL | Drives BWF court NCC keep-ranges |
 | **`court.net_poles`** | **Yes** — exactly 2 points left→right tops | Pipeline contract for later stages; echoed into `preprocess-log.json`. Missing → normalize **fails** |
-| Scoreboard crops | Optional | OCR deferred; not used by live normalize |
+| Scoreboard crops | Optional for normalize | Detect OCRs `scoreboard_crop` / `score_sub_crop` into `detections.json` `segments[]` |
 | **`labels[]`** | Soft | Analyze identity later; **not** detect ReID today |
 
 SlimSAM masks in the annotator UI are for naming only; they are **not** stored as bitmaps.
@@ -107,11 +107,11 @@ After normalize **success** callback: job **`stage=detect`, `status=queued`**, m
 
 | | Today |
 |--|--------|
-| Input | `normalized.mp4` only |
+| Input | `normalized.mp4` + `annotation.json` + `preprocess-log.json` (jobs presigns all three) |
 | Output | **one** `detections.json` |
-| Content | **Pose + shuttle** per frame |
+| Content | **Engine envelope:** `fps`/`width`/`height`, `segments[]` (islands + scoreboard OCR), `frames[]` (pose + shuttle) |
 | ReID | Optional `player_mask_url` on worker; **jobs does not presign it**. Not driven by `annotation.json` labels. |
-| Analyze | Unwired — do not expect `analysis.json` |
+| Analyze / Engine | Unwired — do not expect `analysis.json` / `3d_reconstruction.json` |
 
 After detect **success**: `jobs.status=complete`, `jobs.stage=detect`, `matches.status=ready`.
 
@@ -345,7 +345,8 @@ python3 scripts/test_stage_outputs.py
 deno test supabase/functions/ops/stage_outputs_test.ts
 
 cd workers/vast/video-det && python3 -m unittest \
-  test_contract.py test_io_util.py test_server_contract.py test_detect_pipeline.py -v
+  test_contract.py test_io_util.py test_server_contract.py test_detect_pipeline.py \
+  test_segments.py -v
 
 cd workers/vast/video-preprocess && python3 -m unittest discover -v -s . -p 'test_*.py'
 ```
@@ -413,6 +414,9 @@ When reporting “test suite” on a PR: include **both** CI rollup and runtime 
 When the user asks whether detect “really worked,” not only that keys exist:
 
 - `detections.json` is frame-aligned to **`normalized.mp4`** (BWF: already the valid-frames cut).
+- Required keys: `fps`, `width`, `height`, non-empty `segments[]`, non-empty `frames[]`.
+- `segments[]` 1:1 with preprocess islands (`frame_shifts[].new_*`); user / empty shifts → one full-video segment.
+- Each segment has `score.t1` / `score.t2` (low `score_conf` is OK; do not require perfect OCR).
 - **Pose + shuttle** coverage (shuttle top-K UV `[0,1]`).
 - Optional ReID / non-null `player_id` is **not** required for MVP.
 - Prefer sampling a few frames / schema keys over loading huge files.
