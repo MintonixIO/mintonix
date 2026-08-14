@@ -613,29 +613,61 @@ RD0 = 350.0
 SIGMA0 = 0.06
 TAU = 0.5
 RD_MAX = 350.0
+SIGMA_MAX = 1.0
 IDLE_THRESHOLD = 70
 IDLE_PERIOD = 7
 MIN_MATCHES_SINGLES = 15
 MIN_MATCHES_PAIRS = 10
+# Keep E away from {0,1} so 1/v and Illinois stay finite on a 39k-match catalog.
+_E_MIN = 1e-15
+_E_MAX = 1.0 - 1e-15
+_EXP_CLAMP = 60.0
+
+
+def _safe_exp(x: float) -> float:
+    if x > _EXP_CLAMP:
+        return math.exp(_EXP_CLAMP)
+    if x < -_EXP_CLAMP:
+        return math.exp(-_EXP_CLAMP)
+    return math.exp(x)
 
 
 def _g(phi: float) -> float:
+    if not math.isfinite(phi):
+        phi = RD_MAX / SCALE
     return 1.0 / math.sqrt(1.0 + 3.0 * phi * phi / (math.pi * math.pi))
 
 
 def _E(mu: float, mu_j: float, phi_j: float) -> float:
-    return 1.0 / (1.0 + math.exp(-_g(phi_j) * (mu - mu_j)))
+    """Numerically stable Glicko expected score. Never raises, never 0/1."""
+    x = -_g(phi_j) * (mu - mu_j)
+    if x >= _EXP_CLAMP:
+        e = 0.0
+    elif x <= -_EXP_CLAMP:
+        e = 1.0
+    else:
+        e = 1.0 / (1.0 + math.exp(x))
+    if not math.isfinite(e):
+        e = 0.5
+    return min(_E_MAX, max(_E_MIN, e))
 
 
 def _f_vol(x: float, delta: float, phi: float, v: float, a: float, tau: float) -> float:
-    ex = math.exp(x)
-    num = ex * (delta * delta - phi * phi - v - ex)
+    ex = _safe_exp(x)
     den = 2.0 * (phi * phi + v + ex) ** 2
+    if den <= 0.0 or not math.isfinite(den):
+        return 0.0
+    num = ex * (delta * delta - phi * phi - v - ex)
     return num / den - (x - a) / (tau * tau)
 
 
 def _update_volatility(phi: float, sigma: float, v: float, delta: float, tau: float) -> float:
-    a = math.log(sigma * sigma)
+    if not (math.isfinite(phi) and math.isfinite(v) and math.isfinite(delta) and sigma > 0):
+        return min(SIGMA_MAX, max(1e-6, sigma if math.isfinite(sigma) and sigma > 0 else SIGMA0))
+    # Huge Δ makes Illinois hunt an enormous σ; cap Δ so σ stays a volatility.
+    delta = max(-1e3, min(1e3, delta))
+    v = max(v, 1e-6)
+    a = math.log(max(sigma * sigma, 1e-18))
     if delta * delta > phi * phi + v:
         b = math.log(delta * delta - phi * phi - v)
     else:
@@ -643,21 +675,33 @@ def _update_volatility(phi: float, sigma: float, v: float, delta: float, tau: fl
         while _f_vol(a - k * tau, delta, phi, v, a, tau) < 0:
             k += 1
             if k > 100:
-                return sigma
+                return min(SIGMA_MAX, sigma)
         b = a - k * tau
     fa = _f_vol(a, delta, phi, v, a, tau)
     fb = _f_vol(b, delta, phi, v, a, tau)
+    if not (math.isfinite(fa) and math.isfinite(fb)) or fa == fb:
+        return min(SIGMA_MAX, max(1e-6, sigma))
     for _ in range(80):
         if abs(b - a) < 1e-6:
             break
-        c = a + (a - b) * fa / (fb - fa)
+        denom = fb - fa
+        if denom == 0.0 or not math.isfinite(denom):
+            break
+        c = a + (a - b) * fa / denom
+        if not math.isfinite(c):
+            break
         fc = _f_vol(c, delta, phi, v, a, tau)
+        if not math.isfinite(fc):
+            break
         if fc * fb <= 0:
             a, fa = b, fb
         else:
             fa /= 2.0
         b, fb = c, fc
-    return math.exp(a / 2.0)
+    sigma_new = math.exp(a / 2.0)
+    if not math.isfinite(sigma_new) or sigma_new <= 0:
+        return min(SIGMA_MAX, max(1e-6, sigma))
+    return min(SIGMA_MAX, max(1e-6, sigma_new))
 
 
 @dataclass
@@ -677,8 +721,12 @@ class GlickoPlayer:
         return (self.mu - 1500.0) / SCALE, self.rd / SCALE
 
     def from_internal(self, mu_int: float, phi: float) -> None:
+        if not math.isfinite(mu_int):
+            mu_int = (self.mu - 1500.0) / SCALE
+        if not math.isfinite(phi) or phi <= 0:
+            phi = self.rd / SCALE
         self.mu = mu_int * SCALE + 1500.0
-        self.rd = min(RD_MAX, phi * SCALE)
+        self.rd = min(RD_MAX, max(1e-3, phi * SCALE))
 
     def apply_inactivity(self, day: int) -> None:
         if self.last_day is None:
@@ -699,9 +747,12 @@ class GlickoPlayer:
 
 def _weighted_glicko_update(player: GlickoPlayer, opp_mu: float, opp_phi: float, s: float, w: float) -> None:
     mu, phi = player.to_internal()
+    if not (math.isfinite(mu) and math.isfinite(phi) and math.isfinite(opp_mu) and math.isfinite(opp_phi)):
+        return
     e = _E(mu, opp_mu, opp_phi)
     g = _g(opp_phi)
-    info = max(1e-12, w * g * g * e * (1.0 - e))
+    w = max(1e-6, min(1.0, w))
+    info = max(1e-6, w * g * g * e * (1.0 - e))
     v = 1.0 / info
     delta = v * (w * g * (s - e))
     sigma_new = _update_volatility(phi, player.sigma, v, delta, TAU)
@@ -709,6 +760,8 @@ def _weighted_glicko_update(player: GlickoPlayer, opp_mu: float, opp_phi: float,
     phi_star = math.sqrt(phi * phi + sigma_new * sigma_new)
     phi_p = 1.0 / math.sqrt(1.0 / (phi_star * phi_star) + 1.0 / v)
     mu_p = mu + phi_p * phi_p * (w * g * (s - e))
+    if not (math.isfinite(mu_p) and math.isfinite(phi_p)):
+        return
     player.from_internal(mu_p, phi_p)
 
 
@@ -778,10 +831,15 @@ MIN_MATCHES_INDIVIDUAL = 15
 
 
 def _norm_pdf(x: float) -> float:
-    return math.exp(-0.5 * x * x) / math.sqrt(2.0 * math.pi)
+    ax = min(abs(x), 30.0)
+    return math.exp(-0.5 * ax * ax) / math.sqrt(2.0 * math.pi)
 
 
 def _norm_cdf(x: float) -> float:
+    if x > 8.0:
+        return 1.0
+    if x < -8.0:
+        return 0.0
     return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
 
 
@@ -829,13 +887,17 @@ def run_trueskill(matches: list[CleanMatch], disc: str) -> dict[str, TrueSkillPl
         w_term *= m.weight
         for p in winners:
             s2 = p.sigma * p.sigma
-            p.mu += (s2 / c) * v
-            p.sigma = math.sqrt(max(1e-12, s2 * (1.0 - (s2 / (c * c)) * w_term) + TS_TAU * TS_TAU))
+            mu = p.mu + (s2 / c) * v
+            sig = math.sqrt(max(1e-12, s2 * (1.0 - (s2 / (c * c)) * w_term) + TS_TAU * TS_TAU))
+            if math.isfinite(mu) and math.isfinite(sig):
+                p.mu, p.sigma = mu, sig
             p.matches += 1
         for p in losers:
             s2 = p.sigma * p.sigma
-            p.mu -= (s2 / c) * v
-            p.sigma = math.sqrt(max(1e-12, s2 * (1.0 - (s2 / (c * c)) * w_term) + TS_TAU * TS_TAU))
+            mu = p.mu - (s2 / c) * v
+            sig = math.sqrt(max(1e-12, s2 * (1.0 - (s2 / (c * c)) * w_term) + TS_TAU * TS_TAU))
+            if math.isfinite(mu) and math.isfinite(sig):
+                p.mu, p.sigma = mu, sig
             p.matches += 1
     return players
 

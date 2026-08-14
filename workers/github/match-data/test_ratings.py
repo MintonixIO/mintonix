@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import math
 import unittest
 
 import ratings as R
@@ -337,6 +338,39 @@ class EngineSmokeTests(unittest.TestCase):
         self.assertGreater(ace.mu, 1500)
         self.assertGreaterEqual(ace.matches, 15)
         self.assertEqual(ace.wins, 16)
+
+    def test_extreme_rating_gap_does_not_overflow(self):
+        # Repro: math.exp overflow in _E after a huge internal μ gap.
+        self.assertTrue(0.0 < R._E(800.0, -800.0, 0.01) < 1.0)
+        self.assertTrue(0.0 < R._E(-800.0, 800.0, 0.01) < 1.0)
+        p = R.GlickoPlayer(key="ace")
+        p.mu = 1500.0 + 800.0 * R.SCALE
+        p.rd = 30.0
+        R._weighted_glicko_update(p, -800.0, 0.01, 0.99, 1.0)
+        self.assertTrue(math.isfinite(p.mu))
+        self.assertTrue(math.isfinite(p.rd))
+        self.assertTrue(math.isfinite(p.sigma))
+
+    def test_long_win_streak_stays_finite(self):
+        rows = []
+        for i in range(400):
+            rows.append(
+                row(
+                    tournament=f"2020 Test Open {i} · MS · Final",
+                    t1="Ace Player",
+                    t1c="DEN",
+                    t2=f"Foe {i}",
+                    t2c="JPN",
+                    g=((21, 5), (21, 3)),
+                )
+            )
+        result = R.compute_ratings(rows)
+        ace = next(r for r in result.glicko if r.entity_key.startswith("ace player"))
+        self.assertTrue(math.isfinite(ace.mu))
+        self.assertTrue(math.isfinite(ace.rd))
+        self.assertTrue(math.isfinite(ace.sigma))
+        self.assertGreater(ace.mu, 1500)
+        self.assertLess(ace.mu, 4000)
 
     def test_homonyms_rated_separately(self):
         rows = []
