@@ -91,8 +91,12 @@ FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04
 ENV NVIDIA_REQUIRE_CUDA="cuda>=12.4" \
     NVIDIA_DRIVER_CAPABILITIES=compute,utility
 
+# python3-distutils: vastai's PyWorker backend imports distutils.util.strtobool.
+# Ubuntu's python3 package does not ship distutils; without it, `from vastai
+# import BenchmarkConfig` succeeds with BenchmarkConfig=None (SDK swallows
+# ImportError) and `python -m worker` dies at config construction.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 python-is-python3 \
+    python3 python-is-python3 python3-distutils \
     curl ca-certificates openssl \
     libgomp1 libglib2.0-0 libgl1 \
     && rm -rf /var/lib/apt/lists/*

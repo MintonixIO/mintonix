@@ -15,7 +15,16 @@ import uuid
 
 import aiohttp.web
 
-from vastai import Worker, WorkerConfig, HandlerConfig, LogActionConfig, BenchmarkConfig
+# Import the serverless classes from the submodule. `from vastai import
+# BenchmarkConfig` can bind None: vastai/__init__.py swallows any ImportError
+# in that try-block (missing distutils, aiohttp, …) and sets the names to None.
+from vastai.serverless.server.worker import (
+    BenchmarkConfig,
+    HandlerConfig,
+    LogActionConfig,
+    Worker,
+    WorkerConfig,
+)
 
 # Same patch as the video-preprocess worker: SDK AppRunner(handler_cancellation=True)
 # turns a dispatcher disconnect into a cancel, which zeroes reported load and

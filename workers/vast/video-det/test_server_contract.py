@@ -26,6 +26,11 @@ class TestWorkerConfigImport(unittest.TestCase):
         assert spec and spec.loader
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
+        self.assertTrue(
+            callable(mod.BenchmarkConfig),
+            "BenchmarkConfig is None — vastai swallowed an ImportError "
+            "(slim images need python3-distutils for distutils.util.strtobool)",
+        )
         inner = {"input_url": "x", "request_id": "j1"}
         self.assertEqual(mod.request_parser({"input": inner}), inner)
         self.assertEqual(mod.request_parser(inner), inner)
@@ -306,6 +311,7 @@ class TestImageBootContract(unittest.TestCase):
         self.assertIn("AS trt", src)
         self.assertIn("nvidia/cuda:12.4.1-runtime-ubuntu22.04", src)
         self.assertIn("ENV_PATH=/opt/worker-env", src)
+        self.assertIn("python3-distutils", src)
         self.assertIn('if "builder_resource" in name:', src)
         self.assertNotIn('CMD ["bash", "start_server.sh"]', src)
 

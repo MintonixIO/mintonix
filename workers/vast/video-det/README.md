@@ -96,7 +96,9 @@ GPU / TensorRT engine build and full e2e remain environment-specific (see
   `/opt/worker-env`; entrypoint waits for `/health` 200 then execs the worker.
 - Product engines must match the image’s TensorRT / CUDA stack
   (TRT 10 / CUDA 12.4: NGC `tensorrt:24.04-py3` builder, `cuda:12.4.1-runtime`
-  final stage). Do not ship the NGC devel image.
+  final stage). Do not ship the NGC devel image. Runtime apt must include
+  `python3-distutils` — vastai's PyWorker imports `distutils.util.strtobool`,
+  and without it `BenchmarkConfig` is silently `None`.
 - **Model bake-in:** GitHub Actions mints CDN delivery URLs
   (`ops/model-urls` + `models/MANIFEST.json`) and bakes weights into
   `/app/models`. Neither GHA nor runtime workers hold B2 keys. Details:

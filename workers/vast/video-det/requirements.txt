@@ -6,5 +6,6 @@ numpy>=1.26.0,<2
 opencv-python-headless>=4.10.0
 # Device buffers for TRT I/O (product path has no PyTorch).
 pycuda>=2024.1
-# PyWorker framework (worker.py) — NOT `vastai` (CLI).
+# PyWorker (Worker / BenchmarkConfig). `vastai` and `vastai-sdk` are the same
+# PyPI project; either name installs the serverless package.
 vastai-sdk
