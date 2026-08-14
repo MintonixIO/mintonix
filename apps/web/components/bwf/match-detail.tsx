@@ -5,7 +5,7 @@ import {
   ExternalLink,
   Flame,
   Clapperboard,
-  Swords,
+  Play,
   Video,
 } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
@@ -68,7 +68,7 @@ export function MatchDetail({ m }: { m: CatalogMatch }) {
               {i > 0 ? " / " : null}
               <Link
                 href={`/bwf/players/${ids[i]}`}
-                className="hover:text-[var(--accent)]"
+                className="hover:text-[var(--brand)]"
               >
                 {n}
               </Link>
@@ -78,6 +78,17 @@ export function MatchDetail({ m }: { m: CatalogMatch }) {
                 </span>
               ) : null}
             </span>
+          ))}
+        </div>
+        <div className="mt-1 flex flex-wrap gap-2">
+          {ids.map((id, i) => (
+            <Link
+              key={id}
+              href={`/bwf/players/${id}`}
+              className="font-mono text-[10.5px] text-[var(--text-link)] hover:text-[var(--brand)]"
+            >
+              Profile · {names[i]?.split(" ").slice(-1)[0]}
+            </Link>
           ))}
         </div>
       </div>
@@ -120,7 +131,7 @@ export function MatchDetail({ m }: { m: CatalogMatch }) {
       <div className="mb-4 overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface-1)] shadow-[var(--shadow-edge)]">
         <div className="flex flex-wrap items-center gap-2 border-b border-[var(--border-subtle)] px-5 py-4">
           {m.disc ? (
-            <span className="rounded-full border border-[var(--border)] bg-[var(--accent-soft)] px-2.5 py-1 font-mono text-[11px] text-[var(--accent)]">
+            <span className="rounded-full border border-[var(--border)] bg-[var(--brand-subtle)] px-2.5 py-1 font-mono text-[11px] text-[var(--brand)]">
               {m.disc}
               {DISC_LABEL[m.disc] ? ` · ${DISC_LABEL[m.disc]}` : ""}
             </span>
@@ -165,7 +176,7 @@ export function MatchDetail({ m }: { m: CatalogMatch }) {
           ) : null}
           {m.threeGames ? (
             <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--border-subtle)] bg-[var(--surface-2)] px-2.5 py-1 text-xs text-[var(--text-secondary)]">
-              <Clapperboard className="h-3.5 w-3.5 text-[var(--accent)]" />
+              <Clapperboard className="h-3.5 w-3.5 text-[var(--brand)]" />
               Three games
             </span>
           ) : null}
@@ -175,27 +186,39 @@ export function MatchDetail({ m }: { m: CatalogMatch }) {
               Comeback win
             </span>
           ) : null}
-          {duration ? (
-            <span className="font-mono text-[11px] text-[var(--text-faint)]">
-              {duration}
-            </span>
-          ) : null}
+          <div className="flex-1" />
+          <Link
+            href={`/match-viewer/${m.id}`}
+            className="inline-flex min-h-10 items-center gap-2 rounded-[10px] bg-[var(--brand)] px-3.5 py-2 text-[13px] font-medium text-[var(--text-on-blue)] shadow-[0_4px_14px_rgba(54,147,255,0.22)] hover:bg-[var(--brand-hover)]"
+            title="Synthetic demo analysis — not pipeline output"
+          >
+            <Play className="h-4 w-4 fill-current" />
+            Demo match viewer
+          </Link>
         </div>
       </div>
 
       {youtube ? (
         <div className="mb-4 overflow-hidden rounded-[14px] border border-[var(--border)] bg-[var(--surface-1)]">
-          <div className="flex items-center gap-2 border-b border-[var(--border-subtle)] px-4 py-3">
+          <div className="flex flex-wrap items-center gap-2 border-b border-[var(--border-subtle)] px-4 py-3">
             <Video className="h-4 w-4 text-[var(--danger-500)]" />
             <span className="text-[13px] font-medium text-[var(--text-strong)]">
               Watch
             </span>
             <div className="flex-1" />
+            <Link
+              href={`/match-viewer/${m.id}`}
+              className="inline-flex items-center gap-1.5 text-xs text-[var(--text-link)] hover:text-[var(--brand)]"
+              title="Synthetic demo analysis — not pipeline output"
+            >
+              <Play className="h-3.5 w-3.5" />
+              Demo match viewer
+            </Link>
             <a
               href={youtube.href}
               target="_blank"
               rel="noopener noreferrer"
-              className="inline-flex items-center gap-1.5 text-xs text-[var(--text-link)] hover:text-[var(--accent)]"
+              className="inline-flex items-center gap-1.5 text-xs text-[var(--text-link)] hover:text-[var(--brand)]"
             >
               Open on YouTube
               <ExternalLink className="h-3.5 w-3.5" />
@@ -212,15 +235,41 @@ export function MatchDetail({ m }: { m: CatalogMatch }) {
             />
           </div>
         </div>
+      ) : m.sourceUrl ? (
+        <div className="mb-4 rounded-[14px] border border-dashed border-[var(--border)] bg-[var(--surface-1)] px-5 py-8 text-center text-[13px] text-[var(--text-muted)]">
+          <p>Video source on file is not a recognized YouTube URL (link omitted).</p>
+          <div className="mt-4 flex flex-wrap items-center justify-center gap-3">
+            <Link
+              href={`/match-viewer/${m.id}`}
+              className="inline-flex min-h-10 items-center text-[13px] text-[var(--text-link)] hover:text-[var(--brand)]"
+            >
+              Demo match viewer (3D only)
+            </Link>
+            <Link
+              href="/bwf/matches?lens=video"
+              className="inline-flex min-h-10 items-center text-[13px] text-[var(--text-link)] hover:text-[var(--brand)]"
+            >
+              Browse matches with video
+            </Link>
+          </div>
+        </div>
       ) : (
         <div className="mb-4 rounded-[14px] border border-dashed border-[var(--border)] bg-[var(--surface-1)] px-5 py-8 text-center text-[13px] text-[var(--text-muted)]">
           <p>No YouTube source linked for this match yet.</p>
-          <Link
-            href="/bwf/matches?lens=video"
-            className="mt-4 inline-flex min-h-10 items-center text-[13px] text-[var(--text-link)] hover:text-[var(--accent)]"
-          >
-            Browse matches with video
-          </Link>
+          <div className="mt-4 flex flex-wrap items-center justify-center gap-3">
+            <Link
+              href={`/match-viewer/${m.id}`}
+              className="inline-flex min-h-10 items-center text-[13px] text-[var(--text-link)] hover:text-[var(--brand)]"
+            >
+              Demo match viewer (3D only)
+            </Link>
+            <Link
+              href="/bwf/matches?lens=video"
+              className="inline-flex min-h-10 items-center text-[13px] text-[var(--text-link)] hover:text-[var(--brand)]"
+            >
+              Browse matches with video
+            </Link>
+          </div>
         </div>
       )}
 
@@ -233,7 +282,7 @@ export function MatchDetail({ m }: { m: CatalogMatch }) {
           {m.team1Ids[0] && m.team2Ids[0] ? (
             <Link
               href={`/bwf/h2h?a=${m.team1Ids[0]}&b=${m.team2Ids[0]}`}
-              className="inline-flex min-h-10 items-center text-[13px] text-[var(--text-link)] hover:text-[var(--accent)]"
+              className="inline-flex min-h-10 items-center text-[13px] text-[var(--text-link)] hover:text-[var(--brand)]"
             >
               {m.team1[0]}
               {m.team1Countries?.[0]
