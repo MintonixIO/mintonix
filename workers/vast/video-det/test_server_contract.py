@@ -287,5 +287,28 @@ class TestProductImports(unittest.TestCase):
         self.assertNotIn("def run_gpu(", src)
 
 
+class TestImageBootContract(unittest.TestCase):
+    """Cold-start: baked venv + slim runtime, no stock start_server.sh."""
+
+    def test_entrypoint_uses_prebuilt_venv_and_health_gate(self) -> None:
+        root = Path(__file__).resolve().parent
+        entry = (root / "entrypoint.sh").read_text(encoding="utf-8")
+        self.assertNotIn("start_server.sh", entry)
+        self.assertIn("/opt/worker-env", entry)
+        self.assertIn("/health", entry)
+        self.assertTrue((root / "entrypoint.sh").exists())
+        self.assertFalse((root / "start_server.sh").exists())
+
+    def test_dockerfile_is_runtime_multistage(self) -> None:
+        src = (Path(__file__).resolve().parent / "Dockerfile").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("AS trt", src)
+        self.assertIn("nvidia/cuda:12.4.1-runtime-ubuntu22.04", src)
+        self.assertIn("ENV_PATH=/opt/worker-env", src)
+        self.assertIn('if "builder_resource" in name:', src)
+        self.assertNotIn('CMD ["bash", "start_server.sh"]', src)
+
+
 if __name__ == "__main__":
     unittest.main()

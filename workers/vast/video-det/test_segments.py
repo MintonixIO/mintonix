@@ -290,7 +290,10 @@ class TestWriteDetectionsJson(unittest.TestCase):
 
 class TestDebugSidecars(unittest.TestCase):
     def test_discover_and_load(self) -> None:
-        import debug as debug_mod
+        try:
+            import debug as debug_mod
+        except ImportError:
+            self.skipTest("debug.py is not in the product image")
 
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

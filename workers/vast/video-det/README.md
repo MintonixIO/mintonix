@@ -92,9 +92,11 @@ GPU / TensorRT engine build and full e2e remain environment-specific (see
 ## Deploy notes
 
 - vast serverless PyWorker pattern (same family as video-preprocess):
-  backend on localhost, PyWorker on the published port.
+  backend on localhost, PyWorker on the published port. Venv is baked at
+  `/opt/worker-env`; entrypoint waits for `/health` 200 then execs the worker.
 - Product engines must match the image’s TensorRT / CUDA stack
-  (`Dockerfile` base: `nvcr.io/nvidia/tensorrt:24.04-py3`).
+  (TRT 10 / CUDA 12.4: NGC `tensorrt:24.04-py3` builder, `cuda:12.4.1-runtime`
+  final stage). Do not ship the NGC devel image.
 - **Model bake-in:** GitHub Actions mints CDN delivery URLs
   (`ops/model-urls` + `models/MANIFEST.json`) and bakes weights into
   `/app/models`. Neither GHA nor runtime workers hold B2 keys. Details:

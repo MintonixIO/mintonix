@@ -9,8 +9,14 @@
 !ARCHITECTURE.md
 !models/README.md
 
-# Non-product multi-ffmpeg research bench (not needed at runtime).
-tools/ffmpeg_pose_bench/
+# Export / research / local debug — not needed at runtime.
+# CI fetch_models.sh runs on the runner *before* docker build.
+tools/
+debug.py
+pose/export_trt.py
+pose/download_model.py
+pose/torch_engine.py
+detect/tracknet.py
 
 # Local test artifacts
 **/sample_local.*

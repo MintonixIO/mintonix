@@ -240,8 +240,8 @@ Matches the proven **normalize** pattern:
 
 | Piece | Role |
 |---|---|
-| `entrypoint.sh` | Start `server.py`, then `start_server.sh` |
-| `start_server.sh` | vast bootstrap: TLS, venv, `python -m worker` |
+| `entrypoint.sh` | Start `server.py`, wait `/health` 200, TLS, `exec python -m worker` |
+| `/opt/worker-env` | Prebuilt venv (no uv/pip at boot) |
 | `worker.py` | PyWorker: load reporting, proxy to model server |
 | `server.py` | FastAPI `/detect/sync` + `/health` (lifespan model load) |
 | `io_util.py` | stream download / upload / callback (`file://` + HTTP) |
@@ -269,8 +269,7 @@ workers/vast/video-det/
 ├── worker.py           # PyWorker config
 ├── io_util.py          # file:// + HTTP transport (stream GET/PUT)
 ├── trt_io.py           # CUDA context push/pop + FLOAT/HALF bindings
-├── entrypoint.sh
-├── start_server.sh
+├── entrypoint.sh          # preprocess-style: baked venv + health gate
 ├── detect/             # VideoDetector, shuttle, types, Engine output
 │   ├── segments.py     # islands from frame_shifts → segments[] + rallies[]
 │   ├── scoreboard.py   # annotation crop + lightweight digit OCR
@@ -305,7 +304,8 @@ workers/vast/video-det/
 
 - TensorRT engines are GPU-arch + TRT-version specific; build via
   `pose/export_trt.py` / `tools/export_tracknet_trt.py` on a host matching the
-  product image (`tensorrt:24.04-py3`) and target GPU arch.
+  product image (TRT 10 / CUDA 12.4 — NGC `tensorrt:24.04-py3` builder,
+  CUDA runtime final stage) and target GPU arch.
 - **Model cache (baked into image):** CI mints CDN delivery URLs via Supabase
   `ops/model-urls` using GitHub Environment naming
   (`vars.SUPABASE_PROJECT_REF` + `secrets.SUPABASE_SERVICE_KEY`; edge

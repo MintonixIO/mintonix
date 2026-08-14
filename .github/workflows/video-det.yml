@@ -32,7 +32,7 @@ jobs:
     with:
       directory: workers/vast/video-det
       image: video-det
-      # The TensorRT base image is ~9 GB; reclaim runner disk first.
+      # Builder still pulls NGC TensorRT (~6 GB compressed); reclaim runner disk.
       free_disk_space: true
       # MANIFEST-listed weights via Cloudflare data plane (free B2→CF egress).
       fetch_models: true

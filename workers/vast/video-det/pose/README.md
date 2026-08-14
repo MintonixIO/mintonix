@@ -14,8 +14,8 @@ Product pose inference used by `detect.VideoDetector` → `detections.json`.
 ## Engine build
 
 TensorRT engines are **GPU-arch and TRT-version specific**. The product image is
-`nvcr.io/nvidia/tensorrt:24.04-py3` (TRT 10 / CUDA 12.x). Build on a matching
-host:
+TRT 10 / CUDA 12.4 (NGC `tensorrt:24.04-py3` builder; product image is the
+CUDA runtime stage). Build engines on a matching host:
 
 ```bash
 python pose/download_model.py
