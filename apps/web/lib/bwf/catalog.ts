@@ -16,6 +16,8 @@ import {
 } from "./parse";
 import {
   aggregatePlayers,
+  applyInferredCountries,
+  applyRating,
   buildCatalogStats,
   buildSearchHits,
   buildStaticSearchIndex,
@@ -23,9 +25,12 @@ import {
   formSortMatches,
   h2hFromMatches,
   paginateMatches,
+  pairH2hFromMatches,
+  pickPlayerRating,
+  resolvePlayerId,
   sortMatches,
+  thisWeekMatches,
   toDirectoryPlayer,
-  topPlayersFromList,
 } from "./query";
 import type {
   CatalogMatch,
@@ -33,12 +38,16 @@ import type {
   CatalogStats,
   DirectoryPlayer,
   Disc,
+  FormRating,
   MatchFilters,
   SearchHit,
 } from "./types";
 import { BWF_SEARCH_LIMIT } from "./types";
 
 const MATCH_SELECT =
+  "id,tournament,match_date,team1_player1,team1_player2,team2_player1,team2_player2,team1_player1_country,team1_player2_country,team2_player1_country,team2_player2_country,g1_t1,g1_t2,g2_t1,g2_t2,g3_t1,g3_t2,status,source_url,duration_sec,created_at";
+
+const MATCH_SELECT_NO_COUNTRY =
   "id,tournament,match_date,team1_player1,team1_player2,team2_player1,team2_player2,g1_t1,g1_t2,g2_t1,g2_t2,g3_t1,g3_t2,status,source_url,duration_sec,created_at";
 
 /**
@@ -58,6 +67,8 @@ export type CatalogSnapshot = {
   matches: CatalogMatch[];
   directoryPlayers: DirectoryPlayer[];
   stats: CatalogStats;
+  ratingsByKey: Map<string, FormRating>;
+  individualsByKey: Map<string, FormRating>;
 };
 
 /** Process-local snapshot TTL (seconds), aligned with former revalidate: 300. */
@@ -78,27 +89,122 @@ async function fetchPages(
   const pageSize = 1000;
   let from = 0;
   const rows: DbMatchRow[] = [];
+  let select = MATCH_SELECT;
 
   for (;;) {
     // Order by unique `id` so range pagination cannot skip/duplicate rows when
     // many matches share the same created_at (bulk season upserts).
     const { data, error } = await supabase
       .from("matches")
-      .select(MATCH_SELECT)
+      .select(select)
       .is("owner_id", null)
       .order("id", { ascending: true })
       .range(from, from + pageSize - 1);
 
     if (error) {
+      if (
+        select === MATCH_SELECT &&
+        /country/i.test(error.message)
+      ) {
+        select = MATCH_SELECT_NO_COUNTRY;
+        from = 0;
+        rows.length = 0;
+        continue;
+      }
       return { rows: [], error: error.message };
     }
     if (!data?.length) break;
-    rows.push(...(data as DbMatchRow[]));
+    rows.push(...((data as unknown) as DbMatchRow[]));
     if (data.length < pageSize) break;
     from += pageSize;
   }
 
   return { rows, error: null };
+}
+
+type RatingRow = {
+  web_id: string;
+  discipline: Disc;
+  kind: string;
+  mu: number;
+  rd: number;
+  rank_score: number;
+  peak_mu: number;
+  matches: number;
+};
+
+type IndividualRow = {
+  web_id: string;
+  discipline: Disc;
+  mu: number;
+  sigma: number;
+  exposure: number;
+  matches: number;
+};
+
+async function fetchRatingTables(supabase: SupabaseClient): Promise<{
+  ratingsByKey: Map<string, FormRating>;
+  individualsByKey: Map<string, FormRating>;
+}> {
+  const ratingsByKey = new Map<string, FormRating>();
+  const individualsByKey = new Map<string, FormRating>();
+  const pageSize = 1000;
+
+  const pageIn = async <T,>(
+    table: string,
+    select: string,
+    sink: (row: T) => void,
+  ) => {
+    let from = 0;
+    for (;;) {
+      const { data, error } = await supabase
+        .from(table)
+        .select(select)
+        .order("web_id", { ascending: true })
+        .range(from, from + pageSize - 1);
+      if (error) {
+        // Table missing (migration not applied) — catalog still works.
+        return;
+      }
+      if (!data?.length) break;
+      for (const row of data as T[]) sink(row);
+      if (data.length < pageSize) break;
+      from += pageSize;
+    }
+  };
+
+  await pageIn<RatingRow>(
+    "player_ratings",
+    "web_id,discipline,kind,mu,rd,rank_score,peak_mu,matches",
+    (row) => {
+      if (row.kind !== "player") return;
+      ratingsByKey.set(`${row.web_id}|${row.discipline}`, {
+        disc: row.discipline,
+        kind: "player",
+        mu: row.mu,
+        rd: row.rd,
+        rankScore: row.rank_score,
+        peakMu: row.peak_mu,
+        matches: row.matches,
+      });
+    },
+  );
+
+  await pageIn<IndividualRow>(
+    "rating_individuals",
+    "web_id,discipline,mu,sigma,exposure,matches",
+    (row) => {
+      individualsByKey.set(`${row.web_id}|${row.discipline}`, {
+        disc: row.discipline,
+        kind: "individual",
+        mu: row.mu,
+        exposure: row.exposure,
+        matches: row.matches,
+      });
+    },
+  );
+
+  return { ratingsByKey, individualsByKey };
 }
 
 /**
@@ -116,17 +222,25 @@ async function fetchAllBwfRows(): Promise<CatalogMatch[]> {
   if (svc.error) {
     throw new Error(`BWF catalog load failed: ${svc.error}`);
   }
-  return svc.rows.map(mapDbMatch);
+  return applyInferredCountries(svc.rows.map(mapDbMatch));
 }
 
 async function buildCatalogSnapshot(): Promise<CatalogSnapshot> {
+  const client = createServiceClient();
   const matches = await fetchAllBwfRows();
+  const { ratingsByKey, individualsByKey } = await fetchRatingTables(client);
   // Aggregate once for directory + stats; discard full CatalogPlayer[] so the
   // cache does not dual-store form/rivals for every player.
   const full = aggregatePlayers(matches);
-  const directoryPlayers = full.map(toDirectoryPlayer);
+  const directoryPlayers = full.map((p) => {
+    const slim = toDirectoryPlayer(p);
+    return {
+      ...slim,
+      rating: pickPlayerRating(p, ratingsByKey),
+    };
+  });
   const stats = buildCatalogStats(matches, directoryPlayers);
-  return { matches, directoryPlayers, stats };
+  return { matches, directoryPlayers, stats, ratingsByKey, individualsByKey };
 }
 
 /**
@@ -180,12 +294,23 @@ export async function getMatchById(id: string): Promise<CatalogMatch | null> {
   }
 
   const client = createServiceClient();
-  const { data, error } = await client
+  let { data, error } = await client
     .from("matches")
     .select(MATCH_SELECT)
     .eq("id", id)
     .is("owner_id", null)
     .maybeSingle();
+
+  if (error && /country/i.test(error.message)) {
+    const retry = await client
+      .from("matches")
+      .select(MATCH_SELECT_NO_COUNTRY)
+      .eq("id", id)
+      .is("owner_id", null)
+      .maybeSingle();
+    data = retry.data as typeof data;
+    error = retry.error;
+  }
 
   // Cold detail path: return immediately on direct hit — never load snapshot.
   if (data && !error) {
@@ -234,11 +359,34 @@ export async function queryMatches(filters: MatchFilters = {}): Promise<{
 export async function getPlayerById(
   id: string,
 ): Promise<CatalogPlayer | null> {
-  const { matches } = await getCatalogSnapshot();
-  const involved = matches.filter((m) => matchInvolvesPlayer(m, id));
+  const snap = await getCatalogSnapshot();
+  const resolved = resolvePlayerId(id, snap.directoryPlayers);
+  const playerId = resolved.match?.id;
+  if (!playerId) return null;
+  const involved = snap.matches.filter((m) =>
+    matchInvolvesPlayer(m, playerId),
+  );
   if (involved.length === 0) return null;
   const players = aggregatePlayers(involved);
-  return players.find((p) => p.id === id) ?? null;
+  const player = players.find((p) => p.id === playerId);
+  if (!player) return null;
+  const ratingById = new Map<string, FormRating | null>();
+  for (const p of players) {
+    ratingById.set(p.id, pickPlayerRating(p, snap.ratingsByKey));
+  }
+  return applyRating(
+    player,
+    pickPlayerRating(player, snap.ratingsByKey),
+    pickPlayerRating(player, snap.individualsByKey),
+    ratingById,
+  );
+}
+
+export async function listPlayerHomonyms(
+  id: string,
+): Promise<DirectoryPlayer[]> {
+  const { directoryPlayers } = await getCatalogSnapshot();
+  return resolvePlayerId(id, directoryPlayers).candidates;
 }
 
 export async function getPlayerMatches(
@@ -254,18 +402,33 @@ export async function getPlayerMatches(
 export async function getH2h(
   aId: string,
   bId: string,
+  opts?: { a2?: string; b2?: string },
 ): Promise<{
   a: DirectoryPlayer | null;
   b: DirectoryPlayer | null;
   meetings: CatalogMatch[];
   aWins: number;
   bWins: number;
+  pairMode: boolean;
 }> {
   const { directoryPlayers, matches } = await getCatalogSnapshot();
-  const a = directoryPlayers.find((p) => p.id === aId) ?? null;
-  const b = directoryPlayers.find((p) => p.id === bId) ?? null;
-  const { meetings, aWins, bWins } = h2hFromMatches(matches, aId, bId);
-  return { a, b, meetings, aWins, bWins };
+  const resolve = (id: string) =>
+    resolvePlayerId(id, directoryPlayers).match ??
+    directoryPlayers.find((p) => p.id === id) ??
+    null;
+  const a = aId ? resolve(aId) : null;
+  const b = bId ? resolve(bId) : null;
+  const a2 = opts?.a2 ? resolve(opts.a2) : null;
+  const b2 = opts?.b2 ? resolve(opts.b2) : null;
+  const pairMode = Boolean(a && a2 && b && b2);
+  const { meetings, aWins, bWins } = pairMode
+    ? pairH2hFromMatches(
+        matches,
+        [a!.id, a2!.id],
+        [b!.id, b2!.id],
+      )
+    : h2hFromMatches(matches, a?.id ?? aId, b?.id ?? bId);
+  return { a, b, meetings, aWins, bWins, pairMode };
 }
 
 export async function searchCatalog(
@@ -302,7 +465,10 @@ export async function listDirectoryPlayers(opts?: {
   const all = await getDirectoryPlayers();
   const filtered = all.filter((p) => {
     if (disc && p.disc !== disc && !p.discs.includes(disc)) return false;
-    if (q && !p.name.toLowerCase().includes(q)) return false;
+    if (q) {
+      const hay = `${p.name} ${p.country ?? ""}`.toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
     return true;
   });
   const total = filtered.length;
@@ -332,7 +498,10 @@ export async function listDirectoryBoard(opts?: {
   const all = await getDirectoryPlayers();
   let filtered = all.filter((p) => {
     if (disc && p.disc !== disc && !p.discs.includes(disc)) return false;
-    if (q && !p.name.toLowerCase().includes(q)) return false;
+    if (q) {
+      const hay = `${p.name} ${p.country ?? ""}`.toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
     return true;
   });
   if (metric === "winRate") {
@@ -363,12 +532,20 @@ export async function searchDirectoryPlayers(
   q: string,
   limit = 40,
 ): Promise<
-  { id: string; name: string; matches: number; disc: DirectoryPlayer["disc"] }[]
+  {
+    id: string;
+    name: string;
+    matches: number;
+    disc: DirectoryPlayer["disc"];
+    country: string | null;
+  }[]
 > {
   const query = q.trim().toLowerCase().slice(0, 100);
   const all = await getDirectoryPlayers();
   const rows = (query
-    ? all.filter((p) => p.name.toLowerCase().includes(query))
+    ? all.filter((p) =>
+        `${p.name} ${p.country ?? ""}`.toLowerCase().includes(query),
+      )
     : all.slice().sort((a, b) => b.matches - a.matches)
   ).slice(0, Math.min(Math.max(limit, 1), 80));
   return rows.map((p) => ({
@@ -376,20 +553,16 @@ export async function searchDirectoryPlayers(
     name: p.name,
     matches: p.matches,
     disc: p.disc,
+    country: p.country,
   }));
 }
 
-/** Home leaderboard rows — slim directory DTOs (no form/rivals payload). */
-export async function getTopPlayers(opts?: {
-  disc?: Disc | "all";
-  limit?: number;
-}): Promise<DirectoryPlayer[]> {
-  const { directoryPlayers } = await getCatalogSnapshot();
-  return topPlayersFromList(directoryPlayers, {
-    disc: opts?.disc,
-    limit: opts?.limit,
-    minDecided: 3,
-  });
+/** This week's matches for home (no ranking leaderboard). */
+export async function getThisWeekMatches(
+  limit = 12,
+): Promise<CatalogMatch[]> {
+  const { matches } = await getCatalogSnapshot();
+  return thisWeekMatches(matches, { days: 7, limit });
 }
 
 /** Featured matches for home: late rounds first (not chronological “recent”). */

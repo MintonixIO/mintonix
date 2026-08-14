@@ -190,6 +190,7 @@ export function PlayerPicker({
           </span>
           {selected ? (
             <span className="shrink-0 font-mono text-[11px] text-[var(--text-muted)]">
+              {selected.country ? `${selected.country.toUpperCase()} · ` : ""}
               {selected.disc ?? "—"} · {selected.matches}
             </span>
           ) : null}
@@ -276,6 +277,11 @@ export function PlayerPicker({
                   >
                     <span className="min-w-0 flex-1 truncate text-[13px] text-[var(--text-strong)]">
                       {p.name}
+                      {p.country ? (
+                        <span className="ml-1.5 font-mono text-[10.5px] uppercase text-[var(--text-faint)]">
+                          {p.country}
+                        </span>
+                      ) : null}
                     </span>
                     <span className="shrink-0 font-mono text-[10.5px] text-[var(--text-muted)]">
                       {p.disc ?? "—"} · {p.matches}

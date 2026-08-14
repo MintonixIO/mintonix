@@ -357,6 +357,169 @@ def _iso_date(day_month, year):
         return None
 
 
+_DATE_TOKEN = re.compile(
+    r"(?P<d>\d{1,2})\s+(?P<m>Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|"
+    r"May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|"
+    r"Nov(?:ember)?|Dec(?:ember)?)(?:\s+(?P<y>19\d{2}|20\d{2}))?",
+    re.I,
+)
+# Compact same-month range: "7–12 January" / "7-12 January 2025"
+# First day must not be the tail of a year ("2024 – 3 January").
+_COMPACT_RANGE = re.compile(
+    r"(?<!\d)(?P<d0>\d{1,2})\s*[–\-]\s*(?P<d1>\d{1,2})\s+"
+    r"(?P<m>Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|"
+    r"May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|"
+    r"Nov(?:ember)?|Dec(?:ember)?)(?:\s+(?P<y>19\d{2}|20\d{2}))?",
+    re.I,
+)
+_START_DATE_TMPL = re.compile(
+    r"\{\{\s*(?:Start\s+date|End\s+date)\s*\|\s*(\d{4})\s*\|\s*(\d{1,2})\s*\|\s*(\d{1,2})",
+    re.I,
+)
+
+# Typical BWF week: Qual/R64 early, Final on the last day.
+_ROUND_DATE_FRAC = (
+    (re.compile(r"qual", re.I), 0.00),
+    (re.compile(r"\bgroup\b", re.I), 0.10),
+    (re.compile(r"round of 64|\br64\b", re.I), 0.15),
+    (re.compile(r"round of 32|\br32\b|first round", re.I), 0.30),
+    (re.compile(r"round of 16|\br16\b|second round", re.I), 0.50),
+    (re.compile(r"quarter|\bqf\b|third round", re.I), 0.70),
+    (re.compile(r"semi|\bsf\b", re.I), 0.85),
+    (re.compile(r"bronze|3rd|third place", re.I), 0.95),
+    (re.compile(r"\bfinal\b", re.I), 1.00),
+)
+
+
+def _ymd(year, month, day):
+    try:
+        return datetime(year, month, day).date()
+    except ValueError:
+        return None
+
+
+def parse_infobox_date_range(dates_raw, season):
+    """Parse Infobox ``dates`` into (start_iso, end_iso).
+
+    Handles ``7–12 January``, ``28 January – 2 February``, year-crossing
+    ``29 December – 3 January``, optional years, and {{Start date|Y|M|D}}.
+    """
+    if not dates_raw:
+        return None, None
+    text = str(dates_raw)
+    tmpls = _START_DATE_TMPL.findall(text)
+    if len(tmpls) >= 2:
+        a = _ymd(int(tmpls[0][0]), int(tmpls[0][1]), int(tmpls[0][2]))
+        b = _ymd(int(tmpls[1][0]), int(tmpls[1][1]), int(tmpls[1][2]))
+        if a and b:
+            if b < a:
+                a, b = b, a
+            return a.isoformat(), b.isoformat()
+
+    compact = _COMPACT_RANGE.search(text)
+    if compact:
+        mon = _MONTHS.get(compact.group("m")[:3].lower())
+        year = int(compact.group("y")) if compact.group("y") else season
+        if mon:
+            a = _ymd(year, mon, int(compact.group("d0")))
+            b = _ymd(year, mon, int(compact.group("d1")))
+            if a and b:
+                if b < a:
+                    a, b = b, a
+                return a.isoformat(), b.isoformat()
+    tokens = list(_DATE_TOKEN.finditer(text))
+    if not tokens:
+        return None, None
+
+    def tok_date(m, default_year, prev_month=None):
+        mon = _MONTHS.get(m.group("m")[:3].lower())
+        if not mon:
+            return None
+        year = int(m.group("y")) if m.group("y") else default_year
+        # Year-crossing: "29 December – 3 January" with season 2025 → Dec 2024.
+        if m.group("y") is None and prev_month is None and mon >= 11:
+            # First token in Nov/Dec with no year: keep season unless end is Jan.
+            pass
+        return _ymd(year, mon, int(m.group("d"))), mon, year
+
+    if len(tokens) == 1:
+        d, _, _ = tok_date(tokens[0], season)
+        if not d:
+            return None, None
+        iso = d.isoformat()
+        return iso, iso
+
+    # Two (or more) tokens: start then end.
+    t0, t1 = tokens[0], tokens[1]
+    mon0 = _MONTHS.get(t0.group("m")[:3].lower())
+    mon1 = _MONTHS.get(t1.group("m")[:3].lower())
+    y0 = int(t0.group("y")) if t0.group("y") else season
+    y1 = int(t1.group("y")) if t1.group("y") else season
+    if t0.group("y") is None and t1.group("y") is None and mon0 and mon1 and mon0 > mon1:
+        # Dec → Jan wrap: start belongs to the previous calendar year.
+        y0 = season - 1
+    start = _ymd(y0, mon0, int(t0.group("d"))) if mon0 else None
+    end = _ymd(y1, mon1, int(t1.group("d"))) if mon1 else None
+    if start and end and end < start:
+        # Same-year wrap missed (e.g. season already is the end year).
+        start = _ymd(y0 - 1, mon0, int(t0.group("d")))
+    if not start and not end:
+        return None, None
+    if start and not end:
+        return start.isoformat(), start.isoformat()
+    if end and not start:
+        return end.isoformat(), end.isoformat()
+    return start.isoformat(), end.isoformat()
+
+
+def date_for_round(round_label, start_iso, end_iso):
+    """Place a bracket match on a day inside the tournament window.
+
+    Wikipedia brackets have no per-match dates. Group-stage rows already carry
+    an exact ``date`` and must not go through this helper. Finals land on the
+    last day; qualifying on the first; other rounds interpolate.
+    """
+    if not start_iso:
+        return None
+    if not end_iso:
+        return start_iso
+    try:
+        start = datetime.fromisoformat(start_iso).date()
+        end = datetime.fromisoformat(end_iso).date()
+    except ValueError:
+        return start_iso
+    span = (end - start).days
+    if span <= 0:
+        return start_iso
+    frac = 0.5
+    label = round_label or ""
+    for pat, f in _ROUND_DATE_FRAC:
+        if pat.search(label):
+            frac = f
+            break
+    day = start.toordinal() + int(round(span * frac))
+    day = min(max(day, start.toordinal()), end.toordinal())
+    return datetime.fromordinal(day).date().isoformat()
+
+
+def assign_bracket_dates(matches, info, season):
+    """Fill missing match dates from the infobox range + round."""
+    start, end = parse_infobox_date_range(
+        (info or {}).get("dates") or (info or {}).get("date") or "",
+        season,
+    )
+    if info is not None:
+        info["_date_start"] = start
+        info["_date_end"] = end
+    if not start:
+        return matches
+    for m in matches:
+        if m.get("date"):
+            continue
+        m["date"] = date_for_round(m.get("round") or "", start, end)
+    return matches
+
+
 def extract_group_stage_matches(wikitext, discipline_start, discipline_end, page_title, discipline, season):
     """Parse World Tour Finals round-robin group-stage wikitables.
 
@@ -665,6 +828,7 @@ def parse_tournament_page(page_title, wikitext, season):
                 wikitext, start, end, page_title, code, season
             ))
 
+    assign_bracket_dates(matches, info, season)
     assign_unique_match_idx(matches)
     # Emit stable match_key once so finder/loader cannot diverge.
     tournament_title = page_title

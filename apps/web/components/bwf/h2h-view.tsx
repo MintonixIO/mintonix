@@ -22,6 +22,9 @@ export function H2hView({
   bWins,
   a,
   b,
+  pairMode = false,
+  pairAName = null,
+  pairBName = null,
 }: {
   /** Slim seed options for the picker (not the full directory). */
   players: H2hPickerPlayer[];
@@ -33,6 +36,9 @@ export function H2hView({
   /** Directory stats for the selected pair (no form/rivals payload). */
   a: DirectoryPlayer | null;
   b: DirectoryPlayer | null;
+  pairMode?: boolean;
+  pairAName?: string | null;
+  pairBName?: string | null;
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -62,6 +68,7 @@ export function H2hView({
         name: pa.name,
         matches: pa.matches,
         disc: pa.disc,
+        country: pa.country,
       });
     }
     if (pb) {
@@ -70,6 +77,7 @@ export function H2hView({
         name: pb.name,
         matches: pb.matches,
         disc: pb.disc,
+        country: pb.country,
       });
     }
     return [...map.values()];
@@ -91,7 +99,7 @@ export function H2hView({
     );
   }
 
-  const MEETING_CAP = 50;
+  const MEETING_CAP = 200;
   const shownMeetings = meetings.slice(0, MEETING_CAP);
   const n = meetings.length;
   const truncated = n > MEETING_CAP;
@@ -113,10 +121,9 @@ export function H2hView({
           Head-to-Head
         </h1>
         <p className="mt-[7px] max-w-[60ch] text-[14.5px] leading-[1.55] text-[var(--text-secondary)]">
-          Career meetings computed from the BWF match catalog — not simulated
-          records. Search the full directory from the pickers (type 2+
-          characters). Players are keyed by display name; homonyms may be
-          merged until a dedicated identity table exists.
+          Career meetings from the BWF catalog. Same-name players are split by
+          association — country shows on every picker row. Search the full
+          directory (type 2+ characters).
         </p>
       </div>
 
@@ -181,16 +188,25 @@ export function H2hView({
               />
               <div className="font-display text-sm font-semibold text-[var(--text-strong)]">
                 {displayA}
+                {pa.country ? (
+                  <span className="ml-1.5 font-mono text-[10.5px] font-normal uppercase text-[var(--text-faint)]">
+                    {pa.country}
+                  </span>
+                ) : null}
               </div>
               <div className="mt-1 font-mono text-[10.5px] text-[var(--text-muted)]">
                 {h2hA === pa.id
-                  ? `${pa.winRate}% career · ${pa.matches} matches`
+                  ? `${pa.winRate}% career · ${pa.matches} matches${
+                      pa.rating?.rankScore != null
+                        ? ` · form ${Math.round(pa.rating.rankScore)}`
+                        : ""
+                    }`
                   : "Loading…"}
               </div>
             </div>
             <div className="text-center">
               <div className="font-mono text-[10px] uppercase tracking-wide text-[var(--text-faint)]">
-                Catalog H2H
+                {pairMode ? "Pair H2H" : "Catalog H2H"}
               </div>
               <div className="mt-1 font-display text-[32px] font-semibold tabular-nums text-[var(--text-strong)]">
                 {h2hA === pa.id && h2hB === (pb?.id ?? "")
@@ -220,10 +236,19 @@ export function H2hView({
                   />
                   <div className="font-display text-sm font-semibold text-[var(--text-strong)]">
                     {displayB}
+                    {pb?.country ? (
+                      <span className="ml-1.5 font-mono text-[10.5px] font-normal uppercase text-[var(--text-faint)]">
+                        {pb.country}
+                      </span>
+                    ) : null}
                   </div>
                   <div className="mt-1 font-mono text-[10.5px] text-[var(--text-muted)]">
                     {pb && h2hB === pb.id
-                      ? `${pb.winRate}% career · ${pb.matches} matches`
+                      ? `${pb.winRate}% career · ${pb.matches} matches${
+                          pb.rating?.rankScore != null
+                            ? ` · form ${Math.round(pb.rating.rankScore)}`
+                            : ""
+                        }`
                       : "Loading…"}
                   </div>
                 </>
@@ -249,11 +274,18 @@ export function H2hView({
                 : n === 0
                   ? "No shared matches in the catalog"
                   : truncated
-                    ? `Showing latest ${MEETING_CAP} of ${n} meetings · scoreline + event`
-                    : `All ${n} meeting${n === 1 ? "" : "s"} · scoreline + event`}
+                    ? `Showing latest ${MEETING_CAP} of ${n} · date · event · round · 2–0/2–1`
+                    : `All ${n} meeting${n === 1 ? "" : "s"} · date · event · round · score`}
             </div>
           </div>
-          <div className="max-h-[280px] space-y-2 overflow-y-auto">
+        {pairMode ? (
+          <p className="mb-3 font-mono text-[11px] text-[var(--text-muted)]">
+            Pair vs pair
+            {pairAName ? ` · ${displayA} / ${pairAName}` : ""}
+            {pairBName ? ` vs ${displayB} / ${pairBName}` : ""}
+          </p>
+        ) : null}
+        <div className="max-h-[420px] space-y-2 overflow-y-auto">
             {h2hA !== pa.id || h2hB !== (pb?.id ?? "") ? (
               <div className="rounded-lg border border-dashed border-[var(--border)] px-3 py-8 text-center text-[12.5px] text-[var(--text-muted)]">
                 {isPending ? "Updating head-to-head…" : "Select players above."}
@@ -311,6 +343,12 @@ export function H2hView({
           <div className="space-y-3">
             {[
               { k: "Win rate", a: pa.winRate, b: pb.winRate, unit: "%" },
+              {
+                k: "Form",
+                a: pa.rating?.rankScore != null ? Math.round(pa.rating.rankScore) : 0,
+                b: pb.rating?.rankScore != null ? Math.round(pb.rating.rankScore) : 0,
+                unit: "",
+              },
               { k: "Wins", a: pa.wins, b: pb.wins, unit: "" },
               { k: "Matches", a: pa.matches, b: pb.matches, unit: "" },
               {

@@ -110,8 +110,8 @@ export function PlayersView({
           Player directory
         </h1>
         <p className="mt-[7px] max-w-[60ch] text-[14.5px] leading-[1.55] text-[var(--text-secondary)]">
-          Every player name from the BWF catalog, rolled up into wins, losses,
-          and leaderboard metrics computed from real match rows.
+          Every player from the BWF catalog. Same display name, different
+          association — those are two people. Country is on every card.
         </p>
       </div>
 
@@ -193,6 +193,12 @@ export function PlayersView({
                       {p.name}
                     </div>
                     <div className="mt-[3px] flex items-center gap-[7px] font-mono text-[11px] text-[var(--text-muted)]">
+                      {p.country ? (
+                        <>
+                          <span className="uppercase">{p.country}</span>
+                          <span className="h-[3px] w-[3px] rounded-full bg-[var(--text-faint)]" />
+                        </>
+                      ) : null}
                       <span>{p.disc ?? "—"}</span>
                       <span className="h-[3px] w-[3px] rounded-full bg-[var(--text-faint)]" />
                       <span>
@@ -345,6 +351,7 @@ export function PlayersView({
                       {r.p.name}
                     </span>
                     <span className="mt-0.5 block truncate font-mono text-[10.5px] text-[var(--text-muted)]">
+                      {r.p.country ? `${r.p.country.toUpperCase()} · ` : ""}
                       {r.p.disc ?? "—"} · {r.p.matches} matches
                     </span>
                   </span>

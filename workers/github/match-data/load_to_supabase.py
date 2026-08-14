@@ -73,6 +73,10 @@ MATCH_UPSERT_COLS = (
     "team1_player2",
     "team2_player1",
     "team2_player2",
+    "team1_player1_country",
+    "team1_player2_country",
+    "team2_player1_country",
+    "team2_player2_country",
     "g1_t1", "g1_t2",
     "g2_t1", "g2_t2",
     "g3_t1", "g3_t2",
@@ -342,12 +346,22 @@ def player_name(p):
     return (p.get("wiki_name") or p.get("display_name") or "").strip()
 
 
-def team_slots(team: dict) -> tuple[str | None, str | None]:
-    """Map a scraped team roster to (player1, player2); singles → player2 None."""
-    names = [player_name(p) for p in (team.get("players") or []) if player_name(p)]
+def team_slots(team: dict) -> tuple[str | None, str | None, str | None, str | None]:
+    """Map a scraped team roster to (p1, p2, c1, c2); singles → p2/c2 None."""
+    names: list[str] = []
+    countries: list[str | None] = []
+    for p in team.get("players") or []:
+        n = player_name(p)
+        if not n:
+            continue
+        names.append(n)
+        c = (p.get("country") or "").strip() or None
+        countries.append(c)
     p1 = names[0] if len(names) > 0 else None
     p2 = names[1] if len(names) > 1 else None
-    return p1, p2
+    c1 = countries[0] if len(countries) > 0 else None
+    c2 = countries[1] if len(countries) > 1 else None
+    return p1, p2, c1, c2
 
 
 _MONTHS = {
@@ -540,8 +554,8 @@ def main():
                     unfinished_purge_keys.add(match_key)
                 continue
 
-            t1p1, t1p2 = team_slots(m["team1"])
-            t2p1, t2p2 = team_slots(m["team2"])
+            t1p1, t1p2, t1c1, t1c2 = team_slots(m["team1"])
+            t2p1, t2p2, t2c1, t2c2 = team_slots(m["team2"])
             # Compact catalog label; identity is the hashed match_key, not this.
             tournament_label = f"{tournament} · {discipline} · {rnd}"
 
@@ -554,6 +568,10 @@ def main():
                 "team1_player2": t1p2,
                 "team2_player1": t2p1,
                 "team2_player2": t2p2,
+                "team1_player1_country": t1c1,
+                "team1_player2_country": t1c2,
+                "team2_player1_country": t2c1,
+                "team2_player2_country": t2c2,
                 **score_cols,
             }
             match_rows.append(row)

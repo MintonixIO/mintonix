@@ -10,7 +10,7 @@ on:
       - "workers/github/match-data/**"
       - ".github/workflows/match-data.yml"
   push:
-    branches: [master]
+    branches: [master, rel/catalog]
     paths:
       - "workers/github/match-data/**"
       - ".github/workflows/match-data.yml"
@@ -46,7 +46,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Unit tests
-        run: python3 -m unittest test_scraper_cli.py test_fetch_cache.py test_load_purge.py -v
+        run: python3 -m unittest test_scraper_cli.py test_scraper_dates.py test_fetch_cache.py test_load_purge.py test_ratings.py -v
 
       # 1. Scrape the current season (year comes from a time server)
       - name: Scrape BWF results
@@ -85,7 +85,19 @@ jobs:
           done
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
-      # 5. Keep the run's artifacts for debugging (data lives in Supabase)
+      # 5. Recompute Glicko-2 / TrueSkill form ratings from the full catalog.
+      - name: Compute form ratings
+        env:
+          SUPABASE_URL: https://${{ vars.SUPABASE_PROJECT_REF }}.supabase.co
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          set -eo pipefail
+          echo "### Form ratings" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          python3 compute_ratings.py | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      # 6. Keep the run's artifacts for debugging (data lives in Supabase)
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4

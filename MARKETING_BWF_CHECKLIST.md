@@ -50,7 +50,7 @@ Last updated: 2026-08-01 (remaining issues batch)
 | F2.1 | Fail-closed env | [x] | Catalog errors + missing key path |
 | F2.2 | owner_id filter | [x] | Already enforced in catalog |
 | F2.3 | min decided copy | [x] | Home boards |
-| F2.4 | Homonym caveat | [x] | Home + profiles |
+| F2.4 | Homonym identity | [x] | Country + wiki (born YEAR) split; unique-country fill |
 | F2.5 | Form date note | [x] | Profile copy |
 | F2.6 | Doubles rivals note | [x] | Profile rivalries |
 | F2.7 | Round filter | [-] | Exact match OK; alias table deferred |

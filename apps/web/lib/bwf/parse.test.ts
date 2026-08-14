@@ -8,6 +8,8 @@ import {
   isComeback,
   mapDbMatch,
   parseTournament,
+  playerIdBase,
+  playerIdCountry,
   playerIdFromName,
   playerWon,
   type DbMatchRow,
@@ -41,6 +43,12 @@ describe("cleanPlayerName", () => {
     expect(cleanPlayerName("Lin Chun-yi (badminton)")).toBe("Lin Chun-yi");
   });
 
+  it("keeps born-year parentheticals", () => {
+    expect(cleanPlayerName("Chen Yu (badminton, born 1980)")).toBe(
+      "Chen Yu (born 1980)",
+    );
+  });
+
   it("handles empty", () => {
     expect(cleanPlayerName(null)).toBe("");
     expect(cleanPlayerName("  ")).toBe("");
@@ -55,6 +63,34 @@ describe("playerIdFromName", () => {
   it("returns empty for blank names (no unknown sentinel)", () => {
     expect(playerIdFromName("")).toBe("");
     expect(playerIdFromName("   ")).toBe("");
+  });
+
+  it("splits homonyms by country", () => {
+    expect(playerIdFromName("Chen Yu", "CHN")).toBe("chen-yu--chn");
+    expect(playerIdFromName("Chen Yu", "TPE")).toBe("chen-yu--tpe");
+    expect(playerIdFromName("Chen Yu", "CHN")).not.toBe(
+      playerIdFromName("Chen Yu", "TPE"),
+    );
+  });
+
+  it("aliases same-person spelling without forking", () => {
+    expect(playerIdFromName("Wang Yilü", "CHN")).toBe(
+      playerIdFromName("Wang Yilyu", "China"),
+    );
+    expect(playerIdFromName("An Se Young", "KOR")).toBe("an-se-young--kor");
+    expect(playerIdFromName("An Se-young", "Korea")).toBe("an-se-young--kor");
+  });
+
+  it("keeps wiki birth-year disambiguators", () => {
+    expect(playerIdFromName("Chen Yu (born 1980)")).toBe("chen-yu-born-1980");
+    expect(playerIdFromName("Chen Yu (born 1983)")).toBe("chen-yu-born-1983");
+  });
+
+  it("splits country suffix from id", () => {
+    expect(playerIdBase("chen-yu--chn")).toBe("chen-yu");
+    expect(playerIdCountry("chen-yu--chn")).toBe("chn");
+    expect(playerIdBase("viktor-axelsen")).toBe("viktor-axelsen");
+    expect(playerIdCountry("viktor-axelsen")).toBeNull();
   });
 });
 
@@ -134,6 +170,10 @@ describe("mapDbMatch / playerWon", () => {
         team1_player2: "A Two",
         team2_player1: "B One",
         team2_player2: "B Two",
+        team1_player1_country: "CHN",
+        team1_player2_country: "CHN",
+        team2_player1_country: "INA",
+        team2_player2_country: "INA",
         g1_t1: 21,
         g1_t2: 15,
         g2_t1: 21,
@@ -143,9 +183,31 @@ describe("mapDbMatch / playerWon", () => {
     expect(m.disc).toBe("MD");
     expect(m.team1).toEqual(["A One", "A Two"]);
     expect(m.team2Ids).toHaveLength(2);
+    expect(m.team1Ids[0]).toBe("a-one--chn");
+    expect(m.team2Ids[0]).toBe("b-one--ina");
     expect(m.winner).toBe(1);
     expect(playerWon(m, m.team1Ids[0])).toBe(true);
     expect(playerWon(m, m.team2Ids[0])).toBe(false);
+  });
+
+  it("splits two Chen Yus by country", () => {
+    const m = mapDbMatch(
+      row({
+        id: "hy",
+        tournament: "2024 Test · MS · Final",
+        team1_player1: "Chen Yu",
+        team1_player1_country: "CHN",
+        team2_player1: "Chen Yu",
+        team2_player1_country: "TPE",
+        g1_t1: 21,
+        g1_t2: 10,
+        g2_t1: 21,
+        g2_t2: 12,
+      }),
+    );
+    expect(m.team1Ids[0]).toBe("chen-yu--chn");
+    expect(m.team2Ids[0]).toBe("chen-yu--tpe");
+    expect(m.team1Ids[0]).not.toBe(m.team2Ids[0]);
   });
 
   it("skips blank roster cells", () => {

@@ -4,6 +4,9 @@
  */
 import {
   formatTeam,
+  normalizePlayerKey,
+  playerIdBase,
+  playerIdFromName,
   playerWon,
   roundRank,
 } from "./parse";
@@ -15,11 +18,21 @@ import type {
   CatalogStats,
   DirectoryPlayer,
   Disc,
+  FormRating,
   MatchFilters,
   MatchStatus,
+  RivalRow,
   SearchHit,
 } from "./types";
-import { BWF_SEARCH_LIMIT, BWF_SEARCH_MAX_Q, DISCS } from "./types";
+import {
+  BWF_SEARCH_LIMIT,
+  BWF_SEARCH_MAX_Q,
+  DISCS,
+  FORM_BAND,
+  OWNS_MIN_MEETINGS,
+  OWNS_WIN_RATE,
+  STRUGGLES_WIN_RATE,
+} from "./types";
 
 export function sortMatches(
   list: CatalogMatch[],
@@ -187,6 +200,7 @@ export function h2hFromMatches(
 type MutablePlayer = {
   id: string;
   name: string;
+  country: string | null;
   discCounts: Map<Disc, number>;
   matches: number;
   wins: number;
@@ -194,16 +208,14 @@ type MutablePlayer = {
   threeGames: number;
   withVideo: number;
   form: ("W" | "L")[];
-  rivalMap: Map<
-    string,
-    { id: string; name: string; meetings: number; wins: number }
-  >;
+  rivalMap: Map<string, RivalRow>;
 };
 
-function emptyPlayer(id: string, name: string): MutablePlayer {
+function emptyPlayer(id: string, name: string, country: string | null): MutablePlayer {
   return {
     id,
     name,
+    country,
     discCounts: new Map(),
     matches: 0,
     wins: 0,
@@ -227,13 +239,14 @@ function finalizePlayer(p: MutablePlayer): CatalogPlayer {
     }
   }
   discs.sort();
-  const rivals = [...p.rivalMap.values()]
-    .sort((a, b) => b.meetings - a.meetings || b.wins - a.wins)
-    .slice(0, 8);
+  const rivals = [...p.rivalMap.values()].sort(
+    (a, b) => b.meetings - a.meetings || b.wins - a.wins,
+  );
 
   return {
     id: p.id,
     name: p.name,
+    country: p.country,
     disc: primary,
     discs,
     matches: p.matches,
@@ -243,7 +256,11 @@ function finalizePlayer(p: MutablePlayer): CatalogPlayer {
     threeGames: p.threeGames,
     withVideo: p.withVideo,
     form: p.form.slice(0, 10),
-    rivals,
+    rivals: rivals.slice(0, 24),
+    owns: [],
+    struggles: [],
+    rating: null,
+    individualRating: null,
     imageUrl: playerImageUrl(p.id, p.name),
   };
 }
@@ -252,6 +269,7 @@ export function toDirectoryPlayer(p: CatalogPlayer): DirectoryPlayer {
   return {
     id: p.id,
     name: p.name,
+    country: p.country,
     disc: p.disc,
     discs: p.discs,
     matches: p.matches,
@@ -261,6 +279,7 @@ export function toDirectoryPlayer(p: CatalogPlayer): DirectoryPlayer {
     threeGames: p.threeGames,
     withVideo: p.withVideo,
     imageUrl: p.imageUrl,
+    rating: p.rating,
   };
 }
 
@@ -269,30 +288,46 @@ export function aggregatePlayers(matches: CatalogMatch[]): CatalogPlayer[] {
   const forForm = formSortMatches(matches);
   const byId = new Map<string, MutablePlayer>();
 
-  const touch = (id: string, name: string) => {
+  const touch = (id: string, name: string, country: string | null) => {
     if (!id || !name) return null;
     let p = byId.get(id);
     if (!p) {
-      p = emptyPlayer(id, name);
+      p = emptyPlayer(id, name, country);
       byId.set(id, p);
-    } else if (name.length > p.name.length) {
-      p.name = name;
+    } else {
+      if (name.length > p.name.length) p.name = name;
+      if (!p.country && country) p.country = country;
     }
     return p;
   };
 
   // Stats / rivals from event order.
   for (const m of sortMatches(matches, "event")) {
-    const sides: { ids: string[]; names: string[]; side: 1 | 2 }[] = [
-      { ids: m.team1Ids, names: m.team1, side: 1 },
-      { ids: m.team2Ids, names: m.team2, side: 2 },
+    const sides: {
+      ids: string[];
+      names: string[];
+      countries: (string | null)[];
+      side: 1 | 2;
+    }[] = [
+      {
+        ids: m.team1Ids,
+        names: m.team1,
+        countries: m.team1Countries ?? [],
+        side: 1,
+      },
+      {
+        ids: m.team2Ids,
+        names: m.team2,
+        countries: m.team2Countries ?? [],
+        side: 2,
+      },
     ];
     for (const side of sides) {
       for (let i = 0; i < side.ids.length; i++) {
         const id = side.ids[i];
         const name = side.names[i];
         if (!id || !name) continue;
-        const p = touch(id, name);
+        const p = touch(id, name, side.countries[i] ?? null);
         if (!p) continue;
         p.matches += 1;
         if (m.disc)
@@ -310,11 +345,12 @@ export function aggregatePlayers(matches: CatalogMatch[]): CatalogPlayer[] {
           if (!oid || !oname) continue;
           let r = p.rivalMap.get(oid);
           if (!r) {
-            r = { id: oid, name: oname, meetings: 0, wins: 0 };
+            r = { id: oid, name: oname, meetings: 0, wins: 0, winRate: 0 };
             p.rivalMap.set(oid, r);
           }
           r.meetings += 1;
           if (won === true) r.wins += 1;
+          r.winRate = r.meetings > 0 ? r.wins / r.meetings : 0;
         }
       }
     }
@@ -385,16 +421,23 @@ export function buildCatalogStats(
 
 type SearchPlayer = Pick<
   CatalogPlayer,
-  "id" | "name" | "matches" | "winRate" | "disc"
+  "id" | "name" | "matches" | "winRate" | "disc" | "country"
 >;
 
 /** Shared hit shape for live search + static shell index (same sub format). */
 export function playerSearchHit(p: SearchPlayer): SearchHit {
+  const cc = p.country ? p.country.toUpperCase() : "";
+  const bits = [
+    cc,
+    `${p.matches} matches`,
+    `${p.winRate}% win`,
+    p.disc ?? "",
+  ].filter(Boolean);
   return {
     kind: "Player",
     id: p.id,
     label: p.name,
-    sub: `${p.matches} matches · ${p.winRate}% win${p.disc ? ` · ${p.disc}` : ""}`,
+    sub: bits.join(" · "),
     href: `/bwf/players/${p.id}`,
   };
 }
@@ -441,7 +484,10 @@ export function buildSearchHits(
   const matchBudget = Math.min(3, limit);
 
   const playerHits: SearchHit[] = players
-    .filter((p) => p.name.toLowerCase().includes(query))
+    .filter((p) => {
+      const hay = `${p.name} ${p.country ?? ""}`.toLowerCase();
+      return hay.includes(query);
+    })
     .slice(0, Math.max(playerBudget, limit))
     .map(playerSearchHit);
 
@@ -508,3 +554,242 @@ export function topPlayersFromList<
     .sort((a, b) => b.winRate - a.winRate || b.wins - a.wins)
     .slice(0, limit);
 }
+
+/** Matches whose calendar date (or ingest time) falls in the last `days` days. */
+export function thisWeekMatches(
+  matches: CatalogMatch[],
+  opts?: { days?: number; now?: number; limit?: number },
+): CatalogMatch[] {
+  const days = opts?.days ?? 7;
+  const now = opts?.now ?? Date.now();
+  const limit = opts?.limit ?? 12;
+  const cutoff = now - days * 24 * 60 * 60 * 1000;
+  const dated = matches.filter((m) => matchChronologyMs(m) >= cutoff);
+  const pool = dated.length > 0 ? dated : formSortMatches(matches);
+  return formSortMatches(pool).slice(0, limit);
+}
+
+export function gamesWon(m: CatalogMatch): { w1: number; w2: number } {
+  let w1 = 0;
+  let w2 = 0;
+  for (const g of m.games) {
+    if (g.t1 > g.t2) w1 += 1;
+    else if (g.t2 > g.t1) w2 += 1;
+  }
+  return { w1, w2 };
+}
+
+export function scoreKind(m: CatalogMatch): "2-0" | "2-1" | null {
+  const { w1, w2 } = gamesWon(m);
+  const hi = Math.max(w1, w2);
+  const lo = Math.min(w1, w2);
+  if (hi < 2) return null;
+  return lo === 0 ? "2-0" : "2-1";
+}
+
+export function sameFormBand(
+  a: FormRating | null | undefined,
+  b: FormRating | null | undefined,
+  band = FORM_BAND,
+): boolean {
+  if (!a?.rankScore || !b?.rankScore) return false;
+  return Math.abs(a.rankScore - b.rankScore) <= band;
+}
+
+export function classifyRivals(
+  rivals: RivalRow[],
+  selfRating: FormRating | null,
+  ratingById: Map<string, FormRating | null>,
+): { owns: RivalRow[]; struggles: RivalRow[] } {
+  const owns: RivalRow[] = [];
+  const struggles: RivalRow[] = [];
+  for (const r of rivals) {
+    if (r.meetings < OWNS_MIN_MEETINGS) continue;
+    const opp = ratingById.get(r.id) ?? null;
+    if (!sameFormBand(selfRating, opp)) continue;
+    if (r.winRate >= OWNS_WIN_RATE) owns.push(r);
+    else if (r.winRate <= STRUGGLES_WIN_RATE) struggles.push(r);
+  }
+  owns.sort((a, b) => b.winRate - a.winRate || b.meetings - a.meetings);
+  struggles.sort((a, b) => a.winRate - b.winRate || b.meetings - a.meetings);
+  return { owns: owns.slice(0, 5), struggles: struggles.slice(0, 5) };
+}
+
+/** Pair-vs-pair: both sides match as unordered sets. */
+export function isPairH2hMeeting(
+  m: CatalogMatch,
+  aIds: string[],
+  bIds: string[],
+): boolean {
+  if (aIds.length < 2 || bIds.length < 2) return false;
+  const setEq = (x: string[], y: string[]) => {
+    if (x.length !== y.length) return false;
+    const s = new Set(x);
+    return y.every((id) => s.has(id));
+  };
+  return (
+    (setEq(m.team1Ids, aIds) && setEq(m.team2Ids, bIds)) ||
+    (setEq(m.team1Ids, bIds) && setEq(m.team2Ids, aIds))
+  );
+}
+
+export function pairH2hFromMatches(
+  matches: CatalogMatch[],
+  aIds: string[],
+  bIds: string[],
+): { meetings: CatalogMatch[]; aWins: number; bWins: number } {
+  const meetings = sortMatches(
+    matches.filter((m) => isPairH2hMeeting(m, aIds, bIds)),
+    "event",
+  );
+  let aWins = 0;
+  let bWins = 0;
+  const aSet = new Set(aIds);
+  for (const m of meetings) {
+    const aOn1 = m.team1Ids.every((id) => aSet.has(id));
+    if (m.winner === 1) {
+      if (aOn1) aWins += 1;
+      else bWins += 1;
+    } else if (m.winner === 2) {
+      if (aOn1) bWins += 1;
+      else aWins += 1;
+    }
+  }
+  return { meetings, aWins, bWins };
+}
+
+export function applyRating(
+  player: CatalogPlayer,
+  rating: FormRating | null,
+  individual: FormRating | null,
+  ratingById: Map<string, FormRating | null>,
+): CatalogPlayer {
+  const { owns, struggles } = classifyRivals(
+    player.rivals,
+    rating,
+    ratingById,
+  );
+  return {
+    ...player,
+    rating,
+    individualRating: individual,
+    owns,
+    struggles,
+  };
+}
+
+/**
+ * When a name appears with exactly one country in the catalog, fill that
+ * country onto roster slots that are missing a flagicon — same person, one id.
+ * True homonyms (2+ countries) are left untouched.
+ */
+export function inferUniqueCountries(
+  matches: CatalogMatch[],
+): Map<string, string> {
+  const seen = new Map<string, Set<string>>();
+  for (const m of matches) {
+    const sides = [
+      { names: m.team1, countries: m.team1Countries ?? [] },
+      { names: m.team2, countries: m.team2Countries ?? [] },
+    ];
+    for (const side of sides) {
+      for (let i = 0; i < side.names.length; i++) {
+        const key = normalizePlayerKey(side.names[i]);
+        const cc = side.countries[i];
+        if (!key || !cc) continue;
+        let set = seen.get(key);
+        if (!set) {
+          set = new Set();
+          seen.set(key, set);
+        }
+        set.add(cc);
+      }
+    }
+  }
+  const unique = new Map<string, string>();
+  for (const [name, set] of seen) {
+    if (set.size === 1) unique.set(name, [...set][0]!);
+  }
+  return unique;
+}
+
+function remapSide(
+  names: string[],
+  ids: string[],
+  countries: (string | null)[],
+  unique: Map<string, string>,
+): { ids: string[]; countries: (string | null)[] } {
+  const nextIds = ids.slice();
+  const nextCc = countries.slice();
+  for (let i = 0; i < names.length; i++) {
+    if (nextCc[i]) continue;
+    const key = normalizePlayerKey(names[i]);
+    const inferred = key ? unique.get(key) : undefined;
+    if (!inferred) continue;
+    nextCc[i] = inferred;
+    nextIds[i] = playerIdFromName(names[i], inferred);
+  }
+  return { ids: nextIds, countries: nextCc };
+}
+
+export function applyInferredCountries(
+  matches: CatalogMatch[],
+): CatalogMatch[] {
+  const unique = inferUniqueCountries(matches);
+  if (unique.size === 0) return matches;
+  return matches.map((m) => {
+    const t1 = remapSide(m.team1, m.team1Ids, m.team1Countries ?? [], unique);
+    const t2 = remapSide(m.team2, m.team2Ids, m.team2Countries ?? [], unique);
+    if (
+      t1.ids === m.team1Ids &&
+      t2.ids === m.team2Ids
+    ) {
+      return m;
+    }
+    return {
+      ...m,
+      team1Ids: t1.ids,
+      team2Ids: t2.ids,
+      team1Countries: t1.countries,
+      team2Countries: t2.countries,
+    };
+  });
+}
+
+export function resolvePlayerId<
+  T extends { id: string; name: string; country: string | null },
+>(
+  id: string,
+  players: T[],
+): { match: T | null; candidates: T[] } {
+  const exact = players.filter((p) => p.id === id);
+  if (exact.length === 1) return { match: exact[0], candidates: exact };
+  const prefix = `${id}--`;
+  const prefixed = players.filter((p) => p.id.startsWith(prefix));
+  if (prefixed.length === 1) return { match: prefixed[0], candidates: prefixed };
+  if (prefixed.length > 1) return { match: null, candidates: prefixed };
+  const base = playerIdBase(id);
+  if (base !== id) {
+    const sameBase = players.filter((p) => playerIdBase(p.id) === base);
+    if (sameBase.length > 1) return { match: null, candidates: sameBase };
+  }
+  return { match: null, candidates: [] };
+}
+
+export function pickPlayerRating(
+  player: { id: string; disc: Disc | null; discs: Disc[] },
+  byKey: Map<string, FormRating>,
+): FormRating | null {
+  const discs = player.disc
+    ? [player.disc, ...player.discs.filter((d) => d !== player.disc)]
+    : player.discs;
+  for (const d of discs) {
+    const hit = byKey.get(`${player.id}|${d}`);
+    if (hit) return hit;
+  }
+  for (const [key, rating] of byKey) {
+    if (key.startsWith(`${player.id}|`)) return rating;
+  }
+  return null;
+}
+

@@ -15,6 +15,7 @@ import {
   isAllowlistedYoutubeUrl,
   playerImageUrl,
   playerWon,
+  scoreKind,
   type CatalogMatch,
 } from "@/lib/bwf/data";
 import { PA, PB } from "@/components/bwf/tokens";
@@ -214,6 +215,7 @@ export function MatchRow({
       ? formatTeam(m.team2)
       : formatTeam(m.team1)
     : null;
+  const kind = scoreKind(m);
 
   const badgeLabel =
     outcomeMode === "ab"
@@ -284,6 +286,9 @@ export function MatchRow({
 
       <span className="font-mono text-[11px] tabular-nums text-[var(--text-muted)]">
         {formatScoreLine(m.games)}
+        {kind ? (
+          <span className="ml-1.5 text-[var(--text-faint)]">{kind}</span>
+        ) : null}
       </span>
 
       {!hasPlayer ? (
@@ -293,7 +298,8 @@ export function MatchRow({
         </span>
       ) : (
         <span className="hidden font-mono text-[11px] text-[var(--text-faint)] sm:inline">
-          {displayDate(m) || m.round}
+          {displayDate(m)}
+          {m.round ? ` · ${m.round}` : ""}
         </span>
       )}
 

@@ -9,7 +9,12 @@ export {
   formatDuration,
   formatScoreLine,
   formatTeam,
+  normalizeCountry,
+  normalizePlayerKey,
   playerIdFromName,
+  playerIdBase,
+  playerIdCountry,
+  formatCountry,
   playerWon,
   matchInvolvesPlayer,
   opponentNames,
@@ -26,6 +31,8 @@ export {
   matchChronologyMs,
   h2hFromMatches,
   isH2hMeeting,
+  pairH2hFromMatches,
+  isPairH2hMeeting,
   paginateMatches,
   sortMatches,
   winRateFromRecord,
@@ -38,6 +45,16 @@ export {
   aggregatePlayers,
   toDirectoryPlayer,
   topPlayersFromList,
+  thisWeekMatches,
+  scoreKind,
+  gamesWon,
+  sameFormBand,
+  classifyRivals,
+  applyRating,
+  inferUniqueCountries,
+  applyInferredCountries,
+  resolvePlayerId,
+  pickPlayerRating,
 } from "./query";
 
 export {
@@ -48,6 +65,8 @@ export {
   BWF_STATUS_UI,
   DISCS,
   DISC_LABEL,
+  FORM_BAND,
+  OWNS_MIN_MEETINGS,
 } from "./types";
 
 export type {
@@ -56,10 +75,12 @@ export type {
   CatalogStats,
   DirectoryPlayer,
   Disc,
+  FormRating,
   GameScore,
   H2hPickerPlayer,
   HomeStats,
   MatchFilters,
   MatchStatus,
+  RivalRow,
   SearchHit,
 } from "./types";

@@ -41,6 +41,8 @@ function catalogMatch(id: string): CatalogMatch {
     team2: ["Bob"],
     team1Ids: ["alice"],
     team2Ids: ["bob"],
+    team1Countries: [null],
+    team2Countries: [null],
     games: [
       { t1: 21, t2: 10 },
       { t1: 21, t2: 12 },
