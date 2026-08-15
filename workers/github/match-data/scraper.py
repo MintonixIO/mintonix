@@ -792,9 +792,16 @@ def discipline_full_name(code):
 SECTION_HEADER_RE = re.compile(r"^(=+)([^=\n]+)=+\s*$", re.MULTILINE)
 
 
+# BWF pages use {{Infobox badminton event}}; keep older tournament names too.
+_INFOBOX_RE = re.compile(
+    r"\{\{\s*Infobox\s+(?:badminton\s+(?:event|tournament)|tournament)\b",
+    re.I,
+)
+
+
 def parse_infobox(wikitext):
-    """Find and parse the Infobox tournament template at the top."""
-    m = re.search(r"\{\{Infobox\s+tournament\b", wikitext)
+    """Find and parse the tournament infobox at the top (dates live here)."""
+    m = _INFOBOX_RE.search(wikitext)
     if not m:
         return {}
     start = m.start()
