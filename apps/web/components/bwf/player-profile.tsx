@@ -246,11 +246,22 @@ export function PlayerProfile({
       </div>
 
       <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <RatingCard
-          title="Form rating"
-          rating={profile.rating}
-          kind="glicko"
-        />
+        {(profile.ratings.length > 0
+          ? profile.ratings
+          : profile.rating
+            ? [profile.rating]
+            : []
+        ).map((r) => (
+          <RatingCard
+            key={`${r.disc}-${r.kind}`}
+            title={`Form · ${r.disc}`}
+            rating={r}
+            kind="glicko"
+          />
+        ))}
+        {profile.ratings.length === 0 && !profile.rating ? (
+          <RatingCard title="Form rating" rating={null} kind="glicko" />
+        ) : null}
         <RatingCard
           title="Doubles individual"
           rating={profile.individualRating}

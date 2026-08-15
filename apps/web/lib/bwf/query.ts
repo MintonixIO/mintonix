@@ -261,6 +261,7 @@ function finalizePlayer(p: MutablePlayer): CatalogPlayer {
     struggles: [],
     rating: null,
     individualRating: null,
+    ratings: [],
     imageUrl: playerImageUrl(p.id, p.name),
   };
 }
@@ -684,6 +685,7 @@ export function applyRating(
   rating: FormRating | null,
   individual: FormRating | null,
   ratingById: Map<string, FormRating | null>,
+  ratingsByKey?: Map<string, FormRating>,
 ): CatalogPlayer {
   const { owns, struggles } = classifyRivals(
     player.rivals,
@@ -694,6 +696,9 @@ export function applyRating(
     ...player,
     rating,
     individualRating: individual,
+    ratings: ratingsByKey
+      ? ratingsForPlayer(player.id, ratingsByKey)
+      : player.ratings,
     owns,
     struggles,
   };
@@ -810,6 +815,44 @@ export function pickPlayerRating(
   }
   for (const [key, rating] of byKey) {
     if (key.startsWith(`${player.id}|`)) return rating;
+  }
+  return null;
+}
+
+/** All Glicko boards this person appears on (MS / WS / MD / WD / XD). */
+export function ratingsForPlayer(
+  playerId: string,
+  byKey: Map<string, FormRating>,
+): FormRating[] {
+  const out: FormRating[] = [];
+  for (const [key, rating] of byKey) {
+    if (key.startsWith(`${playerId}|`)) out.push(rating);
+  }
+  const order: Disc[] = ["MS", "WS", "MD", "WD", "XD"];
+  return out.sort(
+    (a, b) => order.indexOf(a.disc) - order.indexOf(b.disc),
+  );
+}
+
+/** Pair Glicko key is `webIdA--webIdB` in either name order. */
+export function pairRatingKey(aId: string, bId: string, disc: Disc): string[] {
+  return [`${aId}--${bId}|${disc}`, `${bId}--${aId}|${disc}`];
+}
+
+export function pickPairRating(
+  aId: string,
+  bId: string,
+  disc: Disc | null,
+  byKey: Map<string, FormRating>,
+): FormRating | null {
+  const discs: Disc[] = disc
+    ? [disc]
+    : ["MD", "WD", "XD"];
+  for (const d of discs) {
+    for (const key of pairRatingKey(aId, bId, d)) {
+      const hit = byKey.get(key);
+      if (hit) return hit;
+    }
   }
   return null;
 }

@@ -10,6 +10,7 @@ import type {
   CatalogMatch,
   DirectoryPlayer,
   H2hPickerPlayer,
+  FormRating,
 } from "@/lib/bwf/types";
 import { cn } from "@/lib/utils";
 
@@ -27,6 +28,8 @@ export function H2hView({
   pairMode = false,
   pairAName = null,
   pairBName = null,
+  pairARating = null,
+  pairBRating = null,
 }: {
   /** Slim seed options for the picker (not the full directory). */
   players: H2hPickerPlayer[];
@@ -43,6 +46,8 @@ export function H2hView({
   pairMode?: boolean;
   pairAName?: string | null;
   pairBName?: string | null;
+  pairARating?: FormRating | null;
+  pairBRating?: FormRating | null;
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -423,9 +428,21 @@ export function H2hView({
             {[
               { k: "Win rate", a: pa.winRate, b: pb.winRate, unit: "%" },
               {
-                k: "Form",
-                a: pa.rating?.rankScore != null ? Math.round(pa.rating.rankScore) : 0,
-                b: pb.rating?.rankScore != null ? Math.round(pb.rating.rankScore) : 0,
+                k: pairMode ? "Pair form" : "Form",
+                a: pairMode
+                  ? pairARating?.rankScore != null
+                    ? Math.round(pairARating.rankScore)
+                    : 0
+                  : pa.rating?.rankScore != null
+                    ? Math.round(pa.rating.rankScore)
+                    : 0,
+                b: pairMode
+                  ? pairBRating?.rankScore != null
+                    ? Math.round(pairBRating.rankScore)
+                    : 0
+                  : pb.rating?.rankScore != null
+                    ? Math.round(pb.rating.rankScore)
+                    : 0,
                 unit: "",
               },
               { k: "Wins", a: pa.wins, b: pb.wins, unit: "" },

@@ -68,6 +68,8 @@ export default async function BwfH2hPage({
     aWins: number;
     bWins: number;
     pairMode: boolean;
+    pairARating: import("@/lib/bwf/types").FormRating | null;
+    pairBRating: import("@/lib/bwf/types").FormRating | null;
   } | null = null;
   let error: string | null = null;
   let empty = false;
@@ -142,6 +144,8 @@ export default async function BwfH2hPage({
       aWins={h2h.aWins}
       bWins={h2h.bWins}
       pairMode={h2h.pairMode}
+      pairARating={h2h.pairARating}
+      pairBRating={h2h.pairBRating}
       pairAName={
         a2Id ? (picker.find((p) => p.id === a2Id)?.name ?? null) : null
       }

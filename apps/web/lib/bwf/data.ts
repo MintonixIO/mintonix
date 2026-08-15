@@ -57,6 +57,8 @@ export {
   applyInferredCountries,
   resolvePlayerId,
   pickPlayerRating,
+  pickPairRating,
+  ratingsForPlayer,
 } from "./query";
 
 export {

@@ -160,6 +160,8 @@ export type CatalogPlayer = {
   struggles: RivalRow[];
   rating: FormRating | null;
   individualRating: FormRating | null;
+  /** Glicko boards this person appears on (MS / WS / MD / WD / XD). */
+  ratings: FormRating[];
   /** Optional remote image URL (currently rare). */
   imageUrl: string | null;
 };

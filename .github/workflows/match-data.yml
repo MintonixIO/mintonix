@@ -34,10 +34,9 @@ defaults:
 jobs:
   scrape-and-load:
     runs-on: ubuntu-latest
-    # PR → dev (apply); push to master / schedule / manual → prod (apply).
-    # Each environment supplies vars.SUPABASE_PROJECT_REF (from which the API
-    # URL is derived) + secrets.SUPABASE_SERVICE_KEY.
-    environment: ${{ github.event_name == 'pull_request' && 'dev' || 'prod' }}
+    # PR or any non-master branch (incl. manual historical on rel/catalog) → dev.
+    # Push/schedule/dispatch on master → prod.
+    environment: ${{ (github.event_name == 'pull_request' || github.ref != 'refs/heads/master') && 'dev' || 'prod' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -72,7 +71,8 @@ jobs:
       - name: Match videos to matches
         run: python3 find_youtube_videos.py --videos-file bwf_videos.json
 
-      # 4. Load to Supabase (always apply). PR → dev; master/schedule/manual → prod.
+      # 4. Load to Supabase (always apply).
+      #    PR / non-master dispatch → dev; master schedule/push/dispatch → prod.
       #    Log is mirrored to the run summary.
       - name: Load to Supabase
         env:

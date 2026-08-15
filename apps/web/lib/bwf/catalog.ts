@@ -27,6 +27,8 @@ import {
   paginateMatches,
   pairH2hFromMatches,
   pickPlayerRating,
+  pickPairRating,
+  ratingsForPlayer,
   resolvePlayerId,
   sortMatches,
   thisWeekMatches,
@@ -186,10 +188,10 @@ async function fetchRatingTables(supabase: SupabaseClient): Promise<{
     "player_ratings",
     "web_id,discipline,kind,mu,rd,rank_score,peak_mu,matches",
     (row) => {
-      if (row.kind !== "player") return;
+      if (row.kind !== "player" && row.kind !== "pair") return;
       ratingsByKey.set(`${row.web_id}|${row.discipline}`, {
         disc: row.discipline,
-        kind: "player",
+        kind: row.kind,
         mu: row.mu,
         rd: row.rd,
         rankScore: row.rank_score,
@@ -221,6 +223,10 @@ async function fetchRatingTables(supabase: SupabaseClient): Promise<{
  * Always filters owner_id IS NULL (defense in depth; service role bypasses RLS).
  */
 async function fetchAllBwfRows(): Promise<CatalogMatch[]> {
+  if (process.env.CATALOG_FIXTURE === "1") {
+    const { loadPreviewSnapshot } = await import("./preview-fixture");
+    return loadPreviewSnapshot().matches;
+  }
   if (!hasServiceRoleKey()) {
     throw new Error(
       "Missing SUPABASE_SERVICE_ROLE_KEY — BWF catalog requires service-role credentials",
@@ -235,6 +241,10 @@ async function fetchAllBwfRows(): Promise<CatalogMatch[]> {
 }
 
 async function buildCatalogSnapshot(): Promise<CatalogSnapshot> {
+  if (process.env.CATALOG_FIXTURE === "1") {
+    const { loadPreviewSnapshot } = await import("./preview-fixture");
+    return loadPreviewSnapshot();
+  }
   const client = createServiceClient();
   const matches = await fetchAllBwfRows();
   const { ratingsByKey, individualsByKey } = await fetchRatingTables(client);
@@ -296,6 +306,10 @@ export async function getCatalogStats(): Promise<CatalogStats> {
  * Decision matrix lives in `resolveMatchByIdOutcome` (unit-tested).
  */
 export async function getMatchById(id: string): Promise<CatalogMatch | null> {
+  if (process.env.CATALOG_FIXTURE === "1") {
+    const snap = await getCatalogSnapshot();
+    return snap.matches.find((m) => m.id === id) ?? null;
+  }
   if (!hasServiceRoleKey()) {
     throw new Error(
       "Missing SUPABASE_SERVICE_ROLE_KEY — BWF catalog requires service-role credentials",
@@ -399,6 +413,7 @@ export async function getPlayerById(
     pickPlayerRating(player, snap.ratingsByKey),
     pickPlayerRating(player, snap.individualsByKey),
     ratingById,
+    snap.ratingsByKey,
   );
 }
 
@@ -430,8 +445,10 @@ export async function getH2h(
   aWins: number;
   bWins: number;
   pairMode: boolean;
+  pairARating: FormRating | null;
+  pairBRating: FormRating | null;
 }> {
-  const { directoryPlayers, matches } = await getCatalogSnapshot();
+  const { directoryPlayers, matches, ratingsByKey } = await getCatalogSnapshot();
   const resolve = (id: string) =>
     resolvePlayerId(id, directoryPlayers).match ??
     directoryPlayers.find((p) => p.id === id) ??
@@ -448,7 +465,18 @@ export async function getH2h(
         [b!.id, b2!.id],
       )
     : h2hFromMatches(matches, a?.id ?? aId, b?.id ?? bId);
-  return { a, b, meetings, aWins, bWins, pairMode };
+  const pairDisc =
+    meetings.find((m) => m.disc === "MD" || m.disc === "WD" || m.disc === "XD")
+      ?.disc ?? null;
+  const pairARating =
+    pairMode && a && a2
+      ? pickPairRating(a.id, a2.id, pairDisc, ratingsByKey)
+      : null;
+  const pairBRating =
+    pairMode && b && b2
+      ? pickPairRating(b.id, b2.id, pairDisc, ratingsByKey)
+      : null;
+  return { a, b, meetings, aWins, bWins, pairMode, pairARating, pairBRating };
 }
 
 export async function searchCatalog(

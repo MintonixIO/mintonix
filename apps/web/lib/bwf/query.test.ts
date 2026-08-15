@@ -23,6 +23,8 @@ import {
   toDirectoryPlayer,
   topPlayersFromList,
   winRateFromRecord,
+  pickPairRating,
+  ratingsForPlayer,
 } from "./query";
 
 function match(
@@ -361,6 +363,7 @@ describe("topPlayersFromList / buildSearchHits", () => {
       struggles: [],
       rating: null,
       individualRating: null,
+      ratings: [],
       imageUrl: null,
     },
     {
@@ -381,6 +384,7 @@ describe("topPlayersFromList / buildSearchHits", () => {
       struggles: [],
       rating: null,
       individualRating: null,
+      ratings: [],
       imageUrl: null,
     },
   ];
@@ -444,6 +448,7 @@ describe("topPlayersFromList / buildSearchHits", () => {
       struggles: [],
       rating: null,
       individualRating: null,
+      ratings: [],
       imageUrl: null,
     }));
     const matches = Array.from({ length: 6 }, (_, i) =>
@@ -496,6 +501,7 @@ describe("topPlayersFromList / buildSearchHits", () => {
       struggles: [],
       rating: null,
       individualRating: null,
+      ratings: [],
       imageUrl: null,
     }));
     const matches = [
@@ -824,6 +830,54 @@ describe("scoreKind / thisWeek / classifyRivals", () => {
     const { owns, struggles } = classifyRivals(rivals, self, byId);
     expect(owns.map((r) => r.id)).toEqual(["x"]);
     expect(struggles.map((r) => r.id)).toEqual(["y"]);
+  });
+});
+
+describe("pair / disc ratings", () => {
+  it("looks up pair form in either name order", () => {
+    const byKey = new Map([
+      [
+        "kim-won-ho--kor--seo-seung-jae--kor|MD",
+        {
+          disc: "MD" as const,
+          kind: "pair" as const,
+          mu: 1800,
+          rd: 50,
+          rankScore: 1700,
+          matches: 40,
+        },
+      ],
+    ]);
+    expect(
+      pickPairRating("seo-seung-jae--kor", "kim-won-ho--kor", "MD", byKey)
+        ?.rankScore,
+    ).toBe(1700);
+  });
+
+  it("lists every disc board for a player", () => {
+    const byKey = new Map([
+      [
+        "an-se-young--kor|WS",
+        {
+          disc: "WS" as const,
+          kind: "player" as const,
+          mu: 2000,
+          matches: 80,
+        },
+      ],
+      [
+        "an-se-young--kor|XD",
+        {
+          disc: "XD" as const,
+          kind: "pair" as const,
+          mu: 1600,
+          matches: 8,
+        },
+      ],
+    ]);
+    expect(ratingsForPlayer("an-se-young--kor", byKey).map((r) => r.disc)).toEqual(
+      ["WS", "XD"],
+    );
   });
 });
 
