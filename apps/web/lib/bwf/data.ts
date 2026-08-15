@@ -60,6 +60,8 @@ export {
   applyRating,
   inferUniqueCountries,
   applyInferredCountries,
+  applyCanonicalNames,
+  bestH2hPair,
   resolvePlayerId,
   pickPlayerRating,
   pickPairRating,

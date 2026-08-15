@@ -7,6 +7,7 @@ import { mapDbMatch, type DbMatchRow } from "./parse";
 import {
   aggregatePlayers,
   applyInferredCountries,
+  applyCanonicalNames,
   buildCatalogStats,
   pickPlayerRating,
   toDirectoryPlayer,
@@ -91,7 +92,9 @@ function ratingsFromMatches(
 }
 
 export function loadPreviewSnapshot(): CatalogSnapshot {
-  const matches = applyInferredCountries(loadRows().map(mapDbMatch));
+  const matches = applyCanonicalNames(
+    applyInferredCountries(loadRows().map(mapDbMatch)),
+  );
   const { ratingsByKey, individualsByKey } = ratingsFromMatches(matches);
   const full = aggregatePlayers(matches);
   const directoryPlayers = full.map((p) => ({

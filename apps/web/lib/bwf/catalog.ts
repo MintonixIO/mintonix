@@ -17,6 +17,8 @@ import {
 import {
   aggregatePlayers,
   applyInferredCountries,
+  applyCanonicalNames,
+  bestH2hPair,
   applyRating,
   buildCatalogStats,
   buildSearchHits,
@@ -242,7 +244,7 @@ async function fetchAllBwfRows(): Promise<CatalogMatch[]> {
   if (svc.error) {
     throw new Error(`BWF catalog load failed: ${svc.error}`);
   }
-  return applyInferredCountries(svc.rows.map(mapDbMatch));
+  return applyCanonicalNames(applyInferredCountries(svc.rows.map(mapDbMatch)));
 }
 
 async function buildCatalogSnapshot(): Promise<CatalogSnapshot> {
@@ -473,6 +475,11 @@ export async function getH2h(
       ? pickPairRating(b.id, b2.id, pairDisc, ratingsByKey)
       : null;
   return { a, b, meetings, aWins, bWins, pairMode, pairARating, pairBRating };
+}
+
+export async function getDefaultH2hIds(): Promise<{ a: string; b: string } | null> {
+  const { matches } = await getCatalogSnapshot();
+  return bestH2hPair(matches);
 }
 
 export async function searchCatalog(

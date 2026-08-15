@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { BwfErrorState } from "@/components/bwf/error-state";
 import { H2hView } from "@/components/bwf/h2h-view";
 import {
+  getDefaultH2hIds,
   getDirectoryPlayers,
   getH2h,
   searchDirectoryPlayers,
@@ -72,19 +73,16 @@ export default async function BwfH2hPage({
     } else {
       const seed = await searchDirectoryPlayers("", SEED_LIMIT);
       const byId = new Map(directory.map((p) => [p.id, p]));
+      const hasQuery = Boolean(sp.a || sp.b || sp.a2 || sp.b2);
 
-      const defaultA = seed[0]?.id ?? directory[0].id;
-      const defaultB =
-        seed.find((p) => p.id !== defaultA)?.id ??
-        directory.find((p) => p.id !== defaultA)?.id ??
-        defaultA;
-
-      aId = resolveCatalogId(sp.a, directory) || defaultA;
-      const resolvedB = resolveCatalogId(sp.b, directory);
-      bId =
-        resolvedB && resolvedB !== aId
-          ? resolvedB
-          : directory.find((p) => p.id !== aId)?.id ?? defaultB;
+      aId = resolveCatalogId(sp.a, directory);
+      bId = resolveCatalogId(sp.b, directory);
+      if (!hasQuery) {
+        const defaults = await getDefaultH2hIds();
+        aId = defaults?.a ?? "";
+        bId = defaults?.b && defaults.b !== aId ? defaults.b : "";
+      }
+      if (bId === aId) bId = "";
       a2Id = resolveCatalogId(sp.a2, directory);
       b2Id = resolveCatalogId(sp.b2, directory);
       if (a2Id === aId || a2Id === bId) a2Id = "";

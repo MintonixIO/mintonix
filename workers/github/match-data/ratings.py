@@ -165,6 +165,164 @@ def entity_key(name: str | None, country: str | None = None) -> str:
     return f"{n}|{cc}" if cc else n
 
 
+_VOWELS = set("aeiou")
+
+
+def _split_name(normalized: str) -> tuple[str, str, bool] | None:
+    tokens = [t for t in normalized.split(" ") if t]
+    if len(tokens) < 2:
+        return None
+    if re.fullmatch(r"[a-z](?:[.\s][a-z])*", tokens[0]):
+        return tokens[-1], " ".join(tokens[:-1]), True
+    return tokens[0], " ".join(tokens[1:]), False
+
+
+def given_initials(given: str) -> str:
+    parts = [p for p in re.split(r"[\s.-]+", given) if p]
+    if len(parts) >= 2:
+        return "".join(p[0] for p in parts)
+    w = parts[0] if parts else ""
+    if len(w) < 2:
+        return w
+    out = [w[0]]
+    i = 1
+    while i < len(w) and w[i] not in _VOWELS:
+        i += 1
+    while i < len(w) and w[i] in _VOWELS:
+        i += 1
+    while i < len(w):
+        if w[i] not in _VOWELS:
+            out.append(w[i])
+            while i < len(w) and w[i] not in _VOWELS:
+                i += 1
+            while i < len(w) and w[i] in _VOWELS:
+                i += 1
+        else:
+            i += 1
+    return "".join(out)
+
+
+def is_abbrev_given(given: str) -> bool:
+    if not given:
+        return False
+    if re.fullmatch(r"[a-z](?:[.\s-]+[a-z])+", given):
+        return True
+    if re.fullmatch(r"[a-z]{2,4}", given):
+        without_y = given.replace("y", "")
+        return bool(without_y) and not any(c in _VOWELS for c in without_y)
+    return False
+
+
+def _is_full_given(given: str) -> bool:
+    return any(len(p) >= 3 for p in re.split(r"[\s-]+", given))
+
+
+def _is_subsequence(word: str, initials: str) -> bool:
+    if not initials or not word or word[0] != initials[0]:
+        return False
+    i = 1
+    for ch in initials[1:]:
+        at = word.find(ch, i)
+        if at < 0:
+            return False
+        i = at + 1
+    return True
+
+
+def apply_canonical_names(rows: Iterable[dict]) -> list[dict]:
+    """Collapse unique Wikipedia abbreviations onto the full name."""
+    raw = list(rows)
+    people: list[tuple[str, str, str]] = []  # display, key, country
+    for row in raw:
+        for side in (1, 2):
+            for slot in (1, 2):
+                name = row.get(f"team{side}_player{slot}")
+                cc = normalize_country(
+                    row.get(f"team{side}_player{slot}_country")
+                    or row.get(f"team{side}_p{slot}_country")
+                )
+                key = normalize_name(name)
+                if key:
+                    people.append((str(name), key, cc))
+
+    class _P:
+        __slots__ = ("display", "key", "country", "surname", "given", "initials", "abbrev")
+
+        def __init__(self, display, key, country, surname, given, initials, abbrev):
+            self.display = display
+            self.key = key
+            self.country = country
+            self.surname = surname
+            self.given = given
+            self.initials = initials
+            self.abbrev = abbrev
+
+    parsed: list[_P] = []
+    for display, key, country in people:
+        parts = _split_name(key)
+        if not parts:
+            continue
+        sur, given, _west = parts
+        parsed.append(
+            _P(
+                display,
+                key,
+                country,
+                sur,
+                given,
+                given_initials(given),
+                is_abbrev_given(given),
+            )
+        )
+    fulls = [p for p in parsed if not p.abbrev and _is_full_given(p.given)]
+    mapping: dict[str, str] = {}
+    for abbr in parsed:
+        if not abbr.abbrev:
+            continue
+        letters = re.sub(r"[^a-z]", "", abbr.given)
+        if len(letters) < 2:
+            continue
+        hits = []
+        for f in fulls:
+            if f.surname != abbr.surname:
+                continue
+            if abbr.country and f.country and abbr.country != f.country:
+                continue
+            if f.initials == letters:
+                hits.append(f)
+            elif " " not in f.given and "-" not in f.given and _is_subsequence(
+                re.sub(r"[^a-z]", "", f.given), letters
+            ):
+                hits.append(f)
+        uniq = {h.key for h in hits}
+        if len(uniq) != 1:
+            continue
+        canon = max(hits, key=lambda h: len(h.display))
+        mapping[f"{abbr.key}|{abbr.country}"] = canon.display
+        if not abbr.country and canon.country:
+            mapping[f"{abbr.key}|{canon.country}"] = canon.display
+
+    if not mapping:
+        return raw
+    out: list[dict] = []
+    for row in raw:
+        copy = dict(row)
+        for side in (1, 2):
+            for slot in (1, 2):
+                nk = f"team{side}_player{slot}"
+                ck = f"team{side}_player{slot}_country"
+                name = copy.get(nk)
+                key = normalize_name(name)
+                if not key:
+                    continue
+                cc = normalize_country(copy.get(ck) or copy.get(f"team{side}_p{slot}_country"))
+                canon = mapping.get(f"{key}|{cc}") or mapping.get(f"{key}|")
+                if canon:
+                    copy[nk] = canon
+        out.append(copy)
+    return out
+
+
 def pair_key(a: str, b: str) -> str:
     """Order-independent pair identity (A/B == B/A)."""
     parts = sorted(p for p in (a, b) if p)
@@ -954,7 +1112,7 @@ def _split_country(key: str) -> str | None:
 
 
 def compute_ratings(rows: Iterable[dict]) -> RatingsResult:
-    raw = apply_inferred_countries(rows)
+    raw = apply_canonical_names(apply_inferred_countries(rows))
     cleaned = assign_days(clean_matches(raw))
     result = RatingsResult(clean_count=len(cleaned), dropped=len(raw) - len(cleaned))
 

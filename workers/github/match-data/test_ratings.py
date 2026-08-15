@@ -112,6 +112,68 @@ class HomonymTests(unittest.TestCase):
         b = R.entity_key("Wang Chang", "CHN")
         self.assertEqual(R.pair_key(a, b), R.pair_key(b, a))
 
+
+class AbbrevIdentityTests(unittest.TestCase):
+    def test_hyphen_and_pinyin_initials(self):
+        self.assertEqual(R.given_initials("won-ho"), "wh")
+        self.assertEqual(R.given_initials("yufei"), "yf")
+        self.assertTrue(R.is_abbrev_given("w-h"))
+        self.assertFalse(R.is_abbrev_given("won-ho"))
+
+    def test_unique_abbrev_collapses_before_ratings(self):
+        rows = [
+            row(
+                tournament="2026 Japan Open · MD · Final",
+                t1="Kim Won-ho",
+                t1c="KOR",
+                t1b="Seo Seung-jae",
+                t1bc="KOR",
+                t2="Goh Sze Fei",
+                t2c="MAS",
+                t2b="Nur Izzuddin",
+                t2bc="MAS",
+            ),
+            row(
+                tournament="2026 All England Open · MD · Final",
+                t1="Kim W-h",
+                t1c="KOR",
+                t1b="Seo S-j",
+                t1bc="KOR",
+                t2="Goh S F",
+                t2c="MAS",
+                t2b="Nur Izzuddin",
+                t2bc="MAS",
+            ),
+        ]
+        cleaned = R.assign_days(R.clean_matches(R.apply_canonical_names(rows)))
+        keys = {k for m in cleaned for k in (*m.side1, *m.side2)}
+        kim = [k for k in keys if "kim" in k]
+        self.assertEqual(len(kim), 1, kim)
+        self.assertTrue(kim[0].startswith("kim won-ho"))
+
+    def test_ambiguous_initials_stay_split(self):
+        rows = [
+            row(t1="Sung Yu-hsuan", t1c="TPE", t2="A", t2c="JPN"),
+            row(
+                tournament="2024 Malaysia Open · MS · Final",
+                t1="Sung Yi-hao",
+                t1c="TPE",
+                t2="B",
+                t2c="JPN",
+            ),
+            row(
+                tournament="2024 Denmark Open · MS · Final",
+                t1="Sung Y-h",
+                t1c="TPE",
+                t2="C",
+                t2c="JPN",
+            ),
+        ]
+        out = R.apply_canonical_names(rows)
+        self.assertEqual(out[2]["team1_player1"], "Sung Y-h")
+
+
+class UniqueCountryFillTests(unittest.TestCase):
     def test_unique_country_fills_missing_flag(self):
         rows = [
             row(t1="Viktor Axelsen", t1c="DEN", t2="Kodai Naraoka", t2c="JPN"),

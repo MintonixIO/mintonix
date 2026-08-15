@@ -13,6 +13,11 @@ import {
 } from "./parse";
 import { playerImageUrl } from "./player-image";
 import { isAllowlistedYoutubeUrl } from "./youtube";
+import {
+  buildAbbrevCanonicalMap,
+  canonicalDisplayName,
+  playerIdAliases,
+} from "./name-identity";
 import type {
   CatalogMatch,
   CatalogPlayer,
@@ -879,6 +884,87 @@ export function applyInferredCountries(
   });
 }
 
+function rosterEntries(matches: CatalogMatch[]): {
+  name: string;
+  country: string | null;
+}[] {
+  const out: { name: string; country: string | null }[] = [];
+  for (const m of matches) {
+    for (const [names, ccs] of [
+      [m.team1, m.team1Countries ?? []],
+      [m.team2, m.team2Countries ?? []],
+    ] as const) {
+      for (let i = 0; i < names.length; i++) {
+        out.push({ name: names[i] ?? "", country: ccs[i] ?? null });
+      }
+    }
+  }
+  return out;
+}
+
+function rewriteSide(
+  names: string[],
+  countries: (string | null)[],
+  map: Map<string, string>,
+): { names: string[]; ids: string[]; countries: (string | null)[] } {
+  const nextNames: string[] = [];
+  const nextIds: string[] = [];
+  const nextCc: (string | null)[] = [];
+  for (let i = 0; i < names.length; i++) {
+    const country = countries[i] ?? null;
+    const display = canonicalDisplayName(names[i] ?? "", country, map);
+    const id = playerIdFromName(display, country);
+    if (!id) continue;
+    nextNames.push(display);
+    nextIds.push(id);
+    nextCc.push(country);
+  }
+  return { names: nextNames, ids: nextIds, countries: nextCc };
+}
+
+/** Map "Kim W-h" onto "Kim Won-ho" when that expansion is unique. */
+export function applyCanonicalNames(matches: CatalogMatch[]): CatalogMatch[] {
+  const map = buildAbbrevCanonicalMap(rosterEntries(matches));
+  if (map.size === 0) return matches;
+  return matches.map((m) => {
+    const t1 = rewriteSide(m.team1, m.team1Countries ?? [], map);
+    const t2 = rewriteSide(m.team2, m.team2Countries ?? [], map);
+    return {
+      ...m,
+      team1: t1.names,
+      team2: t2.names,
+      team1Ids: t1.ids,
+      team2Ids: t2.ids,
+      team1Countries: t1.countries,
+      team2Countries: t2.countries,
+    };
+  });
+}
+
+/** Person-vs-person pair with the most catalog meetings (for a useful H2H default). */
+export function bestH2hPair(
+  matches: CatalogMatch[],
+): { a: string; b: string } | null {
+  const counts = new Map<string, { a: string; b: string; n: number }>();
+  for (const m of matches) {
+    for (const a of m.team1Ids) {
+      for (const b of m.team2Ids) {
+        if (!a || !b || a === b) continue;
+        const [x, y] = a < b ? [a, b] : [b, a];
+        const key = `${x}|${y}`;
+        const cur = counts.get(key);
+        if (cur) cur.n += 1;
+        else counts.set(key, { a: x, b: y, n: 1 });
+      }
+    }
+  }
+  let best: { a: string; b: string; n: number } | null = null;
+  for (const row of counts.values()) {
+    if (!best || row.n > best.n) best = row;
+  }
+  return best ? { a: best.a, b: best.b } : null;
+}
+
 export function resolvePlayerId<
   T extends { id: string; name: string; country: string | null },
 >(
@@ -896,6 +982,11 @@ export function resolvePlayerId<
     const sameBase = players.filter((p) => playerIdBase(p.id) === base);
     if (sameBase.length > 1) return { match: null, candidates: sameBase };
   }
+  const aliased = players.filter((p) =>
+    playerIdAliases(p.name, p.country).includes(id),
+  );
+  if (aliased.length === 1) return { match: aliased[0], candidates: aliased };
+  if (aliased.length > 1) return { match: null, candidates: aliased };
   return { match: null, candidates: [] };
 }
 

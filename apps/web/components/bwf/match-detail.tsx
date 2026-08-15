@@ -80,17 +80,6 @@ export function MatchDetail({ m }: { m: CatalogMatch }) {
             </span>
           ))}
         </div>
-        <div className="mt-1 flex flex-wrap gap-2">
-          {ids.map((id, i) => (
-            <Link
-              key={id}
-              href={`/bwf/players/${id}`}
-              className="font-mono text-[10.5px] text-[var(--text-link)] hover:text-[var(--brand)]"
-            >
-              Profile · {names[i]?.split(" ").slice(-1)[0]}
-            </Link>
-          ))}
-        </div>
       </div>
       <div className="flex items-center gap-2">
         {scores.map((s, i) => (
@@ -224,23 +213,23 @@ export function MatchDetail({ m }: { m: CatalogMatch }) {
           </div>
         </div>
       ) : m.sourceUrl ? (
-        <div className="mb-4 rounded-[14px] border border-dashed border-[var(--border)] bg-[var(--surface-1)] px-5 py-8 text-center text-[13px] text-[var(--text-muted)]">
-          <p>Video source on file is not a recognized YouTube URL (link omitted).</p>
+        <div className="mb-4 flex flex-wrap items-center gap-3 rounded-[14px] border border-dashed border-[var(--border)] bg-[var(--surface-1)] px-5 py-3 text-[13px] text-[var(--text-muted)]">
+          <span>Video source isn’t a YouTube link.</span>
           <Link
             href="/bwf/matches?lens=video"
-            className="mt-4 inline-flex min-h-10 items-center text-[13px] text-[var(--text-link)] hover:text-[var(--brand)]"
+            className="inline-flex min-h-10 items-center text-[13px] text-[var(--text-link)] hover:text-[var(--brand)]"
           >
-            Browse matches with video
+            Matches with video
           </Link>
         </div>
       ) : (
-        <div className="mb-4 rounded-[14px] border border-dashed border-[var(--border)] bg-[var(--surface-1)] px-5 py-8 text-center text-[13px] text-[var(--text-muted)]">
-          <p>No YouTube source linked for this match yet.</p>
+        <div className="mb-4 flex flex-wrap items-center gap-3 rounded-[14px] border border-dashed border-[var(--border)] bg-[var(--surface-1)] px-5 py-3 text-[13px] text-[var(--text-muted)]">
+          <span>No YouTube link for this match.</span>
           <Link
             href="/bwf/matches?lens=video"
-            className="mt-4 inline-flex min-h-10 items-center text-[13px] text-[var(--text-link)] hover:text-[var(--brand)]"
+            className="inline-flex min-h-10 items-center text-[13px] text-[var(--text-link)] hover:text-[var(--brand)]"
           >
-            Browse matches with video
+            Matches with video
           </Link>
         </div>
       )}

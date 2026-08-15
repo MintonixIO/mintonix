@@ -119,8 +119,43 @@ export function H2hView({
 
   if (!pa) {
     return (
-      <section className="rounded-[14px] border border-dashed border-[var(--border)] px-6 py-16 text-center text-[13px] text-[var(--text-muted)]">
-        No players in the catalog yet.
+      <section>
+        <div className="mb-5">
+          <h1 className="font-display text-[28px] font-semibold tracking-[-0.025em] text-[var(--text-strong)]">
+            Head-to-Head
+          </h1>
+          <p className="mt-[7px] max-w-[60ch] text-[14.5px] leading-[1.55] text-[var(--text-secondary)]">
+            Pick two players to see every catalog meeting.
+          </p>
+        </div>
+        <div className="mb-4 grid grid-cols-1 items-start gap-4 md:grid-cols-[1fr_auto_1fr]">
+          <PlayerPicker
+            players={allPlayers}
+            selectedId={h2hA}
+            accent="a"
+            remoteSearch
+            disabled={isPending}
+            onSelect={(player) => {
+              remember(player);
+              syncUrl(player.id, h2hB);
+            }}
+          />
+          <span className="pt-3 text-center font-mono text-[13px] text-[var(--text-faint)]">
+            vs
+          </span>
+          <PlayerPicker
+            players={allPlayers}
+            selectedId={h2hB}
+            accent="b"
+            placeholder="Select opponent"
+            remoteSearch
+            disabled={isPending}
+            onSelect={(player) => {
+              remember(player);
+              syncUrl(h2hA, player.id);
+            }}
+          />
+        </div>
       </section>
     );
   }
