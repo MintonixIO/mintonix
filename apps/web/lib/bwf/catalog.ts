@@ -28,11 +28,11 @@ import {
   pairH2hFromMatches,
   pickPlayerRating,
   pickPairRating,
-  ratingsForPlayer,
   resolvePlayerId,
   sortMatches,
   thisWeekMatches,
   toDirectoryPlayer,
+  buildFormBoard,
 } from "./query";
 import type {
   CatalogMatch,
@@ -40,7 +40,9 @@ import type {
   CatalogStats,
   DirectoryPlayer,
   Disc,
+  FormBoardRow,
   FormRating,
+  H2hResult,
   MatchFilters,
   SearchHit,
 } from "./types";
@@ -142,6 +144,7 @@ type RatingRow = {
   rank_score: number;
   peak_mu: number;
   matches: number;
+  display_name: string | null;
 };
 
 type IndividualRow = {
@@ -186,7 +189,7 @@ async function fetchRatingTables(supabase: SupabaseClient): Promise<{
 
   await pageIn<RatingRow>(
     "player_ratings",
-    "web_id,discipline,kind,mu,rd,rank_score,peak_mu,matches",
+    "web_id,discipline,kind,mu,rd,rank_score,peak_mu,matches,display_name",
     (row) => {
       if (row.kind !== "player" && row.kind !== "pair") return;
       ratingsByKey.set(`${row.web_id}|${row.discipline}`, {
@@ -197,6 +200,8 @@ async function fetchRatingTables(supabase: SupabaseClient): Promise<{
         rankScore: row.rank_score,
         peakMu: row.peak_mu,
         matches: row.matches,
+        webId: row.web_id,
+        name: row.display_name ?? undefined,
       });
     },
   );
@@ -438,16 +443,7 @@ export async function getH2h(
   aId: string,
   bId: string,
   opts?: { a2?: string; b2?: string },
-): Promise<{
-  a: DirectoryPlayer | null;
-  b: DirectoryPlayer | null;
-  meetings: CatalogMatch[];
-  aWins: number;
-  bWins: number;
-  pairMode: boolean;
-  pairARating: FormRating | null;
-  pairBRating: FormRating | null;
-}> {
+): Promise<H2hResult> {
   const { directoryPlayers, matches, ratingsByKey } = await getCatalogSnapshot();
   const resolve = (id: string) =>
     resolvePlayerId(id, directoryPlayers).match ??
@@ -532,49 +528,6 @@ export async function listDirectoryPlayers(opts?: {
   };
 }
 
-/** Leaderboard slice computed server-side (avoids shipping full directory). */
-export async function listDirectoryBoard(opts?: {
-  q?: string;
-  disc?: Disc | "all";
-  metric?: "winRate" | "wins" | "matches" | "threeGames" | "withVideo";
-  limit?: number;
-}): Promise<{ players: DirectoryPlayer[]; total: number }> {
-  const q = (opts?.q ?? "").trim().toLowerCase();
-  const disc = opts?.disc && opts.disc !== "all" ? opts.disc : null;
-  const metric = opts?.metric ?? "winRate";
-  const limit = Math.min(Math.max(opts?.limit ?? 50, 1), 100);
-  const all = await getDirectoryPlayers();
-  let filtered = all.filter((p) => {
-    if (disc && p.disc !== disc && !p.discs.includes(disc)) return false;
-    if (q) {
-      const hay = `${p.name} ${p.country ?? ""}`.toLowerCase();
-      if (!hay.includes(q)) return false;
-    }
-    return true;
-  });
-  if (metric === "winRate") {
-    filtered = filtered.filter((p) => p.wins + p.losses >= 3);
-  } else {
-    filtered = filtered.filter((p) => p.matches >= 1);
-  }
-  const get = (p: DirectoryPlayer) => {
-    switch (metric) {
-      case "wins":
-        return p.wins;
-      case "matches":
-        return p.matches;
-      case "threeGames":
-        return p.threeGames;
-      case "withVideo":
-        return p.withVideo;
-      default:
-        return p.winRate;
-    }
-  };
-  filtered = filtered.slice().sort((a, b) => get(b) - get(a) || b.wins - a.wins);
-  return { players: filtered.slice(0, limit), total: filtered.length };
-}
-
 /** Slim rows for H2H picker seed + remote typeahead. */
 export async function searchDirectoryPlayers(
   q: string,
@@ -607,10 +560,22 @@ export async function searchDirectoryPlayers(
 
 /** This week's matches for home (no ranking leaderboard). */
 export async function getThisWeekMatches(
-  limit = 12,
+  limit?: number,
 ): Promise<CatalogMatch[]> {
   const { matches } = await getCatalogSnapshot();
-  return thisWeekMatches(matches, { limit });
+  return thisWeekMatches(matches, limit != null ? { limit } : undefined);
+}
+
+/** Form boards: Glicko rank_score per discipline (pairs for MD/WD/XD). */
+export async function listFormBoard(opts?: {
+  q?: string;
+  disc?: Disc | "all";
+  limit?: number;
+}): Promise<{ rows: FormBoardRow[]; total: number }> {
+  const { ratingsByKey, directoryPlayers } = await getCatalogSnapshot();
+  const knownIds = new Set(directoryPlayers.map((p) => p.id));
+  const rows = buildFormBoard(ratingsByKey, knownIds, opts);
+  return { rows, total: rows.length };
 }
 
 /** Featured matches for home: late rounds first (not chronological “recent”). */

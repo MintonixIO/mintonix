@@ -9,9 +9,9 @@ import {
 import { catalogUserError } from "@/lib/bwf/errors";
 import { resolvePlayerId } from "@/lib/bwf/query";
 import type {
-  CatalogMatch,
   DirectoryPlayer,
   H2hPickerPlayer,
+  H2hResult,
 } from "@/lib/bwf/types";
 
 
@@ -61,16 +61,7 @@ export default async function BwfH2hPage({
   let bId = "";
   let a2Id = "";
   let b2Id = "";
-  let h2h: {
-    a: DirectoryPlayer | null;
-    b: DirectoryPlayer | null;
-    meetings: CatalogMatch[];
-    aWins: number;
-    bWins: number;
-    pairMode: boolean;
-    pairARating: import("@/lib/bwf/types").FormRating | null;
-    pairBRating: import("@/lib/bwf/types").FormRating | null;
-  } | null = null;
+  let h2h: H2hResult | null = null;
   let error: string | null = null;
   let empty = false;
 

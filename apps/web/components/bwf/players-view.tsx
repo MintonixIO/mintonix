@@ -7,24 +7,17 @@ import { useTransition } from "react";
 import { Avatar } from "@/components/ui/avatar";
 import { Input } from "@/components/ui/input";
 import { Tabs } from "@/components/ui/tabs";
-import {
-  BOARD_METRICS,
-  type BoardMetricKey,
-} from "@/components/bwf/board-metrics";
-import type { DirectoryPlayer, Disc } from "@/lib/bwf/types";
+import type { DirectoryPlayer, Disc, FormBoardRow } from "@/lib/bwf/types";
 import { DISCS } from "@/lib/bwf/types";
 import { cn } from "@/lib/utils";
 
 type DirMode = "profiles" | "boards";
-
-const RATE_METRICS = new Set<BoardMetricKey>(["winRate"]);
 
 function buildHref(parts: {
   mode: DirMode;
   q: string;
   disc: "all" | Disc;
   page: number;
-  metric: BoardMetricKey;
 }): string {
   const sp = new URLSearchParams();
   if (parts.mode === "boards") sp.set("mode", "boards");
@@ -32,9 +25,6 @@ function buildHref(parts: {
   if (parts.disc !== "all") sp.set("disc", parts.disc);
   if (parts.mode === "profiles" && parts.page > 1) {
     sp.set("page", String(parts.page));
-  }
-  if (parts.mode === "boards" && parts.metric !== "winRate") {
-    sp.set("metric", parts.metric);
   }
   const qs = sp.toString();
   return qs ? `/bwf/players?${qs}` : "/bwf/players";
@@ -44,26 +34,24 @@ export function PlayersView({
   mode,
   q,
   disc,
-  boardMetric,
   players,
   total,
   page,
   pageSize,
   totalPages,
-  boardPlayers,
-  boardTotal,
+  formBoard,
+  formBoardTotal,
 }: {
   mode: DirMode;
   q: string;
   disc: "all" | Disc;
-  boardMetric: BoardMetricKey;
   players: DirectoryPlayer[];
   total: number;
   page: number;
   pageSize: number;
   totalPages: number;
-  boardPlayers: DirectoryPlayer[];
-  boardTotal: number;
+  formBoard: FormBoardRow[];
+  formBoardTotal: number;
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -73,32 +61,19 @@ export function PlayersView({
     q?: string;
     disc?: "all" | Disc;
     page?: number;
-    metric?: BoardMetricKey;
   }) => {
     const href = buildHref({
       mode: next.mode ?? mode,
       q: next.q ?? q,
       disc: next.disc ?? disc,
       page: next.page ?? (next.mode && next.mode !== mode ? 1 : page),
-      metric: next.metric ?? boardMetric,
     });
     startTransition(() => {
       router.replace(href, { scroll: false });
     });
   };
 
-  const boardMetricDef =
-    BOARD_METRICS.find((m) => m.key === boardMetric) || BOARD_METRICS[0];
-  const maxBoard = Math.max(
-    ...boardPlayers.map((p) => boardMetricDef.get(p)),
-    1,
-  );
-  const boardRows = boardPlayers.map((p, i) => ({
-    p,
-    rank: i + 1,
-    value: boardMetricDef.get(p),
-    pct: (boardMetricDef.get(p) / maxBoard) * 100,
-  }));
+  const maxForm = Math.max(...formBoard.map((r) => r.rankScore), 1);
 
   return (
     <section
@@ -110,8 +85,9 @@ export function PlayersView({
           Player directory
         </h1>
         <p className="mt-[7px] max-w-[60ch] text-[14.5px] leading-[1.55] text-[var(--text-secondary)]">
-          Every player from the BWF catalog. Same display name, different
-          association — those are two people. Country is on every card.
+          {mode === "boards"
+            ? "Form boards by discipline (rank score = μ − 2×RD). Doubles boards are pairs."
+            : "Every player from the BWF catalog. Same display name, different association — those are two people. Country is on every card."}
         </p>
       </div>
 
@@ -135,7 +111,7 @@ export function PlayersView({
           }
           items={[
             { value: "profiles", label: "Profiles" },
-            { value: "boards", label: "Leaderboards" },
+            { value: "boards", label: "Form boards" },
           ]}
         />
         <Input
@@ -162,7 +138,7 @@ export function PlayersView({
             ? total === 0
               ? "0 players"
               : `Showing ${players.length} of ${total}`
-            : `${boardTotal} ranked`}
+            : `${formBoardTotal} on board`}
         </span>
       </div>
 
@@ -224,10 +200,12 @@ export function PlayersView({
                       </span>
                       <span className="inline-flex flex-col">
                         <span className="font-mono text-sm tabular-nums text-[var(--accent)]">
-                          {p.threeGames}
+                          {p.rating?.rankScore != null
+                            ? Math.round(p.rating.rankScore)
+                            : "—"}
                         </span>
                         <span className="font-mono text-[9px] uppercase tracking-[0.1em] text-[var(--text-faint)]">
-                          3-game
+                          form
                         </span>
                       </span>
                     </div>
@@ -270,46 +248,17 @@ export function PlayersView({
         )
       ) : (
         <>
-          <div className="mb-4">
-            <div className="flex flex-wrap gap-2">
-              {BOARD_METRICS.map((m) => {
-                const Icon = m.icon;
-                const on = boardMetric === m.key;
-                return (
-                  <button
-                    key={m.key}
-                    type="button"
-                    onClick={() => navigate({ metric: m.key })}
-                    className={cn(
-                      "inline-flex min-h-10 items-center gap-1.5 rounded-full border px-[13px] text-[13px]",
-                      on
-                        ? "border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--text-strong)]"
-                        : "border-[var(--border)] bg-[var(--surface-1)] text-[var(--text-secondary)] hover:border-[var(--border-strong)] hover:text-[var(--text-strong)]",
-                    )}
-                  >
-                    <Icon
-                      className={cn(
-                        "h-3.5 w-3.5",
-                        on
-                          ? "text-[var(--accent)]"
-                          : "text-[var(--text-muted)]",
-                      )}
-                    />
-                    {m.short}
-                  </button>
-                );
-              })}
-            </div>
-            <div className="mt-[11px] font-mono text-[11.5px] text-[var(--text-muted)]">
-              Ranked by {boardMetricDef.label.toLowerCase()}
-              {RATE_METRICS.has(boardMetricDef.key)
-                ? " · min 3 decided results"
-                : ""}
-            </div>
+          <div className="mb-4 font-mono text-[11.5px] text-[var(--text-muted)]">
+            Ranked by form (μ − 2×RD)
+            {disc === "all"
+              ? " · pick MS / WS / MD / WD / XD for a single board"
+              : disc === "MD" || disc === "WD" || disc === "XD"
+                ? " · doubles pairs"
+                : " · singles"}
           </div>
-          {boardRows.length === 0 ? (
+          {formBoard.length === 0 ? (
             <div className="rounded-[14px] border border-dashed border-[var(--border)] px-6 py-14 text-center text-[13px] text-[var(--text-muted)]">
-              <p>No players match those filters. Try clearing search or switching discipline.</p>
+              <p>No form ratings for these filters yet.</p>
               <button
                 type="button"
                 onClick={() => navigate({ q: "", disc: "all", page: 1 })}
@@ -322,53 +271,49 @@ export function PlayersView({
             <div className="overflow-hidden rounded-[13px] border border-[var(--border)] bg-[var(--surface-1)] shadow-[var(--shadow-edge)]">
               <div className="flex items-center gap-2.5 border-b border-[var(--border-subtle)] px-4 py-[13px]">
                 <span className="font-display text-[15px] font-semibold text-[var(--text-strong)]">
-                  {boardMetricDef.label}
+                  {disc === "all" ? "All disciplines" : `${disc} form`}
                 </span>
                 <div className="flex-1" />
                 <span className="font-mono text-[11px] text-[var(--text-muted)]">
-                  Top {boardRows.length}
-                  {boardTotal > boardRows.length
-                    ? ` of ${boardTotal} ranked`
-                    : " ranked"}
+                  Top {formBoard.length}
+                  {formBoardTotal > formBoard.length
+                    ? ` of ${formBoardTotal}`
+                    : ""}
                 </span>
               </div>
-              {boardRows.map((r) => (
+              {formBoard.map((r, i) => (
                 <Link
-                  key={r.p.id}
-                  href={`/bwf/players/${r.p.id}`}
+                  key={r.id}
+                  href={r.href}
                   className="flex w-full items-center gap-[13px] border-t border-[var(--border-subtle)] px-4 py-[11px] text-left hover:bg-[var(--surface-2)]"
                 >
                   <span className="w-6 text-right font-mono text-xs tabular-nums text-[var(--text-faint)]">
-                    {r.rank}
+                    {i + 1}
                   </span>
-                  <Avatar
-                    name={r.p.name}
-                    src={r.p.imageUrl ?? undefined}
-                    size={34}
-                  />
-                  <span className="min-w-0 flex-1 min-w-0 flex-1 max-w-[40%]">
+                  <Avatar name={r.name} size={34} />
+                  <span className="min-w-0 flex-1 max-w-[40%]">
                     <span className="block truncate font-display text-sm font-semibold text-[var(--text-strong)]">
-                      {r.p.name}
+                      {r.name}
                     </span>
                     <span className="mt-0.5 block truncate font-mono text-[10.5px] text-[var(--text-muted)]">
-                      {r.p.country ? `${r.p.country.toUpperCase()} · ` : ""}
-                      {r.p.disc ?? "—"} · {r.p.matches} matches
+                      {r.disc}
+                      {r.kind === "pair" ? " · pair" : ""}
+                      {` · ${r.matches} rated`}
+                      {r.rd != null ? ` · RD ${Math.round(r.rd)}` : ""}
                     </span>
                   </span>
                   <span className="min-w-[60px] flex-1">
                     <span className="block h-1.5 overflow-hidden rounded-full bg-[var(--surface-3)]">
                       <span
-                        className="block h-full rounded-full"
+                        className="block h-full rounded-full bg-[var(--accent)]"
                         style={{
-                          width: `${r.pct}%`,
-                          background: boardMetricDef.color,
+                          width: `${(r.rankScore / maxForm) * 100}%`,
                         }}
                       />
                     </span>
                   </span>
                   <span className="w-24 shrink-0 text-right font-mono text-sm tabular-nums text-[var(--text-strong)]">
-                    {r.value}
-                    {boardMetricDef.unit}
+                    {Math.round(r.rankScore)}
                   </span>
                 </Link>
               ))}

@@ -24,10 +24,9 @@ export default async function BwfHomePage() {
   let error: string | null = null;
 
   try {
-    const [full, week, featured] = await Promise.all([
+    const [full, week] = await Promise.all([
       getCatalogStats(),
-      getThisWeekMatches(12),
-      getFeaturedMatches(6),
+      getThisWeekMatches(),
     ]);
     stats = {
       matches: full.matches,
@@ -37,7 +36,8 @@ export default async function BwfHomePage() {
       byDisc: full.byDisc,
     };
     thisWeek = week;
-    featuredMatches = featured;
+    featuredMatches =
+      week.length === 0 ? await getFeaturedMatches(6) : [];
   } catch (err) {
     error = catalogUserError(err, "bwf/home");
   }

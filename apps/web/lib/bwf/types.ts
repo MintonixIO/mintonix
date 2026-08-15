@@ -128,6 +128,34 @@ export type FormRating = {
   peakMu?: number;
   exposure?: number;
   matches: number;
+  webId?: string;
+  name?: string;
+};
+
+/** One row on an MS / WS / MD / WD / XD form board. */
+export type FormBoardRow = {
+  id: string;
+  name: string;
+  country: string | null;
+  disc: Disc;
+  kind: "player" | "pair";
+  mu: number;
+  rd: number | null;
+  rankScore: number;
+  peakMu: number | null;
+  matches: number;
+  href: string;
+};
+
+export type H2hResult = {
+  a: DirectoryPlayer | null;
+  b: DirectoryPlayer | null;
+  meetings: CatalogMatch[];
+  aWins: number;
+  bWins: number;
+  pairMode: boolean;
+  pairARating: FormRating | null;
+  pairBRating: FormRating | null;
 };
 
 export type RivalRow = {
@@ -193,6 +221,8 @@ export type MatchFilters = {
   threeGames?: boolean;
   comeback?: boolean;
   sort?: "event" | "round" | "created" | "status";
+  /** Restrict to matches involving this player id (homonym-safe). */
+  player?: string;
   page?: number;
   pageSize?: number;
 };

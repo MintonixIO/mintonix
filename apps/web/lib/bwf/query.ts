@@ -4,6 +4,7 @@
  */
 import {
   formatTeam,
+  matchInvolvesPlayer,
   normalizePlayerKey,
   playerIdBase,
   playerIdFromName,
@@ -18,6 +19,7 @@ import type {
   CatalogStats,
   DirectoryPlayer,
   Disc,
+  FormBoardRow,
   FormRating,
   MatchFilters,
   MatchStatus,
@@ -113,6 +115,7 @@ export function filterMatches(
     if (filters.hasVideo && !isAllowlistedYoutubeUrl(m.sourceUrl)) return false;
     if (filters.threeGames && !m.threeGames) return false;
     if (filters.comeback && !m.comeback) return false;
+    if (filters.player && !matchInvolvesPlayer(m, filters.player)) return false;
     if (q) {
       const hay = [
         ...m.team1,
@@ -574,14 +577,108 @@ export function thisWeekMatches(
   opts?: { now?: number; limit?: number },
 ): CatalogMatch[] {
   const now = opts?.now ?? Date.now();
-  const limit = opts?.limit ?? 12;
   const weekStart = utcIsoWeekStart(now);
   const weekEnd = weekStart + 7 * 24 * 60 * 60 * 1000;
   const dated = matches.filter((m) => {
     const t = matchChronologyMs(m);
     return t >= weekStart && t < weekEnd;
   });
-  return formSortMatches(dated).slice(0, limit);
+  const sorted = formSortMatches(dated);
+  return opts?.limit != null ? sorted.slice(0, opts.limit) : sorted;
+}
+
+/** Group matches by event, preserving first-seen order. */
+export function groupMatchesByEvent(
+  matches: CatalogMatch[],
+): { event: string; matches: CatalogMatch[] }[] {
+  const order: string[] = [];
+  const byEvent = new Map<string, CatalogMatch[]>();
+  for (const m of matches) {
+    const key = m.event || "Unknown event";
+    if (!byEvent.has(key)) {
+      order.push(key);
+      byEvent.set(key, []);
+    }
+    byEvent.get(key)!.push(m);
+  }
+  return order.map((event) => ({ event, matches: byEvent.get(event)! }));
+}
+
+/** Caption for the recent-form chip strip. */
+export function formOrderCaption(matches: CatalogMatch[]): string {
+  if (matches.length === 0) return "";
+  const dated = matches.filter((m) => m.matchDate).length;
+  if (dated === matches.length) return " (by match date)";
+  if (dated === 0) return " (by ingest order; match dates missing)";
+  return " (match date when present, else ingest)";
+}
+
+export function formatRankScore(n: number | null | undefined): string | null {
+  if (n == null || Number.isNaN(n)) return null;
+  return String(Math.round(n));
+}
+
+/**
+ * Pair web_id is `playerA--playerB`. Each player id may itself contain `--cc`.
+ * Split at the unique boundary where both sides are known ids.
+ */
+export function splitPairWebId(
+  webId: string,
+  knownIds: Set<string>,
+): [string, string] | null {
+  const parts = webId.split("--");
+  for (let i = 1; i < parts.length; i++) {
+    const a = parts.slice(0, i).join("--");
+    const b = parts.slice(i).join("--");
+    if (knownIds.has(a) && knownIds.has(b)) return [a, b];
+  }
+  return null;
+}
+
+export function buildFormBoard(
+  ratingsByKey: Map<string, FormRating>,
+  knownIds: Set<string>,
+  opts?: { disc?: Disc | "all"; q?: string; limit?: number },
+): FormBoardRow[] {
+  const disc = opts?.disc && opts.disc !== "all" ? opts.disc : null;
+  const q = opts?.q?.trim().toLowerCase() ?? "";
+  const limit = opts?.limit ?? 80;
+  const rows: FormBoardRow[] = [];
+  for (const rating of ratingsByKey.values()) {
+    if (rating.kind !== "player" && rating.kind !== "pair") continue;
+    if (rating.rankScore == null) continue;
+    if (disc && rating.disc !== disc) continue;
+    const name = rating.name ?? rating.webId ?? "";
+    if (q && !name.toLowerCase().includes(q)) continue;
+    const webId = rating.webId ?? "";
+    let href = "/bwf/players";
+    if (rating.kind === "player" && webId) {
+      href = `/bwf/players/${webId}`;
+    } else if (rating.kind === "pair" && webId) {
+      const members = splitPairWebId(webId, knownIds);
+      href = members
+        ? `/bwf/h2h?a=${members[0]}&a2=${members[1]}`
+        : "/bwf/h2h";
+    }
+    rows.push({
+      id: `${webId}|${rating.disc}`,
+      name: name || webId || "Unknown",
+      country: null,
+      disc: rating.disc,
+      kind: rating.kind,
+      mu: rating.mu,
+      rd: rating.rd ?? null,
+      rankScore: rating.rankScore,
+      peakMu: rating.peakMu ?? null,
+      matches: rating.matches,
+      href,
+    });
+  }
+  rows.sort(
+    (a, b) =>
+      b.rankScore - a.rankScore || b.matches - a.matches || a.name.localeCompare(b.name),
+  );
+  return rows.slice(0, limit);
 }
 
 export function gamesWon(m: CatalogMatch): { w1: number; w2: number } {
@@ -614,7 +711,7 @@ export function sameFormBand(
   b: FormRating | null | undefined,
   band = FORM_BAND,
 ): boolean {
-  if (!a?.rankScore || !b?.rankScore) return false;
+  if (a?.rankScore == null || b?.rankScore == null) return false;
   return Math.abs(a.rankScore - b.rankScore) <= band;
 }
 

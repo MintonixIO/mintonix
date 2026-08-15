@@ -10,6 +10,7 @@ import type {
   RivalRow,
 } from "@/lib/bwf/types";
 import { DISC_LABEL } from "@/lib/bwf/types";
+import { formOrderCaption } from "@/lib/bwf/query";
 import { cn } from "@/lib/utils";
 
 function CountryBadge({ cc }: { cc: string | null }) {
@@ -262,11 +263,13 @@ export function PlayerProfile({
         {profile.ratings.length === 0 && !profile.rating ? (
           <RatingCard title="Form rating" rating={null} kind="glicko" />
         ) : null}
-        <RatingCard
-          title="Doubles individual"
-          rating={profile.individualRating}
-          kind="trueskill"
-        />
+        {profile.discs.some((d) => d === "MD" || d === "WD" || d === "XD") ? (
+          <RatingCard
+            title="Doubles individual"
+            rating={profile.individualRating}
+            kind="trueskill"
+          />
+        ) : null}
         {[
           {
             k: "Matches",
@@ -303,14 +306,7 @@ export function PlayerProfile({
             Recent form{" "}
             <span className="font-mono text-[11px] font-normal text-[var(--text-muted)]">
               — last {profile.form.length} decided
-              {(() => {
-                const dated = matches.filter((m) => m.matchDate).length;
-                if (matches.length === 0) return "";
-                if (dated === matches.length) return " (by match date)";
-                if (dated === 0)
-                  return " (by ingest order; match dates missing)";
-                return " (match date when present, else ingest)";
-              })()}
+              {formOrderCaption(matches)}
             </span>
           </div>
           {profile.form.length === 0 ? (
@@ -387,18 +383,18 @@ export function PlayerProfile({
           title="Owns"
           rows={profile.owns}
           selfId={profile.id}
-          empty="No same-band rival with ≥4 meetings at 70%+."
+          empty="No close rival with at least 4 meetings at 70% or better."
         />
         <RivalList
           title="Struggles"
           rows={profile.struggles}
           selfId={profile.id}
-          empty="No same-band rival with ≥4 meetings at 30%−."
+          empty="No close rival with at least 4 meetings at 30% or worse."
         />
       </div>
       <p className="mb-4 font-mono text-[11px] text-[var(--text-faint)]">
-        Owns / Struggles require ≥4 meetings and form ratings within 200 rank
-        points.
+        Owns / Struggles: at least 4 meetings against someone within 200 form
+        points. Walkovers and retirements are listed below but not rated.
       </p>
 
       <div className="rounded-[13px] border border-[var(--border)] bg-[var(--surface-1)] px-[18px] py-4">
@@ -407,7 +403,7 @@ export function PlayerProfile({
             Match history
           </div>
           <Link
-            href={`/bwf/matches?q=${encodeURIComponent(profile.name)}`}
+            href={`/bwf/matches?player=${encodeURIComponent(profile.id)}`}
             className="inline-flex min-h-10 items-center text-xs text-[var(--text-link)] hover:text-[var(--accent)]"
           >
             View in library

@@ -25,6 +25,11 @@ import {
   winRateFromRecord,
   pickPairRating,
   ratingsForPlayer,
+  groupMatchesByEvent,
+  formOrderCaption,
+  splitPairWebId,
+  buildFormBoard,
+  sameFormBand,
 } from "./query";
 
 function match(
@@ -878,6 +883,66 @@ describe("pair / disc ratings", () => {
     expect(ratingsForPlayer("an-se-young--kor", byKey).map((r) => r.disc)).toEqual(
       ["WS", "XD"],
     );
+  });
+
+  it("splits pair web ids at the unique known-id boundary", () => {
+    const ids = new Set(["kim-won-ho--kor", "seo-seung-jae--kor"]);
+    expect(
+      splitPairWebId("kim-won-ho--kor--seo-seung-jae--kor", ids),
+    ).toEqual(["kim-won-ho--kor", "seo-seung-jae--kor"]);
+  });
+
+  it("builds form boards sorted by rank score", () => {
+    const byKey = new Map([
+      [
+        "a|MS",
+        {
+          disc: "MS" as const,
+          kind: "player" as const,
+          mu: 1800,
+          rankScore: 1700,
+          matches: 40,
+          webId: "a",
+          name: "Alpha",
+        },
+      ],
+      [
+        "b|MS",
+        {
+          disc: "MS" as const,
+          kind: "player" as const,
+          mu: 1900,
+          rankScore: 1800,
+          matches: 30,
+          webId: "b",
+          name: "Beta",
+        },
+      ],
+    ]);
+    expect(buildFormBoard(byKey, new Set(["a", "b"])).map((r) => r.name)).toEqual(
+      ["Beta", "Alpha"],
+    );
+  });
+
+  it("sameFormBand uses nullish rank scores, not truthiness", () => {
+    const a = { disc: "MS" as const, kind: "player" as const, mu: 1500, rankScore: 0, matches: 10 };
+    const b = { disc: "MS" as const, kind: "player" as const, mu: 1500, rankScore: 50, matches: 10 };
+    expect(sameFormBand(a, b)).toBe(true);
+    expect(sameFormBand(a, { ...b, rankScore: undefined })).toBe(false);
+  });
+
+  it("groups this-week events without dropping matches", () => {
+    const list = [
+      match({ id: "1", team1Ids: ["a"], team2Ids: ["b"], event: "Japan Open" }),
+      match({ id: "2", team1Ids: ["c"], team2Ids: ["d"], event: "Japan Open" }),
+      match({ id: "3", team1Ids: ["e"], team2Ids: ["f"], event: "Korea Open" }),
+    ];
+    const groups = groupMatchesByEvent(list);
+    expect(groups.map((g) => [g.event, g.matches.length])).toEqual([
+      ["Japan Open", 2],
+      ["Korea Open", 1],
+    ]);
+    expect(formOrderCaption(list)).toBe(" (by ingest order; match dates missing)");
   });
 });
 

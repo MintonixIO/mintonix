@@ -280,11 +280,15 @@ export function H2hView({
               </div>
               <div className="mt-1 font-mono text-[10.5px] text-[var(--text-muted)]">
                 {h2hA === pa.id
-                  ? `${pa.winRate}% career · ${pa.matches} matches${
-                      pa.rating?.rankScore != null
-                        ? ` · form ${Math.round(pa.rating.rankScore)}`
-                        : ""
-                    }`
+                  ? pairMode
+                    ? pairARating?.rankScore != null
+                      ? `pair form ${Math.round(pairARating.rankScore)}`
+                      : "pair form —"
+                    : `${pa.winRate}% career · ${pa.matches} matches${
+                        pa.rating?.rankScore != null
+                          ? ` · form ${Math.round(pa.rating.rankScore)}`
+                          : ""
+                      }`
                   : "Loading…"}
               </div>
             </div>
@@ -328,11 +332,15 @@ export function H2hView({
                   </div>
                   <div className="mt-1 font-mono text-[10.5px] text-[var(--text-muted)]">
                     {pb && h2hB === pb.id
-                      ? `${pb.winRate}% career · ${pb.matches} matches${
-                          pb.rating?.rankScore != null
-                            ? ` · form ${Math.round(pb.rating.rankScore)}`
-                            : ""
-                        }`
+                      ? pairMode
+                        ? pairBRating?.rankScore != null
+                          ? `pair form ${Math.round(pairBRating.rankScore)}`
+                          : "pair form —"
+                        : `${pb.winRate}% career · ${pb.matches} matches${
+                            pb.rating?.rankScore != null
+                              ? ` · form ${Math.round(pb.rating.rankScore)}`
+                              : ""
+                          }`
                       : "Loading…"}
                   </div>
                 </>
@@ -420,48 +428,54 @@ export function H2hView({
             Catalog comparison
           </span>
           <span className="font-mono text-[10.5px] uppercase tracking-[0.08em] text-[var(--text-faint)]">
-            from match rows
+            {pairMode ? "pair form + this H2H" : "from match rows"}
           </span>
         </div>
         {pb && h2hA === pa.id && h2hB === pb.id ? (
           <div className="space-y-3">
             {[
-              { k: "Win rate", a: pa.winRate, b: pb.winRate, unit: "%" },
-              {
-                k: pairMode ? "Pair form" : "Form",
-                a: pairMode
-                  ? pairARating?.rankScore != null
-                    ? Math.round(pairARating.rankScore)
-                    : 0
-                  : pa.rating?.rankScore != null
-                    ? Math.round(pa.rating.rankScore)
-                    : 0,
-                b: pairMode
-                  ? pairBRating?.rankScore != null
-                    ? Math.round(pairBRating.rankScore)
-                    : 0
-                  : pb.rating?.rankScore != null
-                    ? Math.round(pb.rating.rankScore)
-                    : 0,
-                unit: "",
-              },
-              { k: "Wins", a: pa.wins, b: pb.wins, unit: "" },
-              { k: "Matches", a: pa.matches, b: pb.matches, unit: "" },
-              {
-                k: "Three-game",
-                a: pa.threeGames,
-                b: pb.threeGames,
-                unit: "",
-              },
-              {
-                k: "With video",
-                a: pa.withVideo,
-                b: pb.withVideo,
-                unit: "",
-              },
+              ...(pairMode
+                ? [
+                    {
+                      k: "Pair form",
+                      a: pairARating?.rankScore ?? null,
+                      b: pairBRating?.rankScore ?? null,
+                      unit: "",
+                    },
+                    { k: "H2H wins", a: aWins, b: bWins, unit: "" },
+                  ]
+                : [
+                    { k: "Win rate", a: pa.winRate, b: pb.winRate, unit: "%" },
+                    {
+                      k: "Form",
+                      a: pa.rating?.rankScore ?? null,
+                      b: pb.rating?.rankScore ?? null,
+                      unit: "",
+                    },
+                    { k: "Wins", a: pa.wins, b: pb.wins, unit: "" },
+                    { k: "Matches", a: pa.matches, b: pb.matches, unit: "" },
+                    {
+                      k: "Three-game",
+                      a: pa.threeGames,
+                      b: pb.threeGames,
+                      unit: "",
+                    },
+                    {
+                      k: "With video",
+                      a: pa.withVideo,
+                      b: pb.withVideo,
+                      unit: "",
+                    },
+                  ]),
             ].map((m) => {
-              const aHi = m.a >= m.b;
-              const max = Math.max(m.a, m.b, 1);
+              const aVal = m.a;
+              const bVal = m.b;
+              const aNum = aVal ?? 0;
+              const bNum = bVal ?? 0;
+              const aHi = aVal != null && (bVal == null || aNum >= bNum);
+              const max = Math.max(aNum, bNum, 1);
+              const fmt = (v: number | null) =>
+                v == null ? "—" : `${Math.round(v)}${m.unit}`;
               return (
                 <div
                   key={m.k}
@@ -470,19 +484,18 @@ export function H2hView({
                   <span
                     className={cn(
                       "text-right font-mono text-sm tabular-nums",
-                      aHi
+                      aVal != null && aHi
                         ? "font-semibold text-[var(--player-a)]"
                         : "text-[var(--text-secondary)]",
                     )}
                   >
-                    {m.a}
-                    {m.unit}
+                    {fmt(aVal)}
                   </span>
                   <div className="flex h-2 justify-end overflow-hidden rounded-full bg-[var(--surface-3)]">
                     <div
                       className="h-full rounded-full bg-[var(--player-a)]"
                       style={{
-                        width: `${(m.a / max) * 100}%`,
+                        width: aVal == null ? "0%" : `${(aNum / max) * 100}%`,
                         opacity: aHi ? 1 : 0.5,
                       }}
                     />
@@ -494,7 +507,7 @@ export function H2hView({
                     <div
                       className="h-full rounded-full bg-[var(--player-b)]"
                       style={{
-                        width: `${(m.b / max) * 100}%`,
+                        width: bVal == null ? "0%" : `${(bNum / max) * 100}%`,
                         opacity: !aHi ? 1 : 0.5,
                       }}
                     />
@@ -502,13 +515,12 @@ export function H2hView({
                   <span
                     className={cn(
                       "font-mono text-sm tabular-nums",
-                      !aHi
+                      bVal != null && !aHi
                         ? "font-semibold text-[var(--player-b)]"
                         : "text-[var(--text-secondary)]",
                     )}
                   >
-                    {m.b}
-                    {m.unit}
+                    {fmt(bVal)}
                   </span>
                 </div>
               );

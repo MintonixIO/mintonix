@@ -38,6 +38,7 @@ export function MatchCard({
   const row = (
     names: string[],
     ids: string[],
+    countries: (string | null)[] | undefined,
     color: string,
     won: boolean,
     sideScores: number[],
@@ -62,6 +63,14 @@ export function MatchCard({
         )}
       >
         {formatTeam(names)}
+        {countries?.some(Boolean) ? (
+          <span className="ml-1.5 font-mono text-[10px] font-normal uppercase text-[var(--text-faint)]">
+            {countries
+              .filter(Boolean)
+              .map((c) => c!.toUpperCase())
+              .join("/")}
+          </span>
+        ) : null}
       </span>
       {sideScores.map((s, i) => (
         <span
@@ -112,6 +121,7 @@ export function MatchCard({
         {row(
           m.team1,
           m.team1Ids,
+          m.team1Countries,
           PA,
           t1Won,
           m.games.map((g) => g.t1),
@@ -119,6 +129,7 @@ export function MatchCard({
         {row(
           m.team2,
           m.team2Ids,
+          m.team2Countries,
           PB,
           t2Won,
           m.games.map((g) => g.t2),

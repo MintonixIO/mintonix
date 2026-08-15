@@ -5,7 +5,6 @@ import {
   ExternalLink,
   Flame,
   Clapperboard,
-  Play,
   Swords,
   Video,
 } from "lucide-react";
@@ -187,15 +186,11 @@ export function MatchDetail({ m }: { m: CatalogMatch }) {
               Comeback win
             </span>
           ) : null}
-          <div className="flex-1" />
-          <Link
-            href={`/match-viewer/${m.id}`}
-            className="inline-flex min-h-10 items-center gap-1.5 text-[13px] text-[var(--text-link)] hover:text-[var(--brand)]"
-            title="Synthetic demo analysis — not pipeline output"
-          >
-            <Play className="h-4 w-4" />
-            Demo viewer
-          </Link>
+          {duration ? (
+            <span className="font-mono text-[12px] text-[var(--text-muted)]">
+              {duration}
+            </span>
+          ) : null}
         </div>
       </div>
 
@@ -207,14 +202,6 @@ export function MatchDetail({ m }: { m: CatalogMatch }) {
               Watch
             </span>
             <div className="flex-1" />
-            <Link
-              href={`/match-viewer/${m.id}`}
-              className="inline-flex items-center gap-1.5 text-xs text-[var(--text-link)] hover:text-[var(--brand)]"
-              title="Synthetic demo analysis — not pipeline output"
-            >
-              <Play className="h-3.5 w-3.5" />
-              Demo match viewer
-            </Link>
             <a
               href={youtube.href}
               target="_blank"
@@ -239,38 +226,22 @@ export function MatchDetail({ m }: { m: CatalogMatch }) {
       ) : m.sourceUrl ? (
         <div className="mb-4 rounded-[14px] border border-dashed border-[var(--border)] bg-[var(--surface-1)] px-5 py-8 text-center text-[13px] text-[var(--text-muted)]">
           <p>Video source on file is not a recognized YouTube URL (link omitted).</p>
-          <div className="mt-4 flex flex-wrap items-center justify-center gap-3">
-            <Link
-              href={`/match-viewer/${m.id}`}
-              className="inline-flex min-h-10 items-center text-[13px] text-[var(--text-link)] hover:text-[var(--brand)]"
-            >
-              Demo match viewer (3D only)
-            </Link>
-            <Link
-              href="/bwf/matches?lens=video"
-              className="inline-flex min-h-10 items-center text-[13px] text-[var(--text-link)] hover:text-[var(--brand)]"
-            >
-              Browse matches with video
-            </Link>
-          </div>
+          <Link
+            href="/bwf/matches?lens=video"
+            className="mt-4 inline-flex min-h-10 items-center text-[13px] text-[var(--text-link)] hover:text-[var(--brand)]"
+          >
+            Browse matches with video
+          </Link>
         </div>
       ) : (
         <div className="mb-4 rounded-[14px] border border-dashed border-[var(--border)] bg-[var(--surface-1)] px-5 py-8 text-center text-[13px] text-[var(--text-muted)]">
           <p>No YouTube source linked for this match yet.</p>
-          <div className="mt-4 flex flex-wrap items-center justify-center gap-3">
-            <Link
-              href={`/match-viewer/${m.id}`}
-              className="inline-flex min-h-10 items-center text-[13px] text-[var(--text-link)] hover:text-[var(--brand)]"
-            >
-              Demo match viewer (3D only)
-            </Link>
-            <Link
-              href="/bwf/matches?lens=video"
-              className="inline-flex min-h-10 items-center text-[13px] text-[var(--text-link)] hover:text-[var(--brand)]"
-            >
-              Browse matches with video
-            </Link>
-          </div>
+          <Link
+            href="/bwf/matches?lens=video"
+            className="mt-4 inline-flex min-h-10 items-center text-[13px] text-[var(--text-link)] hover:text-[var(--brand)]"
+          >
+            Browse matches with video
+          </Link>
         </div>
       )}
 
