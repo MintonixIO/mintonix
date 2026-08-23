@@ -320,12 +320,87 @@ class TestImageBootContract(unittest.TestCase):
         self.assertIn("builder_resource", src)
         self.assertNotIn('CMD ["bash", "start_server.sh"]', src)
 
+    def _check_trt_mod(self):
+        import importlib.util
+
+        path = Path(__file__).resolve().parent / "tools" / "check_trt_runtime.py"
+        spec = importlib.util.spec_from_file_location("check_trt_runtime", path)
+        assert spec and spec.loader
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
     def test_dockerfile_copies_nvinfer_via_ldd_or_realpath(self) -> None:
         src = (Path(__file__).resolve().parent / "Dockerfile").read_text(
             encoding="utf-8"
         )
-        self.assertIn("ldd", src)
+        # Copy walk must resolve + ldd + follow real files (not a comment that
+        # merely mentions "ldd" while still using symlink-only copy).
+        self.assertIn("subprocess.check_output([\"ldd\", str(lib)]", src)
+        self.assertIn("follow_symlinks=True", src)
         self.assertNotIn("follow_symlinks=False", src)
+        self.assertIn(".resolve()", src)
+        self.assertIn("skip_copied_lib", src)
+        # Stubs exist for bake/CI import only; never ldconfig them.
+        self.assertIn("/opt/cuda-stubs", src)
+        ldconfig_lines = [
+            ln for ln in src.splitlines() if "ld.so.conf" in ln or "ldconfig" in ln
+        ]
+        self.assertTrue(ldconfig_lines)
+        for ln in ldconfig_lines:
+            self.assertNotIn("cuda-stubs", ln)
+            self.assertNotIn("libcuda.so", ln)
+
+    def test_copy_denies_system_and_driver_libs(self) -> None:
+        mod = self._check_trt_mod()
+        for name in (
+            "libc.so.6",
+            "libm.so.6",
+            "libdl.so.2",
+            "libpthread.so.0",
+            "librt.so.1",
+            "libgcc_s.so.1",
+            "libstdc++.so.6",
+            "ld-linux-x86-64.so.2",
+            "libcuda.so.1",
+            "libnvidia-ml.so.1",
+            "libnvinfer_builder_resource.so.10.6.0",
+        ):
+            self.assertTrue(mod.skip_copied_lib(name), name)
+        for name in (
+            "libnvinfer.so.10",
+            "libnvinfer_plugin.so.10",
+            "libnvonnxparser.so.10",
+            "libnvparsers.so.10",
+            "libcudnn.so.9",
+            "libcublas.so.12",
+            "libcublasLt.so.12",
+            "libcudart.so.12",
+            "libnvrtc.so.12",
+            "libnvJitLink.so.12",
+        ):
+            self.assertFalse(mod.skip_copied_lib(name), name)
+
+    def test_ldd_probe_allows_missing_driver_not_cublas(self) -> None:
+        mod = self._check_trt_mod()
+        driver_only = (
+            "\tlibcuda.so.1 => not found\n"
+            "\tlibnvidia-ml.so.1 => not found\n"
+        )
+        self.assertEqual(mod.unexpected_ldd_missing(driver_only), [])
+        mixed = (
+            "\tlibcublas.so.12 => not found\n"
+            "\tlibcudnn.so.9 => not found\n"
+            "\tlibcudart.so.12 => not found\n"
+            "\tlibcuda.so.1 => not found\n"
+        )
+        unexpected = mod.unexpected_ldd_missing(mixed)
+        joined = "\n".join(unexpected)
+        self.assertIn("cublas", joined)
+        self.assertIn("cudnn", joined)
+        self.assertIn("cudart", joined)
+        self.assertNotIn("libcuda.so", joined)
+        self.assertNotIn("libnvidia-", joined)
 
     def test_assert_trt_loaded_rejects_zero_version(self) -> None:
         import importlib.util

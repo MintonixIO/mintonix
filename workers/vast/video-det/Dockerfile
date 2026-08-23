@@ -8,28 +8,28 @@ FROM nvcr.io/nvidia/tensorrt:24.11-py3 AS trt
 
 # Collect inference .so files via realpath + ldd closure (libnvinfer needs
 # libcublas / libcublasLt). Copy real files, not dangling absolute symlinks.
-# Skip builder-only blobs (libnvinfer_builder_resource is hundreds of MB).
+# skip_copied_lib denylists builder_resource, glibc/libstdc++, libcuda (host driver).
+COPY tools/check_trt_runtime.py /tmp/check_trt_runtime.py
 RUN python3 - <<'PY'
 import glob
+import importlib.util
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
+spec = importlib.util.spec_from_file_location(
+    "check_trt_runtime", "/tmp/check_trt_runtime.py"
+)
+assert spec and spec.loader
+crt = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(crt)
+skip_copied_lib = crt.skip_copied_lib
+
 lib_dst = Path("/opt/trt-runtime/lib")
 py_dst = Path("/opt/trt-runtime/python")
 lib_dst.mkdir(parents=True)
 py_dst.mkdir(parents=True)
-
-
-def is_builder_only(name: str) -> bool:
-    return "builder_resource" in name
-
-
-def is_driver_lib(name: str) -> bool:
-    # Host driver is injected by nvidia-container-runtime; do not pin NGC stubs.
-    return name.startswith("libcuda.so") or name.startswith("libnvidia-")
-
 
 seeds = []
 for pattern in (
@@ -54,13 +54,13 @@ needed: set[Path] = set()
 queue = [
     p.resolve()
     for p in seeds
-    if p.is_file() and not is_builder_only(p.name) and not is_driver_lib(p.name)
+    if p.is_file() and not skip_copied_lib(p.name)
 ]
 while queue:
     lib = queue.pop()
     if lib in needed or not lib.is_file():
         continue
-    if is_builder_only(lib.name) or is_driver_lib(lib.name):
+    if skip_copied_lib(lib.name):
         continue
     needed.add(lib)
     try:
@@ -76,13 +76,24 @@ while queue:
 
 copied = []
 for src in sorted(needed):
-    if is_builder_only(src.name) or is_driver_lib(src.name):
+    if skip_copied_lib(src.name):
         continue
     shutil.copy2(src, lib_dst / src.name, follow_symlinks=True)
     copied.append(src.name)
 if not any(n.startswith("libnvinfer.so") for n in copied):
     sys.exit("ERROR: libnvinfer.so* not found in NGC image")
 print("trt libs:", ", ".join(sorted(copied)))
+
+# Stubs for bake/CI import only (not registered with the dynamic linker).
+stub_dst = Path("/opt/trt-runtime/cuda-stubs")
+stub_dst.mkdir(parents=True)
+for pattern in (
+    "/usr/local/cuda/lib64/stubs/libcuda.so*",
+    "/usr/local/cuda/compat/libcuda.so*",
+):
+    for src in glob.glob(pattern):
+        shutil.copy2(src, stub_dst / Path(src).name, follow_symlinks=True)
+print("cuda stubs:", ", ".join(sorted(p.name for p in stub_dst.glob("*"))) or "(none)")
 
 # tensorrt, tensorrt_bindings, tensorrt_libs — whatever import resolves.
 # Follow symlinks so the slim image does not inherit dangling NGC paths.
@@ -138,47 +149,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=trt /opt/trt-runtime/lib/ /usr/local/lib/trt/
+COPY --from=trt /opt/trt-runtime/cuda-stubs/ /opt/cuda-stubs/
 COPY --from=trt /opt/worker-env/ /opt/worker-env/
 ENV LD_LIBRARY_PATH="/usr/local/lib/trt:${LD_LIBRARY_PATH}"
 RUN printf '/usr/local/lib/trt\n' > /etc/ld.so.conf.d/trt.conf && ldconfig
 
-# Bake-fail even if tools/check_trt_runtime.py is forgotten: ldd nvinfer and
-# import tensorrt (no deserialize). Native-load failure is version 0.0.x.
-RUN /opt/worker-env/bin/python - <<'PY'
-import os
-import subprocess
-import sys
-from pathlib import Path
-
-libdir = Path(os.environ.get("TRT_LIB_DIR", "/usr/local/lib/trt"))
-expected = os.environ.get("EXPECTED_TRT_VERSION", "").strip()
-paths = sorted(libdir.glob("libnvinfer.so*"))
-if not paths:
-    sys.exit(f"ERROR: no libnvinfer.so* under {libdir}")
-for p in paths:
-    out = subprocess.check_output(
-        ["ldd", str(p)], text=True, stderr=subprocess.STDOUT
-    )
-    print(out)
-    missing = [ln.strip() for ln in out.splitlines() if "not found" in ln]
-    if missing:
-        sys.exit("ERROR: ldd missing deps:\n" + "\n".join(missing))
-import tensorrt as trt
-ver = trt.__version__
-print("tensorrt.__version__", ver)
-if not ver or ver.startswith("0.0"):
-    sys.exit(f"ERROR: native TensorRT not loaded (version={ver!r})")
-if expected and ver != expected:
-    sys.exit(f"ERROR: tensorrt {ver} != EXPECTED_TRT_VERSION {expected}")
-print("bake trt check OK")
-PY
-
 WORKDIR /app
+COPY tools/check_trt_runtime.py /app/tools/check_trt_runtime.py
+# Non-persistent stub path for import/CDLL only — not ENV, not ldconfig.
+# ldd may still report libcuda.so.1 "not found"; check_trt_runtime allows that.
+RUN LD_LIBRARY_PATH="/opt/cuda-stubs:/usr/local/cuda/lib64/stubs:/usr/local/cuda/compat:${LD_LIBRARY_PATH}" \
+    /opt/worker-env/bin/python /app/tools/check_trt_runtime.py
 
 # Product path only (see .dockerignore).
 COPY . .
-COPY tools/check_trt_runtime.py /app/tools/check_trt_runtime.py
-RUN /opt/worker-env/bin/python /app/tools/check_trt_runtime.py
 
 # Tiny local sample for autoscaler BenchmarkConfig (file:///app/sample.mp4).
 # Written with OpenCV so we do not need ffmpeg in the image.
