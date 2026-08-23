@@ -892,6 +892,12 @@ describe("pair / disc ratings", () => {
     ).toEqual(["kim-won-ho--kor", "seo-seung-jae--kor"]);
   });
 
+  it("splits pair web ids on name--cc members when the directory is empty", () => {
+    expect(
+      splitPairWebId("kim-won-ho--kor--seo-seung-jae--kor", new Set()),
+    ).toEqual(["kim-won-ho--kor", "seo-seung-jae--kor"]);
+  });
+
   it("builds form boards sorted by rank score", () => {
     const byKey = new Map([
       [

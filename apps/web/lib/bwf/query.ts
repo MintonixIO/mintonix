@@ -7,6 +7,7 @@ import {
   matchInvolvesPlayer,
   normalizePlayerKey,
   playerIdBase,
+  playerIdCountry,
   playerIdFromName,
   playerWon,
   roundRank,
@@ -636,6 +637,13 @@ export function splitPairWebId(
     const a = parts.slice(0, i).join("--");
     const b = parts.slice(i).join("--");
     if (knownIds.has(a) && knownIds.has(b)) return [a, b];
+  }
+  // Directory-free fallback: each member is `name--cc`.
+  if (parts.length >= 4 && parts.length % 2 === 0) {
+    const mid = parts.length / 2;
+    const a = parts.slice(0, mid).join("--");
+    const b = parts.slice(mid).join("--");
+    if (playerIdCountry(a) && playerIdCountry(b)) return [a, b];
   }
   return null;
 }

@@ -802,10 +802,54 @@ export async function listFormBoard(opts?: {
   disc?: Disc | "all";
   limit?: number;
 }): Promise<{ rows: FormBoardRow[]; total: number }> {
-  const { ratingsByKey, directoryPlayers } = await getCatalogSnapshot();
-  const knownIds = new Set(directoryPlayers.map((p) => p.id));
-  const rows = buildFormBoard(ratingsByKey, knownIds, opts);
-  return { rows, total: rows.length };
+  if (process.env.CATALOG_FIXTURE === "1") {
+    const { ratingsByKey, directoryPlayers } = await getCatalogSnapshot();
+    const knownIds = new Set(directoryPlayers.map((p) => p.id));
+    const rows = buildFormBoard(ratingsByKey, knownIds, opts);
+    return { rows, total: rows.length };
+  }
+  requireServiceRole();
+  const limit = Math.min(Math.max(opts?.limit ?? 80, 1), 200);
+  const disc = opts?.disc && opts.disc !== "all" ? opts.disc : null;
+  const q = (opts?.q ?? "").trim();
+  const client = createServiceClient();
+  let query = client
+    .from("player_ratings")
+    .select(
+      "web_id,discipline,kind,mu,rd,rank_score,peak_mu,matches,display_name",
+      { count: "exact" },
+    )
+    .in("kind", ["player", "pair"]);
+  if (disc) query = query.eq("discipline", disc);
+  if (q) {
+    query = query.ilike("display_name", `%${q.replace(/[%*,()\\]/g, "")}%`);
+  }
+  const { data, error, count } = await query
+    .order("rank_score", { ascending: false })
+    .limit(limit);
+  if (error || !Array.isArray(data)) {
+    return { rows: [], total: 0 };
+  }
+  const ratingsByKey = new Map<string, FormRating>();
+  for (const row of data as RatingRow[]) {
+    if (row.kind !== "player" && row.kind !== "pair") continue;
+    if (row.rank_score == null) continue;
+    ratingsByKey.set(`${row.web_id}|${row.discipline}`, {
+      disc: row.discipline,
+      kind: row.kind,
+      mu: row.mu,
+      rd: row.rd,
+      rankScore: row.rank_score,
+      peakMu: row.peak_mu,
+      matches: row.matches,
+      webId: row.web_id,
+      name: row.display_name ?? undefined,
+    });
+  }
+  // SQL already applied disc/q; do not filter again (would drop rows if
+  // `discipline` is missing on a mapped rating).
+  const rows = buildFormBoard(ratingsByKey, new Set(), { limit });
+  return { rows, total: count ?? rows.length };
 }
 
 /** Featured matches for home: late rounds first (not chronological “recent”). */
