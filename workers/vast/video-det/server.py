@@ -114,11 +114,22 @@ def _allow_missing_models() -> bool:
     )
 
 
+def _assert_trt_loaded() -> None:
+    """Fail startup if native nvinfer is not loadable (version 0.0.x)."""
+    import tensorrt as trt
+
+    ver = getattr(trt, "__version__", "") or ""
+    log.info("startup: tensorrt %s", ver)
+    if not ver or ver.startswith("0.0"):
+        raise RuntimeError(f"native TensorRT not loaded (version={ver!r})")
+
+
 async def _load_models() -> None:
     """Load TRT engines at startup. Fail hard unless ALLOW_MISSING_MODELS=1."""
     global _detector
     cfg = DetectConfig.from_env()
     allow_missing = _allow_missing_models()
+    _assert_trt_loaded()
     if not cfg.pose_engine.is_file() or not cfg.shuttle_engine.is_file():
         msg = (
             f"startup: engines missing (pose={cfg.pose_engine} "

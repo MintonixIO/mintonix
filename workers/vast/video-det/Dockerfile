@@ -1,17 +1,18 @@
-# Runtime image is CUDA 12.4 + TRT 10 libs only. Engines stay baked (cold-start
+# Runtime image is CUDA 12.6 + TRT 10.6 libs only. Engines stay baked (cold-start
 # win). The NGC TensorRT devel image is a *builder* so we do not ship compilers,
 # samples, or libnvinfer_builder_resource.
 #
-# Product engines must be built against this TRT/CUDA stack / GPU arch.
+# Product engines must be built against this TRT/CUDA stack / GPU arch (sm_120).
 # Product path is TRT-only (no PyTorch wheel).
-FROM nvcr.io/nvidia/tensorrt:24.04-py3 AS trt
+FROM nvcr.io/nvidia/tensorrt:24.11-py3 AS trt
 
-# Collect inference .so files + the TensorRT Python package. Skip builder-only
-# blobs (libnvinfer_builder_resource is hundreds of MB and unused at runtime).
+# Collect inference .so files via realpath + ldd closure (libnvinfer needs
+# libcublas / libcublasLt). Copy real files, not dangling absolute symlinks.
+# Skip builder-only blobs (libnvinfer_builder_resource is hundreds of MB).
 RUN python3 - <<'PY'
 import glob
-import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -20,38 +21,71 @@ py_dst = Path("/opt/trt-runtime/python")
 lib_dst.mkdir(parents=True)
 py_dst.mkdir(parents=True)
 
-lib_globs = [
+
+def is_builder_only(name: str) -> bool:
+    return "builder_resource" in name
+
+
+def is_driver_lib(name: str) -> bool:
+    # Host driver is injected by nvidia-container-runtime; do not pin NGC stubs.
+    return name.startswith("libcuda.so") or name.startswith("libnvidia-")
+
+
+seeds = []
+for pattern in (
     "/usr/lib/x86_64-linux-gnu/libnvinfer.so*",
+    "/usr/local/tensorrt/lib/libnvinfer.so*",
     "/usr/lib/x86_64-linux-gnu/libnvinfer_plugin.so*",
+    "/usr/local/tensorrt/lib/libnvinfer_plugin.so*",
+    "/usr/lib/x86_64-linux-gnu/libnvonnxparser.so*",
+    "/usr/local/tensorrt/lib/libnvonnxparser.so*",
     "/usr/lib/x86_64-linux-gnu/libnvinfer_dispatch.so*",
     "/usr/lib/x86_64-linux-gnu/libnvinfer_lean.so*",
     "/usr/lib/x86_64-linux-gnu/libnvinfer_vc_plugin.so*",
-    "/usr/lib/x86_64-linux-gnu/libnvonnxparser.so*",
     "/usr/lib/x86_64-linux-gnu/libnvparsers.so*",
-    "/usr/lib/x86_64-linux-gnu/libcudnn*.so*",
-    "/usr/local/tensorrt/lib/libnvinfer.so*",
-    "/usr/local/tensorrt/lib/libnvinfer_plugin.so*",
     "/usr/local/tensorrt/lib/libnvinfer_dispatch.so*",
     "/usr/local/tensorrt/lib/libnvinfer_lean.so*",
-    "/usr/local/tensorrt/lib/libnvonnxparser.so*",
+    "/usr/lib/x86_64-linux-gnu/libcudnn*.so*",
     "/usr/local/cuda/lib64/libcudnn*.so*",
+):
+    seeds += [Path(p) for p in glob.glob(pattern)]
+
+needed: set[Path] = set()
+queue = [
+    p.resolve()
+    for p in seeds
+    if p.is_file() and not is_builder_only(p.name) and not is_driver_lib(p.name)
 ]
+while queue:
+    lib = queue.pop()
+    if lib in needed or not lib.is_file():
+        continue
+    if is_builder_only(lib.name) or is_driver_lib(lib.name):
+        continue
+    needed.add(lib)
+    try:
+        out = subprocess.check_output(["ldd", str(lib)], text=True)
+    except subprocess.CalledProcessError:
+        continue
+    for line in out.splitlines():
+        if " => " not in line or "not found" in line:
+            continue
+        dest = line.split(" => ", 1)[1].split(" (")[0].strip()
+        if dest.startswith("/"):
+            queue.append(Path(dest).resolve())
+
 copied = []
-for pattern in lib_globs:
-    for src in glob.glob(pattern):
-        name = os.path.basename(src)
-        if "builder_resource" in name:
-            continue
-        dest = lib_dst / name
-        if dest.exists():
-            continue
-        shutil.copy2(src, dest, follow_symlinks=False)
-        copied.append(name)
+for src in sorted(needed):
+    if is_builder_only(src.name) or is_driver_lib(src.name):
+        continue
+    shutil.copy2(src, lib_dst / src.name, follow_symlinks=True)
+    copied.append(src.name)
 if not any(n.startswith("libnvinfer.so") for n in copied):
     sys.exit("ERROR: libnvinfer.so* not found in NGC image")
 print("trt libs:", ", ".join(sorted(copied)))
 
 # tensorrt, tensorrt_bindings, tensorrt_libs — whatever import resolves.
+# Follow symlinks so the slim image does not inherit dangling NGC paths.
 import tensorrt  # noqa: E402
 
 seen: set[Path] = set()
@@ -65,7 +99,7 @@ for mod in ("tensorrt", "tensorrt_bindings", "tensorrt_libs"):
         continue
     seen.add(root)
     dest = py_dst / root.name
-    shutil.copytree(root, dest, symlinks=True, dirs_exist_ok=True)
+    shutil.copytree(root, dest, symlinks=False, dirs_exist_ok=True)
     print(f"python pkg: {root} -> {dest}")
 if not (py_dst / "tensorrt").exists():
     sys.exit("ERROR: tensorrt python package not found")
@@ -86,10 +120,12 @@ RUN apt-get update \
     && cp -a /opt/trt-runtime/python/. "$site/" \
     && /opt/worker-env/bin/python -c "import tensorrt, cv2, fastapi; print('tensorrt', tensorrt.__version__)"
 
-FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04
+FROM nvidia/cuda:12.6.3-runtime-ubuntu22.04
 
-ENV NVIDIA_REQUIRE_CUDA="cuda>=12.4" \
-    NVIDIA_DRIVER_CAPABILITIES=compute,utility
+ENV NVIDIA_REQUIRE_CUDA="cuda>=12.6" \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility \
+    EXPECTED_TRT_VERSION=10.6.0 \
+    TRT_LIB_DIR=/usr/local/lib/trt
 
 # python3-distutils: vastai's PyWorker backend imports distutils.util.strtobool.
 # Ubuntu's python3 package does not ship distutils; without it, `from vastai
@@ -103,12 +139,46 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY --from=trt /opt/trt-runtime/lib/ /usr/local/lib/trt/
 COPY --from=trt /opt/worker-env/ /opt/worker-env/
+ENV LD_LIBRARY_PATH="/usr/local/lib/trt:${LD_LIBRARY_PATH}"
 RUN printf '/usr/local/lib/trt\n' > /etc/ld.so.conf.d/trt.conf && ldconfig
+
+# Bake-fail even if tools/check_trt_runtime.py is forgotten: ldd nvinfer and
+# import tensorrt (no deserialize). Native-load failure is version 0.0.x.
+RUN /opt/worker-env/bin/python - <<'PY'
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+libdir = Path(os.environ.get("TRT_LIB_DIR", "/usr/local/lib/trt"))
+expected = os.environ.get("EXPECTED_TRT_VERSION", "").strip()
+paths = sorted(libdir.glob("libnvinfer.so*"))
+if not paths:
+    sys.exit(f"ERROR: no libnvinfer.so* under {libdir}")
+for p in paths:
+    out = subprocess.check_output(
+        ["ldd", str(p)], text=True, stderr=subprocess.STDOUT
+    )
+    print(out)
+    missing = [ln.strip() for ln in out.splitlines() if "not found" in ln]
+    if missing:
+        sys.exit("ERROR: ldd missing deps:\n" + "\n".join(missing))
+import tensorrt as trt
+ver = trt.__version__
+print("tensorrt.__version__", ver)
+if not ver or ver.startswith("0.0"):
+    sys.exit(f"ERROR: native TensorRT not loaded (version={ver!r})")
+if expected and ver != expected:
+    sys.exit(f"ERROR: tensorrt {ver} != EXPECTED_TRT_VERSION {expected}")
+print("bake trt check OK")
+PY
 
 WORKDIR /app
 
 # Product path only (see .dockerignore).
 COPY . .
+COPY tools/check_trt_runtime.py /app/tools/check_trt_runtime.py
+RUN /opt/worker-env/bin/python /app/tools/check_trt_runtime.py
 
 # Tiny local sample for autoscaler BenchmarkConfig (file:///app/sample.mp4).
 # Written with OpenCV so we do not need ffmpeg in the image.

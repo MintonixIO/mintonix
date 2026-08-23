@@ -49,6 +49,9 @@ jobs:
       test_command: >-
         bash -c "ln -s /usr/local/cuda/lib64/stubs/libcuda.so
         /usr/local/lib/libcuda.so.1 && ldconfig &&
+        /opt/worker-env/bin/python -c 'import tensorrt as trt; print(\"ci_trt\", trt.__version__); assert trt.__version__ and not trt.__version__.startswith(\"0.0\")' &&
+        ldd /usr/local/lib/trt/libnvinfer.so* | tee /tmp/ldd.txt &&
+        if grep -q \"not found\" /tmp/ldd.txt; then echo FAIL ldd; cat /tmp/ldd.txt; exit 1; fi &&
         test -f /app/models/MANIFEST.json &&
         /opt/worker-env/bin/python -c 'import json; from pathlib import Path;
         m=json.loads(Path(\"/app/models/MANIFEST.json\").read_text());

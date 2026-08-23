@@ -11,7 +11,9 @@
 
 # Export / research / local debug — not needed at runtime.
 # CI fetch_models.sh runs on the runner *before* docker build.
-tools/
+# Keep tools/check_trt_runtime.py so bake/CI can verify native TRT.
+tools/*
+!tools/check_trt_runtime.py
 debug.py
 pose/export_trt.py
 pose/download_model.py

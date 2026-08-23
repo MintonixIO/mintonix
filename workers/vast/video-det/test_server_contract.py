@@ -125,12 +125,16 @@ class TestServerHealthAndStartup(unittest.TestCase):
             try:
                 os.environ["ALLOW_MISSING_MODELS"] = "1"
                 server_mod._detector = None
-                await server_mod._load_models()
+                with patch.object(server_mod, "_assert_trt_loaded") as assert_trt:
+                    await server_mod._load_models()
+                    assert_trt.assert_called()
                 self.assertIsNone(server_mod._detector)
 
                 os.environ.pop("ALLOW_MISSING_MODELS", None)
-                with self.assertRaises(FileNotFoundError):
-                    await server_mod._load_models()
+                with patch.object(server_mod, "_assert_trt_loaded") as assert_trt:
+                    with self.assertRaises(FileNotFoundError):
+                        await server_mod._load_models()
+                    assert_trt.assert_called()
             finally:
                 for key, prev in (
                     ("POSE_ENGINE", prev_pose),
@@ -309,11 +313,86 @@ class TestImageBootContract(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("AS trt", src)
-        self.assertIn("nvidia/cuda:12.4.1-runtime-ubuntu22.04", src)
+        self.assertIn("nvcr.io/nvidia/tensorrt:24.11-py3", src)
+        self.assertIn("nvidia/cuda:12.6.3-runtime-ubuntu22.04", src)
         self.assertIn("ENV_PATH=/opt/worker-env", src)
         self.assertIn("python3-distutils", src)
-        self.assertIn('if "builder_resource" in name:', src)
+        self.assertIn("builder_resource", src)
         self.assertNotIn('CMD ["bash", "start_server.sh"]', src)
+
+    def test_dockerfile_copies_nvinfer_via_ldd_or_realpath(self) -> None:
+        src = (Path(__file__).resolve().parent / "Dockerfile").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("ldd", src)
+        self.assertNotIn("follow_symlinks=False", src)
+
+    def test_assert_trt_loaded_rejects_zero_version(self) -> None:
+        import importlib.util
+        import sys
+        import types
+
+        def _load_server():
+            try:
+                import server as server_mod
+
+                return server_mod
+            except ImportError:
+                pass
+            fastapi = types.ModuleType("fastapi")
+
+            class FastAPI:
+                def __init__(self, *a, **k):
+                    self.router = types.SimpleNamespace(lifespan_context=None)
+
+                def get(self, *a, **k):
+                    return lambda fn: fn
+
+                def post(self, *a, **k):
+                    return lambda fn: fn
+
+            fastapi.FastAPI = FastAPI
+            fastapi.Request = object
+            conc = types.ModuleType("fastapi.concurrency")
+            conc.run_in_threadpool = lambda *a, **k: None
+            resp = types.ModuleType("fastapi.responses")
+
+            class JSONResponse:
+                def __init__(self, *a, **k):
+                    pass
+
+            resp.JSONResponse = JSONResponse
+            path = Path(__file__).resolve().parent / "server.py"
+            spec = importlib.util.spec_from_file_location(
+                "video_det_server_trt_contract", path
+            )
+            assert spec and spec.loader
+            mod = importlib.util.module_from_spec(spec)
+            with patch.dict(
+                sys.modules,
+                {
+                    "fastapi": fastapi,
+                    "fastapi.concurrency": conc,
+                    "fastapi.responses": resp,
+                },
+            ):
+                spec.loader.exec_module(mod)
+            return mod
+
+        server_mod = _load_server()
+        fake = MagicMock()
+        fake.__version__ = "0.0.0"
+        with patch.dict(sys.modules, {"tensorrt": fake}):
+            with self.assertRaises(RuntimeError) as ctx:
+                server_mod._assert_trt_loaded()
+            self.assertIn("native TensorRT not loaded", str(ctx.exception))
+        try:
+            import tensorrt as trt
+        except ImportError:
+            return
+        ver = getattr(trt, "__version__", "") or ""
+        if ver and not str(ver).startswith("0.0"):
+            server_mod._assert_trt_loaded()
 
 
 if __name__ == "__main__":
