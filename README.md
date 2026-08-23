@@ -44,7 +44,7 @@ four user-clicked court corners.
 
 - **Live:** marketing site + **BWF match catalog** (`/bwf/*`) from Supabase.
 - **Not live:** private dashboard, uploads, billing, and analysis tools (preview routes only).
-- Checklist: [MARKETING_BWF_CHECKLIST.md](MARKETING_BWF_CHECKLIST.md). Catalog snapshot cache is **process-local TTL** (not Next Data Cache).
+- Checklist: [MARKETING_BWF_CHECKLIST.md](MARKETING_BWF_CHECKLIST.md). Home / match list query Postgres directly; search / players / H2H use a **process-local** snapshot TTL (not Next Data Cache).
 
 # Architecture summary
 

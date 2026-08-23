@@ -15,6 +15,15 @@ import {
   type DbMatchRow,
 } from "./parse";
 import {
+  catalogStatsFromSql,
+  isoDateUtc,
+  planMatchList,
+  tournamentDiscIlike,
+  youtubeSourceOrFilter,
+  type MatchListPlan,
+  type SqlCatalogStats,
+} from "./match-query";
+import {
   aggregatePlayers,
   applyInferredCountries,
   applyCanonicalNames,
@@ -35,6 +44,7 @@ import {
   thisWeekMatches,
   toDirectoryPlayer,
   buildFormBoard,
+  utcIsoWeekStart,
 } from "./query";
 import type {
   CatalogMatch,
@@ -48,7 +58,7 @@ import type {
   MatchFilters,
   SearchHit,
 } from "./types";
-import { BWF_SEARCH_LIMIT } from "./types";
+import { BWF_SEARCH_LIMIT, DISCS } from "./types";
 
 const MATCH_SELECT =
   "id,tournament,match_date,team1_player1,team1_player2,team2_player1,team2_player2,team1_player1_country,team1_player2_country,team2_player1_country,team2_player2_country,g1_t1,g1_t2,g2_t1,g2_t2,g3_t1,g3_t2,result,winner_side,status,source_url,duration_sec,created_at";
@@ -60,17 +70,19 @@ const MATCH_SELECT_NO_COUNTRY =
   "id,tournament,match_date,team1_player1,team1_player2,team2_player1,team2_player2,g1_t1,g1_t2,g2_t1,g2_t2,g3_t1,g3_t2,status,source_url,duration_sec,created_at";
 
 /**
- * Server-private catalog snapshot: matches + slim directory + stats.
+ * Server-private catalog access via service role (never the public anon path).
+ *
+ * Fast path (home, match list, stats): targeted PostgREST queries +
+ * `bwf_catalog_stats` RPC. Do not page the full `matches` table for those.
+ *
+ * Slow path (search, player directory, H2H, profiles): process-local
+ * `CatalogSnapshot` (matches + slim directory + ratings). Multi-year payload
+ * is ~tens of MB, so Next.js Data Cache (2MB) cannot hold it. TTL 300s with
+ * single-flight rebuild + stale-while-revalidate. Layout warms this in
+ * `after()` so first paint is not blocked.
+ *
  * Full player profiles (form/rivals) are built on demand in getPlayerById.
- * Loaded only via service role (never the public anon path).
- *
- * Caching: multi-year snapshot is ~tens of MB. Next.js `unstable_cache` /
- * Data Cache rejects entries over 2MB, so we use a process-local TTL cache
- * with single-flight rebuild instead. Survives for the life of the Node
- * process (dev server / one server instance); not shared across workers.
- *
- * Scale note: full multi-year catalogs stay in process RAM for the TTL.
- * YEAR-SCOPE: Prefer year-scoped load later if RSS becomes a problem — no year filter on snapshot today (client filters still work after full load).
+ * YEAR-SCOPE: Prefer year-scoped snapshot later if RSS becomes a problem.
  */
 export type CatalogSnapshot = {
   matches: CatalogMatch[];
@@ -91,6 +103,144 @@ type SnapshotCacheEntry = {
 let snapshotCache: SnapshotCacheEntry | null = null;
 /** In-flight build so parallel layout+page callers share one Supabase page-in. */
 let snapshotInflight: Promise<CatalogSnapshot> | null = null;
+
+type StatsCacheEntry = { stats: CatalogStats; expiresAt: number };
+let statsCache: StatsCacheEntry | null = null;
+let statsInflight: Promise<CatalogStats> | null = null;
+
+function requireServiceRole(): void {
+  if (!hasServiceRoleKey()) {
+    throw new Error(
+      "Missing SUPABASE_SERVICE_ROLE_KEY — BWF catalog requires service-role credentials",
+    );
+  }
+}
+
+type MatchListBuilder = PromiseLike<{
+  data: unknown;
+  error: { message: string } | null;
+  count?: number | null;
+}> & {
+  ilike: (column: string, value: string) => MatchListBuilder;
+  not: (column: string, operator: string, value: unknown) => MatchListBuilder;
+  or: (filters: string) => MatchListBuilder;
+  order: (
+    column: string,
+    opts?: { ascending?: boolean; nullsFirst?: boolean },
+  ) => MatchListBuilder;
+  range: (from: number, to: number) => MatchListBuilder;
+  limit: (n: number) => MatchListBuilder;
+};
+
+function applyMatchListPlan(
+  query: MatchListBuilder,
+  plan: MatchListPlan,
+): MatchListBuilder {
+  let q = query;
+  for (const f of plan.filters) {
+    if (f.kind === "ilike") q = q.ilike(f.column, f.value);
+    else if (f.kind === "not_is") q = q.not(f.column, "is", null);
+    else q = q.or(f.value);
+  }
+  for (const o of plan.order) {
+    q = q.order(o.column, { ascending: o.ascending, nullsFirst: false });
+  }
+  return q.range(plan.from, plan.to);
+}
+
+async function selectMatchRows(
+  build: (
+    select: string,
+  ) => PromiseLike<{
+    data: unknown;
+    error: { message: string } | null;
+    count?: number | null;
+  }>,
+): Promise<{ rows: DbMatchRow[]; error: string | null; count: number | null }> {
+  let select = MATCH_SELECT;
+  for (;;) {
+    const { data, error, count } = await build(select);
+    if (error) {
+      if (select === MATCH_SELECT && /result|winner_side/i.test(error.message)) {
+        select = MATCH_SELECT_NO_RESULT;
+        continue;
+      }
+      if (
+        (select === MATCH_SELECT || select === MATCH_SELECT_NO_RESULT) &&
+        /country/i.test(error.message)
+      ) {
+        select = MATCH_SELECT_NO_COUNTRY;
+        continue;
+      }
+      return { rows: [], error: error.message, count: null };
+    }
+    return {
+      rows: ((data as DbMatchRow[] | null) ?? []) as DbMatchRow[],
+      error: null,
+      count: count ?? null,
+    };
+  }
+}
+
+async function fetchCatalogStatsFallback(
+  client: SupabaseClient,
+): Promise<CatalogStats> {
+  type CountBuilder = PromiseLike<{
+    count: number | null;
+    error: { message: string } | null;
+  }> & {
+    or: (filters: string) => CountBuilder;
+    ilike: (column: string, value: string) => CountBuilder;
+  };
+  const headCount = async (
+    apply: (q: CountBuilder) => CountBuilder,
+  ): Promise<number> => {
+    const base = client
+      .from("matches")
+      .select("id", { count: "exact", head: true })
+      .is("owner_id", null) as unknown as CountBuilder;
+    const { count, error } = await apply(base);
+    if (error) return 0;
+    return count ?? 0;
+  };
+
+  const [matches, withVideo, playersRes, ...discCounts] = await Promise.all([
+    headCount((q) => q),
+    headCount((q) => q.or(youtubeSourceOrFilter())),
+    client
+      .from("player_ratings")
+      .select("web_id", { count: "exact", head: true })
+      .eq("kind", "player"),
+    ...DISCS.map((d) =>
+      headCount((q) => q.ilike("tournament", tournamentDiscIlike(d))),
+    ),
+  ]);
+
+  const by_disc = Object.fromEntries(
+    DISCS.map((d, i) => [d, discCounts[i] ?? 0]),
+  ) as Partial<Record<Disc, number>>;
+
+  return catalogStatsFromSql({
+    matches,
+    players: playersRes.error ? 0 : (playersRes.count ?? 0),
+    tournaments: 0,
+    with_video: withVideo,
+    by_disc,
+    events: [],
+    rounds: [],
+    years: [],
+  });
+}
+
+async function fetchCatalogStatsRemote(): Promise<CatalogStats> {
+  requireServiceRole();
+  const client = createServiceClient();
+  const { data, error } = await client.rpc("bwf_catalog_stats");
+  if (!error && data && typeof data === "object") {
+    return catalogStatsFromSql(data as SqlCatalogStats);
+  }
+  return fetchCatalogStatsFallback(client);
+}
 
 async function fetchPages(
   supabase: SupabaseClient,
@@ -270,30 +420,36 @@ async function buildCatalogSnapshot(): Promise<CatalogSnapshot> {
 }
 
 /**
- * Full BWF snapshot for this server process.
+ * Full BWF snapshot for this server process (search / players / H2H).
  * Not `unstable_cache` — multi-year payload exceeds Next Data Cache 2MB limit
  * (~26MB observed), which forced a full rebuild every request.
+ * Expired entries are served stale while a rebuild runs.
  */
 export async function getCatalogSnapshot(): Promise<CatalogSnapshot> {
   const now = Date.now();
   if (snapshotCache && snapshotCache.expiresAt > now) {
     return snapshotCache.snapshot;
   }
-  if (snapshotInflight) return snapshotInflight;
-
-  snapshotInflight = buildCatalogSnapshot()
-    .then((snapshot) => {
-      snapshotCache = {
-        snapshot,
-        expiresAt: Date.now() + SNAPSHOT_TTL_MS,
-      };
-      return snapshot;
-    })
-    .finally(() => {
-      snapshotInflight = null;
-    });
-
+  if (!snapshotInflight) {
+    snapshotInflight = buildCatalogSnapshot()
+      .then((snapshot) => {
+        snapshotCache = {
+          snapshot,
+          expiresAt: Date.now() + SNAPSHOT_TTL_MS,
+        };
+        return snapshot;
+      })
+      .finally(() => {
+        snapshotInflight = null;
+      });
+  }
+  if (snapshotCache) return snapshotCache.snapshot;
   return snapshotInflight;
+}
+
+/** Kick a snapshot rebuild without blocking the current response. */
+export function warmCatalogSnapshot(): Promise<CatalogSnapshot> {
+  return getCatalogSnapshot();
 }
 
 export async function getDirectoryPlayers(): Promise<DirectoryPlayer[]> {
@@ -302,8 +458,24 @@ export async function getDirectoryPlayers(): Promise<DirectoryPlayer[]> {
 }
 
 export async function getCatalogStats(): Promise<CatalogStats> {
-  const snap = await getCatalogSnapshot();
-  return snap.stats;
+  if (process.env.CATALOG_FIXTURE === "1") {
+    const snap = await getCatalogSnapshot();
+    return snap.stats;
+  }
+  const now = Date.now();
+  if (statsCache && statsCache.expiresAt > now) return statsCache.stats;
+  if (!statsInflight) {
+    statsInflight = fetchCatalogStatsRemote()
+      .then((stats) => {
+        statsCache = { stats, expiresAt: Date.now() + SNAPSHOT_TTL_MS };
+        return stats;
+      })
+      .finally(() => {
+        statsInflight = null;
+      });
+  }
+  if (statsCache) return statsCache.stats;
+  return statsInflight;
 }
 
 /**
@@ -384,13 +556,41 @@ export async function queryMatches(filters: MatchFilters = {}): Promise<{
   pageSize: number;
   totalPages: number;
 }> {
-  const { matches } = await getCatalogSnapshot();
-  const filtered = filterMatches(matches, filters);
-  return paginateMatches(
-    filtered,
-    filters.page ?? 1,
-    filters.pageSize ?? 24,
+  if (process.env.CATALOG_FIXTURE === "1") {
+    const { matches } = await getCatalogSnapshot();
+    return paginateMatches(
+      filterMatches(matches, filters),
+      filters.page ?? 1,
+      filters.pageSize ?? 24,
+    );
+  }
+  requireServiceRole();
+  const plan = planMatchList(filters);
+  const client = createServiceClient();
+  const fetched = await selectMatchRows((select) =>
+    applyMatchListPlan(
+      client
+        .from("matches")
+        .select(select, { count: "exact" })
+        .is("owner_id", null) as unknown as MatchListBuilder,
+      plan,
+    ),
   );
+  if (fetched.error) {
+    throw new Error(`BWF match list failed: ${fetched.error}`);
+  }
+  const mapped = fetched.rows.map(mapDbMatch);
+  if (plan.overFetch && filters.player) {
+    const involved = mapped.filter((m) =>
+      matchInvolvesPlayer(m, filters.player as string),
+    );
+    return paginateMatches(involved, filters.page ?? 1, filters.pageSize ?? 24);
+  }
+  const pageSize = Math.min(Math.max(filters.pageSize ?? 24, 1), 100);
+  const total = fetched.count ?? mapped.length;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize) || 1);
+  const page = Math.min(Math.max(filters.page ?? 1, 1), totalPages);
+  return { matches: mapped, total, page, pageSize, totalPages };
 }
 
 /**
@@ -569,8 +769,31 @@ export async function searchDirectoryPlayers(
 export async function getThisWeekMatches(
   limit?: number,
 ): Promise<CatalogMatch[]> {
-  const { matches } = await getCatalogSnapshot();
-  return thisWeekMatches(matches, limit != null ? { limit } : undefined);
+  if (process.env.CATALOG_FIXTURE === "1") {
+    const { matches } = await getCatalogSnapshot();
+    return thisWeekMatches(matches, limit != null ? { limit } : undefined);
+  }
+  requireServiceRole();
+  const weekStart = utcIsoWeekStart(Date.now());
+  const start = isoDateUtc(weekStart);
+  const end = isoDateUtc(weekStart + 7 * 24 * 60 * 60 * 1000);
+  const client = createServiceClient();
+  const fetched = await selectMatchRows((select) =>
+    client
+      .from("matches")
+      .select(select)
+      .is("owner_id", null)
+      .or(
+        `and(match_date.gte.${start},match_date.lt.${end}),and(match_date.is.null,created_at.gte.${start}T00:00:00.000Z,created_at.lt.${end}T00:00:00.000Z)`,
+      )
+      .order("match_date", { ascending: false, nullsFirst: false })
+      .limit(limit != null ? Math.min(Math.max(limit, 1), 1000) : 1000),
+  );
+  if (fetched.error) {
+    throw new Error(`BWF this-week load failed: ${fetched.error}`);
+  }
+  const mapped = formSortMatches(fetched.rows.map(mapDbMatch));
+  return limit != null ? mapped.slice(0, limit) : mapped;
 }
 
 /** Form boards: Glicko rank_score per discipline (pairs for MD/WD/XD). */
@@ -589,6 +812,23 @@ export async function listFormBoard(opts?: {
 export async function getFeaturedMatches(
   limit = 6,
 ): Promise<CatalogMatch[]> {
-  const { matches } = await getCatalogSnapshot();
-  return sortMatches(matches, "round").slice(0, limit);
+  if (process.env.CATALOG_FIXTURE === "1") {
+    const { matches } = await getCatalogSnapshot();
+    return sortMatches(matches, "round").slice(0, limit);
+  }
+  requireServiceRole();
+  const take = Math.min(Math.max(limit, 1), 24);
+  const client = createServiceClient();
+  const fetched = await selectMatchRows((select) =>
+    client
+      .from("matches")
+      .select(select)
+      .is("owner_id", null)
+      .order("match_date", { ascending: false, nullsFirst: false })
+      .limit(80),
+  );
+  if (fetched.error) {
+    throw new Error(`BWF featured load failed: ${fetched.error}`);
+  }
+  return sortMatches(fetched.rows.map(mapDbMatch), "round").slice(0, take);
 }

@@ -503,11 +503,13 @@ caches one initPlan evaluation per statement instead of calling per row.
 loaders (`apps/web/lib/bwf/catalog.ts`) always use **service role**
 (`SUPABASE_SERVICE_ROLE_KEY`) and filter `owner_id IS NULL` on every query
 (defense in depth; service role bypasses RLS). Missing service-role env fails
-clearly. Catalog data is aggregated once into an in-memory **CatalogSnapshot**
-(process-local TTL ~300s, not Next Data Cache) with matches, slim directory
-players, and stats — full player profiles (form/rivals) are built on demand for
-player detail only. Multi-year catalogs are held entirely in process memory for
-the TTL; scale carefully before loading decades of seasons.
+clearly. Home / match list / headline stats use targeted PostgREST queries and
+`bwf_catalog_stats()` (service-role execute only). Search, player directory, and
+H2H still use an in-memory **CatalogSnapshot** (process-local TTL ~300s, not
+Next Data Cache) with matches, slim directory players, and ratings — full
+player profiles (form/rivals) are built on demand for player detail only.
+Multi-year snapshots stay in process memory for the TTL; scale carefully before
+loading decades of seasons.
 
 Public anon read of system matches is **revoked** (not the product path).
 Authenticated users may still SELECT BWF rows via RLS for other product
