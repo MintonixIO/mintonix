@@ -45,7 +45,12 @@ def nbytes(shape: tuple[int, ...], dtype: np.dtype) -> int:
 
 
 def acquire_device_context():
-    """Return a pycuda context, creating one on device 0 if needed."""
+    """Return the CUDA-runtime primary context, pushed on this thread if needed.
+
+    TensorRT deserialize uses the primary context. A second pycuda context
+    (make_context) can be left un-current by TRT APIs, after which pycuda
+    ``mem_alloc`` fails with "no currently active context".
+    """
     import pycuda.driver as cuda
 
     try:
@@ -54,10 +59,14 @@ def acquire_device_context():
         pass
     if not cuda.Device.count():
         raise RuntimeError("TensorRT runner requires a CUDA device")
+    ctx = cuda.Device(0).retain_primary_context()
     try:
-        return cuda.Context.get_current()
+        current = cuda.Context.get_current()
     except cuda.LogicError:
-        return cuda.Device(0).make_context()
+        current = None
+    if current is None:
+        ctx.push()
+    return ctx
 
 
 def detach_current_context() -> None:

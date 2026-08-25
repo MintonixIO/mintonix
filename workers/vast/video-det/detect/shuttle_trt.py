@@ -71,14 +71,14 @@ class TrackNetTrtRunner:
         self.out_np_dtype = host_dtype(engine.get_tensor_dtype(self.out_name))
         self._in_nbytes = nbytes(concrete_in, self.in_np_dtype)
         self._out_nbytes = nbytes(out_shape, self.out_np_dtype)
-        self.d_in = cuda.mem_alloc(self._in_nbytes)
-        self.d_out = cuda.mem_alloc(self._out_nbytes)
-        self.stream = cuda.Stream()
-        self.context.set_tensor_address(self.in_name, int(self.d_in))
-        self.context.set_tensor_address(self.out_name, int(self.d_out))
-
-        self.h_in = cuda.pagelocked_empty(concrete_in, dtype=self.in_np_dtype)
-        self.h_out = cuda.pagelocked_empty(out_shape, dtype=self.out_np_dtype)
+        with gpu_execute(self.cuda_ctx):
+            self.d_in = cuda.mem_alloc(self._in_nbytes)
+            self.d_out = cuda.mem_alloc(self._out_nbytes)
+            self.stream = cuda.Stream()
+            self.context.set_tensor_address(self.in_name, int(self.d_in))
+            self.context.set_tensor_address(self.out_name, int(self.d_out))
+            self.h_in = cuda.pagelocked_empty(concrete_in, dtype=self.in_np_dtype)
+            self.h_out = cuda.pagelocked_empty(out_shape, dtype=self.out_np_dtype)
 
         log.info(
             "TrackNetTrtRunner: %s batch=%d in=%s/%s out=%s/%s",

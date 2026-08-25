@@ -81,14 +81,16 @@ class _TrtRunner:
         self.out_np_dtype = host_dtype(engine.get_tensor_dtype(self.out_name))
         self._in_nbytes = nbytes(in_shape, self.in_np_dtype)
         self._out_nbytes = nbytes(out_shape, self.out_np_dtype)
-        self.d_in = cuda.mem_alloc(self._in_nbytes)
-        self.d_out = cuda.mem_alloc(self._out_nbytes)
-        self.stream = cuda.Stream()
-        self.context.set_tensor_address(self.in_name, int(self.d_in))
-        self.context.set_tensor_address(self.out_name, int(self.d_out))
-
-        self.h_in = cuda.pagelocked_empty(in_shape, dtype=self.in_np_dtype)
-        self.h_out = cuda.pagelocked_empty(out_shape, dtype=self.out_np_dtype)
+        # TRT create_execution_context may leave a non-primary pycuda context
+        # un-current. Push the retained primary before any driver alloc.
+        with gpu_execute(self.cuda_ctx):
+            self.d_in = cuda.mem_alloc(self._in_nbytes)
+            self.d_out = cuda.mem_alloc(self._out_nbytes)
+            self.stream = cuda.Stream()
+            self.context.set_tensor_address(self.in_name, int(self.d_in))
+            self.context.set_tensor_address(self.out_name, int(self.d_out))
+            self.h_in = cuda.pagelocked_empty(in_shape, dtype=self.in_np_dtype)
+            self.h_out = cuda.pagelocked_empty(out_shape, dtype=self.out_np_dtype)
 
     def infer(self, host_arr: np.ndarray) -> np.ndarray:
         """Run one full batch: host NHWC uint8 → host float32 TRT output."""
