@@ -18,8 +18,10 @@ still-wrapped body):
           "callback_url": "...",               # jobs/callback
           "callback_token": "..."              # Bearer token (HMAC JWT)
         }
-      -> 200 { "request_id", "frame_count", "elapsed_sec" }
-      -> 422 / 500 { "request_id", "error" }
+      -> 202 { "request_id" } as soon as the job thread is running; the
+         connection is held until GPU + callback finish (PyWorker load).
+         Callback is the settle path; a later job failure does not change 202.
+      -> 422 / 503 { "request_id", "error" }  (sync; no job thread)
 
     GET /health
         -> 200 { "status": "ok", "models_loaded": true } when detector is ready
@@ -37,18 +39,20 @@ bad engines fail the job.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 import tempfile
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, Request
-from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from detect import DetectConfig, VideoDetector
 from detect.output import (
@@ -104,6 +108,8 @@ HOST = os.environ.get("MODEL_SERVER_HOST", "127.0.0.1")
 PORT = int(os.environ.get("MODEL_SERVER_PORT", "18000"))
 
 _detector: VideoDetector | None = None
+# One GPU job at a time (matches PyWorker allow_parallel_requests=False).
+_JOB_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="detect-job")
 
 
 def _allow_missing_models() -> bool:
@@ -163,6 +169,28 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="video-det", lifespan=lifespan)
 
 
+class _HoldUntilDone(StreamingResponse):
+    """Chunked JSON 202; keep the ASGI handler alive until the iterator ends.
+
+    Starlette's StreamingResponse (ASGI spec < 2.4, including uvicorn 2.3)
+    cancels the stream on http.disconnect. PyWorker load is in-flight HTTP, so
+    we must not return when the dispatcher leaves — only when the job thread
+    finishes.
+    """
+
+    async def __call__(self, scope, receive, send) -> None:  # noqa: ARG002
+        try:
+            await self.stream_response(send)
+        except Exception:  # noqa: BLE001
+            try:
+                async for _ in self.body_iterator:
+                    pass
+            except Exception as e:  # noqa: BLE001
+                log.exception("detect: job wait after disconnect: %s", safe_error_message(e))
+        if self.background is not None:
+            await self.background()
+
+
 @app.get("/health")
 async def health() -> JSONResponse:
     if _detector is None:
@@ -174,7 +202,7 @@ async def health() -> JSONResponse:
 
 
 @app.post("/detect/sync")
-async def detect_sync(request: Request) -> JSONResponse:
+async def detect_sync(request: Request) -> Response:
     body = await request.json()
     if "input_url" not in body and isinstance(body.get("input"), dict):
         body = body["input"]
@@ -264,16 +292,35 @@ async def detect_sync(request: Request) -> JSONResponse:
                 )
         return result
 
-    try:
-        result = await run_in_threadpool(run_and_report)
-        return JSONResponse({"request_id": request_id, **result})
-    except Exception as e:  # noqa: BLE001
-        err = safe_error_message(e)
-        log.exception("detect(failed): request_id=%s error=%s", request_id, err)
-        return JSONResponse(
-            {"request_id": request_id, "error": err},
-            status_code=500,
-        )
+    # 202 is visible as soon as the worker is running; the ASGI handler does
+    # not return until run_and_report finishes so PyWorker in-flight load
+    # stays non-zero (Vast must not see load=0 mid-job).
+    running = threading.Event()
+
+    def _entry() -> dict:
+        running.set()
+        return run_and_report()
+
+    future = _JOB_EXECUTOR.submit(_entry)
+    await asyncio.to_thread(running.wait)
+    payload = json.dumps({"request_id": request_id}).encode("utf-8")
+    done = asyncio.wrap_future(future)
+
+    async def _hold_until_done():
+        yield payload
+        try:
+            await done
+        except Exception as e:  # noqa: BLE001
+            err = safe_error_message(e)
+            log.exception(
+                "detect(failed): request_id=%s error=%s", request_id, err
+            )
+
+    return _HoldUntilDone(
+        _hold_until_done(),
+        status_code=202,
+        media_type="application/json",
+    )
 
 
 # ---------------------------------------------------------------------------

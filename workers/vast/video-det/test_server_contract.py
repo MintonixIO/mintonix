@@ -6,7 +6,10 @@ import asyncio
 import json
 import os
 import tempfile
+import threading
+import time
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -455,7 +458,17 @@ class TestImageBootContract(unittest.TestCase):
                 def __init__(self, *a, **k):
                     pass
 
+            class StreamingResponse:
+                def __init__(self, *a, **k):
+                    pass
+
+            class Response:
+                def __init__(self, *a, **k):
+                    pass
+
             resp.JSONResponse = JSONResponse
+            resp.StreamingResponse = StreamingResponse
+            resp.Response = Response
             path = Path(__file__).resolve().parent / "server.py"
             spec = importlib.util.spec_from_file_location(
                 "video_det_server_trt_contract", path
@@ -487,6 +500,286 @@ class TestImageBootContract(unittest.TestCase):
         ver = getattr(trt, "__version__", "") or ""
         if ver and not str(ver).startswith("0.0"):
             server_mod._assert_trt_loaded()
+
+
+def _asgi_post_detect_sync(app, payload: dict, *, on_start, on_body) -> None:
+    """Drive POST /detect/sync at the ASGI layer so 202 can be observed mid-job.
+
+    Starlette TestClient buffers the full response (it waits for the ASGI
+    handler to return), so it cannot see headers while the connection is held.
+    """
+    body = json.dumps(payload).encode("utf-8")
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/detect/sync",
+        "raw_path": b"/detect/sync",
+        "query_string": b"",
+        "headers": [
+            (b"host", b"testserver"),
+            (b"content-type", b"application/json"),
+            (b"content-length", str(len(body)).encode("ascii")),
+        ],
+        "client": ("127.0.0.1", 50000),
+        "server": ("testserver", 80),
+        "root_path": "",
+        "extensions": {},
+        "state": {},
+    }
+    async def _run() -> None:
+        sent_request = False
+
+        async def receive():
+            nonlocal sent_request
+            if not sent_request:
+                sent_request = True
+                return {"type": "http.request", "body": body, "more_body": False}
+            # Stay connected: uvicorn ASGI spec 2.3 cancels StreamingResponse
+            # when it sees http.disconnect.
+            await asyncio.Event().wait()
+            return {"type": "http.disconnect"}
+
+        async def send(message):
+            if message["type"] == "http.response.start":
+                on_start(message)
+            elif message["type"] == "http.response.body":
+                chunk = message.get("body") or b""
+                if chunk:
+                    on_body(chunk)
+
+        await app(scope, receive, send)
+
+    asyncio.run(_run())
+
+
+class TestDetectSync202(unittest.TestCase):
+    """POST /detect/sync returns 202 as soon as the job thread is running."""
+
+    _VALID = {
+        "request_id": "job-202",
+        "input_url": "https://example/in",
+        "output_upload_url": "https://example/out",
+    }
+
+    def _import_server(self):
+        try:
+            import server as server_mod
+
+            return server_mod
+        except ImportError as e:
+            self.skipTest(f"server deps missing: {e}")
+
+    @contextmanager
+    def _client(self, *, detector: bool = True):
+        server_mod = self._import_server()
+        try:
+            from fastapi.testclient import TestClient
+        except ImportError as e:
+            self.skipTest(f"fastapi missing: {e}")
+
+        prev_allow = os.environ.get("ALLOW_MISSING_MODELS")
+        prev_pose = os.environ.get("POSE_ENGINE")
+        prev_shuttle = os.environ.get("SHUTTLE_ENGINE")
+        prev_unsafe = os.environ.get("ALLOW_UNSAFE_CALLBACK")
+        os.environ["ALLOW_MISSING_MODELS"] = "1"
+        os.environ.setdefault("POSE_ENGINE", "/nonexistent/pose.engine")
+        os.environ.setdefault("SHUTTLE_ENGINE", "/nonexistent/shuttle.engine")
+
+        async def _skip_load() -> None:
+            return None
+
+        try:
+            with patch.object(server_mod, "_load_models", new=_skip_load):
+                with TestClient(
+                    server_mod.app, raise_server_exceptions=False
+                ) as client:
+                    server_mod._detector = MagicMock() if detector else None
+                    yield server_mod, client
+        finally:
+            for key, prev in (
+                ("ALLOW_MISSING_MODELS", prev_allow),
+                ("POSE_ENGINE", prev_pose),
+                ("SHUTTLE_ENGINE", prev_shuttle),
+                ("ALLOW_UNSAFE_CALLBACK", prev_unsafe),
+            ):
+                if prev is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = prev
+            server_mod._detector = None
+
+    def test_detect_sync_returns_202_before_job_finishes(self) -> None:
+        started = threading.Event()
+        finished = threading.Event()
+
+        def slow_job(**kwargs):
+            started.set()
+            time.sleep(0.4)
+            finished.set()
+            return {"frame_count": 1, "elapsed_sec": 0.4}
+
+        server_mod = self._import_server()
+        prev = server_mod._detector
+        server_mod._detector = MagicMock()
+        header_seen = threading.Event()
+        body_seen = threading.Event()
+        status_codes: list[int] = []
+        header_elapsed: list[float] = []
+        body_chunks: list[bytes] = []
+        t0 = time.monotonic()
+
+        def on_start(message) -> None:
+            status_codes.append(int(message["status"]))
+            header_elapsed.append(time.monotonic() - t0)
+            header_seen.set()
+
+        def on_body(chunk: bytes) -> None:
+            body_chunks.append(chunk)
+            body_seen.set()
+
+        errors: list[BaseException] = []
+
+        def runner() -> None:
+            try:
+                with patch.object(server_mod, "_run_job", new=slow_job):
+                    _asgi_post_detect_sync(
+                        server_mod.app,
+                        self._VALID,
+                        on_start=on_start,
+                        on_body=on_body,
+                    )
+            except BaseException as e:  # noqa: BLE001
+                errors.append(e)
+            finally:
+                # Handler return means the job thread must already have finished.
+                handler_finished.set()
+
+        handler_finished = threading.Event()
+        try:
+            thread = threading.Thread(target=runner, name="asgi-detect-sync")
+            thread.start()
+            self.assertTrue(header_seen.wait(2.0), "202 headers never sent")
+            self.assertEqual(status_codes[0], 202)
+            self.assertLess(header_elapsed[0], 0.3)
+            self.assertTrue(body_seen.wait(1.0), "202 body never sent")
+            self.assertEqual(
+                json.loads(b"".join(body_chunks).decode("utf-8")),
+                {"request_id": "job-202"},
+            )
+            self.assertTrue(started.wait(1.0))
+            self.assertFalse(finished.is_set())
+            self.assertFalse(handler_finished.is_set())
+            self.assertTrue(finished.wait(2.0))
+            thread.join(timeout=2.0)
+            self.assertFalse(thread.is_alive())
+            self.assertTrue(handler_finished.is_set())
+            self.assertEqual(errors, [])
+        finally:
+            server_mod._detector = prev
+
+    def test_detect_sync_success_http_body_is_request_id_only(self) -> None:
+        def quick_job(**kwargs):
+            return {"frame_count": 9, "elapsed_sec": 0.01}
+
+        with self._client() as (server_mod, client):
+            with patch.object(server_mod, "_run_job", new=quick_job):
+                resp = client.post("/detect/sync", json=self._VALID)
+        self.assertEqual(resp.status_code, 202)
+        self.assertEqual(resp.json(), {"request_id": "job-202"})
+
+    def test_detect_sync_accepts_wrapped_input_envelope(self) -> None:
+        def quick_job(**kwargs):
+            return {"frame_count": 1, "elapsed_sec": 0.0}
+
+        with self._client() as (server_mod, client):
+            with patch.object(server_mod, "_run_job", new=quick_job):
+                resp = client.post(
+                    "/detect/sync", json={"input": dict(self._VALID)}
+                )
+        self.assertEqual(resp.status_code, 202)
+        self.assertEqual(resp.json(), {"request_id": "job-202"})
+
+    def test_detect_sync_job_failure_stays_202_and_callbacks(self) -> None:
+        def boom(**kwargs):
+            raise RuntimeError("gpu exploded")
+
+        callbacks: list[dict] = []
+
+        def capture_cb(url, token, payload, **kwargs):
+            callbacks.append(payload)
+            return 200
+
+        os.environ["ALLOW_UNSAFE_CALLBACK"] = "1"
+        envelope = {
+            **self._VALID,
+            "callback_url": "https://example/functions/v1/jobs/callback",
+            "callback_token": "tok",
+        }
+        with self._client() as (server_mod, client):
+            with (
+                patch.object(server_mod, "_run_job", new=boom),
+                patch.object(server_mod, "post_callback", new=capture_cb),
+            ):
+                resp = client.post("/detect/sync", json=envelope)
+        self.assertEqual(resp.status_code, 202)
+        self.assertEqual(resp.json(), {"request_id": "job-202"})
+        self.assertEqual(len(callbacks), 1)
+        self.assertEqual(callbacks[0]["request_id"], "job-202")
+        self.assertEqual(callbacks[0]["status"], "failed")
+        self.assertIn("gpu exploded", callbacks[0]["error"])
+
+    def test_detect_sync_422_missing_urls_is_sync_and_skips_job(self) -> None:
+        with self._client() as (server_mod, client):
+            with patch.object(server_mod, "_run_job") as run_job:
+                t0 = time.monotonic()
+                resp = client.post(
+                    "/detect/sync", json={"request_id": "job-202"}
+                )
+                elapsed = time.monotonic() - t0
+        self.assertEqual(resp.status_code, 422)
+        self.assertIn("input_url", resp.json()["error"])
+        self.assertEqual(resp.json()["request_id"], "job-202")
+        self.assertLess(elapsed, 0.3)
+        run_job.assert_not_called()
+
+    def test_detect_sync_422_callback_not_allowed(self) -> None:
+        prev_prefix = os.environ.get("CALLBACK_URL_PREFIX")
+        prev_supabase = os.environ.get("SUPABASE_URL")
+        os.environ.pop("ALLOW_UNSAFE_CALLBACK", None)
+        os.environ.pop("CALLBACK_URL_PREFIX", None)
+        os.environ.pop("SUPABASE_URL", None)
+        envelope = {
+            **self._VALID,
+            "callback_url": "https://evil.example/functions/v1/jobs/callback",
+            "callback_token": "tok",
+        }
+        try:
+            with self._client() as (server_mod, client):
+                with patch.object(server_mod, "_run_job") as run_job:
+                    resp = client.post("/detect/sync", json=envelope)
+        finally:
+            for key, prev in (
+                ("CALLBACK_URL_PREFIX", prev_prefix),
+                ("SUPABASE_URL", prev_supabase),
+            ):
+                if prev is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = prev
+        self.assertEqual(resp.status_code, 422)
+        self.assertIn("callback_url not allowed", resp.json()["error"])
+        run_job.assert_not_called()
+
+    def test_detect_sync_503_models_missing_skips_job(self) -> None:
+        with self._client(detector=False) as (server_mod, client):
+            with patch.object(server_mod, "_run_job") as run_job:
+                resp = client.post("/detect/sync", json=self._VALID)
+        self.assertEqual(resp.status_code, 503)
+        self.assertIn("models not loaded", resp.json()["error"])
+        run_job.assert_not_called()
 
 
 if __name__ == "__main__":

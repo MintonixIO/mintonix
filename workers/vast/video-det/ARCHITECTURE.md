@@ -28,6 +28,7 @@ normalize  →  detect (this worker)  →  analyze (not wired yet)
 | **Out** | `detections.json` (presigned PUT) |
 | **Route** | `POST /detect/sync` |
 | **Dispatcher** | `supabase/functions/jobs` → `STAGES.detect` |
+| **HTTP** | **202** `{ "request_id" }` once the job thread is running (connection held until GPU + callback). **422** bad envelope, **503** models not loaded (sync, no thread). Callback is the settle path. |
 
 Always feeds `normalized.mp4`. For BWF, preprocess already writes the cleaned
 court cut to that key. `player_id` in poses is always `null`
@@ -55,6 +56,8 @@ jobs/dispatch
   │  POST vast worker /detect/sync  { auth_data, payload: { input: envelope } }
   ▼
 vast PyWorker (worker.py)  ──proxy──►  server.py
+  │  HTTP 202 {request_id} as soon as the job thread is running;
+  │  ASGI connection held until GPU + callback finish (PyWorker load).
   │
   ├─ GET input_url          download video (HTTP stream or file://)
   ├─ GET annotation_url     optional; scoreboard crop for OCR
@@ -94,6 +97,16 @@ vast PyWorker (worker.py)  ──proxy──►  server.py
 ```
 
 Auth: `Authorization: Bearer <callback_token>` (not a body field).
+
+`POST /detect/sync` status codes:
+
+| Status | When | Body |
+|--------|------|------|
+| **202** | Envelope valid, models loaded, job thread running | `{ "request_id" }` (connection held until `run_and_report` returns) |
+| **422** | Missing URLs or callback URL not allowed | `{ "request_id", "error" }` (sync, no thread) |
+| **503** | Detector not loaded | `{ "request_id", "error" }` (sync, no thread) |
+
+A job that later fails still ends the stream as **202** — settlement is the callback (`success` / `failed`), not the HTTP status the dispatcher already left.
 
 ---
 
@@ -227,7 +240,7 @@ product feed. Zero-frame videos fail the job.
 **Serial pose → shuttle (intentional):** both models share one GPU. The
 image sets `PARALLEL_DETECT=0`. If enabled, a process-wide GPU lock still
 prevents concurrent TRT execute. CUDA context is detached after load so
-`/detect/sync` (threadpool) can push it.
+`/detect/sync` (job thread) can push it.
 
 Engine tensor shape and **binding dtype** (FLOAT or HALF) are the authority
 after load. Host buffers are sized from `engine.get_tensor_dtype`.
