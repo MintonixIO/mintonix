@@ -502,12 +502,7 @@ class TestImageBootContract(unittest.TestCase):
             server_mod._assert_trt_loaded()
 
 
-def _asgi_post_detect_sync(app, payload: dict, *, on_start, on_body) -> None:
-    """Drive POST /detect/sync at the ASGI layer so 202 can be observed mid-job.
-
-    Starlette TestClient buffers the full response (it waits for the ASGI
-    handler to return), so it cannot see headers while the connection is held.
-    """
+def _asgi_http_scope(payload: dict) -> tuple[dict, bytes]:
     body = json.dumps(payload).encode("utf-8")
     scope = {
         "type": "http",
@@ -529,6 +524,17 @@ def _asgi_post_detect_sync(app, payload: dict, *, on_start, on_body) -> None:
         "extensions": {},
         "state": {},
     }
+    return scope, body
+
+
+def _asgi_post_detect_sync(app, payload: dict, *, on_start, on_body) -> None:
+    """Drive POST /detect/sync at the ASGI layer so 202 can be observed mid-job.
+
+    Starlette TestClient buffers the full response (it waits for the ASGI
+    handler to return), so it cannot see headers while the connection is held.
+    """
+    scope, body = _asgi_http_scope(payload)
+
     async def _run() -> None:
         sent_request = False
 
@@ -551,6 +557,50 @@ def _asgi_post_detect_sync(app, payload: dict, *, on_start, on_body) -> None:
                     on_body(chunk)
 
         await app(scope, receive, send)
+
+    asyncio.run(_run())
+
+
+def _asgi_post_detect_sync_disconnect_after_202(
+    app, payload: dict, *, on_start, on_body
+) -> None:
+    """POST /detect/sync, then inject http.disconnect after the 202 JSON.
+
+    Mirrors Starlette StreamingResponse on ASGI spec < 2.4 (uvicorn 2.3):
+    disconnect cancels the in-flight stream task.
+    """
+    scope, body = _asgi_http_scope(payload)
+
+    async def _run() -> None:
+        sent_request = False
+        disconnect = asyncio.Event()
+        body_sent = asyncio.Event()
+
+        async def receive():
+            nonlocal sent_request
+            if not sent_request:
+                sent_request = True
+                return {"type": "http.request", "body": body, "more_body": False}
+            await disconnect.wait()
+            return {"type": "http.disconnect"}
+
+        async def send(message):
+            if message["type"] == "http.response.start":
+                on_start(message)
+            elif message["type"] == "http.response.body":
+                chunk = message.get("body") or b""
+                if chunk:
+                    on_body(chunk)
+                    body_sent.set()
+
+        task = asyncio.create_task(app(scope, receive, send))
+        await asyncio.wait_for(body_sent.wait(), 2.0)
+        disconnect.set()
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
     asyncio.run(_run())
 
@@ -678,6 +728,93 @@ class TestDetectSync202(unittest.TestCase):
             self.assertTrue(handler_finished.is_set())
             self.assertEqual(errors, [])
         finally:
+            server_mod._detector = prev
+
+    def test_detect_sync_holds_after_disconnect_until_job_finishes(self) -> None:
+        started = threading.Event()
+        finished = threading.Event()
+        callbacks: list[dict] = []
+
+        def slow_job(**kwargs):
+            started.set()
+            time.sleep(0.4)
+            finished.set()
+            return {"frame_count": 1, "elapsed_sec": 0.4}
+
+        def capture_cb(url, token, payload, **kwargs):
+            callbacks.append(payload)
+            return 200
+
+        server_mod = self._import_server()
+        prev = server_mod._detector
+        prev_unsafe = os.environ.get("ALLOW_UNSAFE_CALLBACK")
+        os.environ["ALLOW_UNSAFE_CALLBACK"] = "1"
+        server_mod._detector = MagicMock()
+        header_seen = threading.Event()
+        body_seen = threading.Event()
+        handler_finished = threading.Event()
+        errors: list[BaseException] = []
+        envelope = {
+            **self._VALID,
+            "callback_url": "https://example/functions/v1/jobs/callback",
+            "callback_token": "tok",
+        }
+
+        def on_start(message) -> None:
+            self.assertEqual(int(message["status"]), 202)
+            header_seen.set()
+
+        def on_body(chunk: bytes) -> None:
+            self.assertEqual(
+                json.loads(chunk.decode("utf-8")), {"request_id": "job-202"}
+            )
+            body_seen.set()
+
+        def runner() -> None:
+            try:
+                _asgi_post_detect_sync_disconnect_after_202(
+                    server_mod.app,
+                    envelope,
+                    on_start=on_start,
+                    on_body=on_body,
+                )
+            except BaseException as e:  # noqa: BLE001
+                errors.append(e)
+            finally:
+                handler_finished.set()
+
+        try:
+            with (
+                patch.object(server_mod, "_run_job", new=slow_job),
+                patch.object(server_mod, "post_callback", new=capture_cb),
+            ):
+                thread = threading.Thread(
+                    target=runner, name="asgi-detect-disconnect"
+                )
+                thread.start()
+                self.assertTrue(header_seen.wait(2.0), "202 headers never sent")
+                self.assertTrue(body_seen.wait(1.0), "202 body never sent")
+                self.assertTrue(started.wait(1.0))
+                self.assertFalse(finished.is_set())
+                time.sleep(0.15)
+                self.assertFalse(
+                    handler_finished.is_set(),
+                    "ASGI handler returned on disconnect while the job is still running",
+                )
+                self.assertEqual(callbacks, [])
+                self.assertTrue(finished.wait(2.0))
+                thread.join(timeout=2.0)
+                self.assertFalse(thread.is_alive())
+                self.assertTrue(handler_finished.is_set())
+                self.assertEqual(len(callbacks), 1)
+                self.assertEqual(callbacks[0]["request_id"], "job-202")
+                self.assertEqual(callbacks[0]["status"], "success")
+                self.assertEqual(callbacks[0]["frame_count"], 1)
+        finally:
+            if prev_unsafe is None:
+                os.environ.pop("ALLOW_UNSAFE_CALLBACK", None)
+            else:
+                os.environ["ALLOW_UNSAFE_CALLBACK"] = prev_unsafe
             server_mod._detector = prev
 
     def test_detect_sync_success_http_body_is_request_id_only(self) -> None:

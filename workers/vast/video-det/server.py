@@ -170,23 +170,50 @@ app = FastAPI(title="video-det", lifespan=lifespan)
 
 
 class _HoldUntilDone(StreamingResponse):
-    """Chunked JSON 202; keep the ASGI handler alive until the iterator ends.
+    """Chunked JSON 202; keep the ASGI handler alive until the job future ends.
 
     Starlette's StreamingResponse (ASGI spec < 2.4, including uvicorn 2.3)
-    cancels the stream on http.disconnect. PyWorker load is in-flight HTTP, so
-    we must not return when the dispatcher leaves — only when the job thread
-    finishes.
+    cancels the stream on http.disconnect. Re-iterating body_iterator after
+    send() fails aclose()s the generator and does not wait for the job.
+    Await the thread-pool future (shielded) so load stays non-zero until
+    run_and_report finishes.
     """
+
+    def __init__(self, content, *, done, request_id=None, **kwargs):
+        super().__init__(content, **kwargs)
+        self._done = done
+        self._request_id = request_id
+
+    async def _await_job(self) -> None:
+        loop = asyncio.get_running_loop()
+        while True:
+            try:
+                await asyncio.shield(asyncio.wrap_future(self._done, loop=loop))
+                return
+            except asyncio.CancelledError:
+                task = asyncio.current_task()
+                if task is not None and hasattr(task, "uncancel"):
+                    task.uncancel()
+                if self._done.done():
+                    return
+            except Exception as e:  # noqa: BLE001
+                log.exception(
+                    "detect(failed): request_id=%s error=%s",
+                    self._request_id,
+                    safe_error_message(e),
+                )
+                return
 
     async def __call__(self, scope, receive, send) -> None:  # noqa: ARG002
         try:
             await self.stream_response(send)
         except Exception:  # noqa: BLE001
-            try:
-                async for _ in self.body_iterator:
-                    pass
-            except Exception as e:  # noqa: BLE001
-                log.exception("detect: job wait after disconnect: %s", safe_error_message(e))
+            pass
+        except asyncio.CancelledError:
+            task = asyncio.current_task()
+            if task is not None and hasattr(task, "uncancel"):
+                task.uncancel()
+        await self._await_job()
         if self.background is not None:
             await self.background()
 
@@ -304,20 +331,20 @@ async def detect_sync(request: Request) -> Response:
     future = _JOB_EXECUTOR.submit(_entry)
     await asyncio.to_thread(running.wait)
     payload = json.dumps({"request_id": request_id}).encode("utf-8")
-    done = asyncio.wrap_future(future)
 
     async def _hold_until_done():
         yield payload
         try:
-            await done
-        except Exception as e:  # noqa: BLE001
-            err = safe_error_message(e)
-            log.exception(
-                "detect(failed): request_id=%s error=%s", request_id, err
-            )
+            await asyncio.wrap_future(future)
+        except Exception:
+            # Job failure is logged in _await_job; finish the stream so the
+            # 202 JSON body is complete. CancelledError is BaseException.
+            pass
 
     return _HoldUntilDone(
         _hold_until_done(),
+        done=future,
+        request_id=request_id,
         status_code=202,
         media_type="application/json",
     )
