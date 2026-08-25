@@ -11,7 +11,7 @@ and a single-use `callback_token`.
 | **Stage** | `detect` (after `normalize`; MVP terminal → match `ready`) |
 | **In** | `normalized.mp4` + `annotation.json` + `preprocess-log.json` (presigned GET) |
 | **Out** | `detections.json` (presigned PUT; Engine envelope: meta + `segments` + `rallies` + `frames`) |
-| **HTTP** | `POST /detect/sync` (PyWorker → FastAPI model server) |
+| **HTTP** | `POST /detect/sync` → **202** `{ "request_id" }` once the job thread is running (PyWorker → FastAPI). Callback is the settle path. |
 | **Dispatcher** | `supabase/functions/jobs` → `STAGES.detect` |
 
 Deep design (decode schedule, schemas, layers):
@@ -109,6 +109,117 @@ GPU / TensorRT engine build and full e2e remain environment-specific (see
 - Env knobs for models and batching live in `detect/config.py` /
   `DetectConfig.from_env()` and Dockerfile defaults (`POSE_ENGINE`,
   `SHUTTLE_ENGINE`, overlap / parallel flags). Engines only — no `.pt`.
+
+## Vast serverless (DEV)
+
+Product path is serverless: `jobs/dispatch` → endpoint **VIDEO-DETECTION-DEV**
+→ `POST /detect/sync` (HTTP **202**) → B2 + `jobs/callback`. Do not treat
+SSH / `debug.py` as a pass. Keep **endpoint definitions**. Destroy leftover
+**instances** after the job. No idle 5090 pool (`min_load` stays `0`).
+
+Verified `GET https://console.vast.ai/api/v0/…` (2026-08-25):
+
+| Resource | Name | Id |
+|---|---|---|
+| Endpoint | `VIDEO-DETECTION-DEV` | **32501** |
+| Template | `Video-Detection-DEV` | **531046** (`hash_id` `71c7d04745b2cd0ef0d7ecbb7698576a`) |
+| Workergroup | detect | **41743** |
+| Image | `ghcr.io/mintonixio/video-det:staging` | template `image` + `tag` |
+| Endpoint (protect) | `VIDEO-PREPROCESS-DEV` | **33262** — never destroy |
+
+Detect endpoint 32501 and WG 41743 both have `min_load=0`. **Do not set
+`min_load=1`.** Endpoint `max_workers=1`, `cold_workers=0`,
+`inactivity_timeout=1800` (idle stop is not a substitute for DELETE after
+callback). `GET /api/v0/instances/` → `instances_found=0` at this writing;
+`POST https://run.vast.ai/get_endpoint_workers/` id 32501 and
+`get_autogroup_workers` id 41743 were empty.
+
+### GHCR docker login (template 531046)
+
+`ghcr.io/mintonixio/video-det` is private (unauthenticated manifest → 401).
+Cold pull without registry auth is host-luck and can stall for tens of minutes.
+
+`GET /users/0/templates/` id **531046** currently:
+
+| Field | Value |
+|---|---|
+| `docker_login_repo` | `""` |
+| `docker_login_user` | `""` |
+| `docker_login_pass` | `""` |
+
+A GitHub PAT with `read:packages` (org-SSO authorized) was **not** present in
+operator secrets, so login was not applied. When a token exists, set it on the
+template (never commit the PAT). Edit uses `hash_id` from GET:
+
+```http
+PUT https://console.vast.ai/api/v0/template/
+Authorization: Bearer $VAST_API_KEY
+Content-Type: application/json
+
+{
+  "hash_id": "71c7d04745b2cd0ef0d7ecbb7698576a",
+  "docker_login_repo": "ghcr.io",
+  "docker_login_user": "MintonixIO",
+  "docker_login_pass": "<org PAT, read:packages>"
+}
+```
+
+`docker_login_user` is the GitHub user or org that owns the PAT (prior working
+template on this account used `MintonixIO` + `docker_login_repo=ghcr.io`).
+After a successful PUT, `GET /users/0/templates/` must show
+`docker_login_user` non-empty. **PUT template changes `hash_id`.** WG 41743
+currently binds `template_hash=71c7d04745b2cd0ef0d7ecbb7698576a`; the
+workergroup must then be pointed at the new hash — but see the PUT rule
+below. Re-read `hash_id` from GET immediately before any edit.
+
+### `:staging` is a moving tag
+
+CI (`.github/workflows/vast-worker.yml`) builds
+`ghcr.io/mintonixio/video-det:sha-<gitsha>`, tests that digest, then moves
+`:staging` (PR) / `:latest` (master) onto it with `imagetools create`. The
+DEV template stores `image=ghcr.io/mintonixio/video-det` and `tag=staging`.
+GET templates has **no** separate image-digest field. After a promote, pin
+by PUTting `tag` to the immutable `sha-<gitsha>` (or `image` to
+`ghcr.io/mintonixio/video-det@sha256:<digest>` if Vast accepts a digest ref).
+**Do not promote `:staging` while a detect worker is pulling or a detect job
+is processing.**
+
+### Workergroup 41743 filters
+
+`GET /api/v0/workergroups/` id **41743** `search_query` (do not PUT to
+“fix” these while a job is live):
+
+| Filter | Op | Value |
+|---|---|---|
+| `gpu_name` | **eq** | **RTX 5090** |
+| `inet_down` | **gte** | **2500** |
+| `reliability2` | **gte** | **0.99** |
+| `verified` | eq | true |
+| `rentable` | eq | true |
+| `rented` | eq | false |
+| `num_gpus` | eq | 1 |
+| `dph_total` | lt | 0.45 |
+| `inet_up` | gte | 1000 |
+| `disk_space` | gte | 50 |
+| `direct_port_count` | gte | 2 |
+
+Also on that row: `gpu_ram=32`, `template_id=531046`. A PUT of
+`search_query` / `search_params` on the workergroup **can recycle workers**
+(observed `48635039` → `48635838` mid-job). **Forbidden while a detect job
+is processing.**
+
+### Destroy leftover GPUs after callback
+
+After `jobs/callback` (**success or failed**):
+
+1. `GET /api/v0/instances/` (and/or `get_endpoint_workers` id **32501**).
+2. `DELETE /api/v0/instances/{id}/` for leftover detect instances.
+
+Never delete endpoint definitions:
+
+- **Do not** `DELETE /api/v0/endptjobs/32501/` (`VIDEO-DETECTION-DEV`)
+- **Do not** `DELETE /api/v0/endptjobs/33262/` (`VIDEO-PREPROCESS-DEV`)
+- **Do not** delete workergroups 41743 / 41742 or templates 531046 / 531045
 
 ## See also
 
