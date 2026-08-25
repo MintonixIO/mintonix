@@ -1,30 +1,29 @@
 """
 Export yolo26x-pose.pt → TensorRT engine (research / rebuild helper).
 
-Product bake (see models/MANIFEST.json) is FP16, batch 16, imgsz 640. This
-script's defaults (INT8, batch 8, imgsz 960) are for local rebuilds — set
-POSE_USE_INT8=0 POSE_BATCH=16 POSE_IMGSZ=640 to match the image.
+Product bake (see models/MANIFEST.json) is FP16, batch 16, imgsz 640. Defaults
+match that; override with POSE_USE_INT8 / POSE_BATCH / POSE_IMGSZ.
 
 Engines are GPU-arch + TensorRT-version specific. Build on a host that matches
-the product image (`nvcr.io/nvidia/tensorrt:24.04-py3`) and the target vast GPU
-arch — do not copy engines across different TRT versions or compute caps.
+the product image (`nvcr.io/nvidia/tensorrt:25.01-py3`) and the target vast GPU
+arch (sm_120) — do not copy engines across different TRT versions or compute caps.
 
 Requirements on build host:
   TensorRT matching the product image, CUDA, ultralytics
-  pip install ultralytics tensorrt pycuda
+  pip install ultralytics (do not pip-install tensorrt over the NGC pin)
 
-Calibration uses coco8-pose (8 images, auto-downloaded) — enough for a
-throughput baseline. For production accuracy, swap data= to a full COCO-pose
-split or representative frames from your own video.
+INT8 calibration (POSE_USE_INT8=1) uses coco8-pose (8 images, auto-downloaded)
+— enough for a throughput baseline. For production accuracy, swap data= to a
+full COCO-pose split or representative frames from your own video.
 
 Environment (all optional):
   POSE_PT            weights path          (default: yolo26x-pose.pt)
-  POSE_BATCH         engine max batch      (default: 8)
-  POSE_IMGSZ         square spatial size   (default: 960)
+  POSE_BATCH         engine max batch      (default: 16)
+  POSE_IMGSZ         square spatial size   (default: 640)
                      Must match runtime letterbox / GpuConsumer imgsz.
   POSE_WORKSPACE_GB  TRT builder workspace (default: 8)
   POSE_CALIB_DATA    INT8 calib dataset    (default: coco8-pose.yaml)
-  POSE_USE_INT8      "1" INT8 / "0" FP16   (default: 1)
+  POSE_USE_INT8      "1" INT8 / "0" FP16   (default: 0)
 """
 import os
 import sys
@@ -32,12 +31,12 @@ from pathlib import Path
 from ultralytics import YOLO
 
 MODEL_PT   = os.environ.get("POSE_PT", "yolo26x-pose.pt")
-BATCH      = int(os.environ.get("POSE_BATCH", "8"))
-IMGSZ      = int(os.environ.get("POSE_IMGSZ", "960"))
+BATCH      = int(os.environ.get("POSE_BATCH", "16"))
+IMGSZ      = int(os.environ.get("POSE_IMGSZ", "640"))
 WORKSPACE  = int(os.environ.get("POSE_WORKSPACE_GB", "8"))
 # Ultralytics auto-downloads coco8-pose if path is a known dataset name.
 CALIB_DATA = os.environ.get("POSE_CALIB_DATA", "coco8-pose.yaml")
-USE_INT8   = os.environ.get("POSE_USE_INT8", "1") not in ("0", "false", "False")
+USE_INT8   = os.environ.get("POSE_USE_INT8", "0") not in ("0", "false", "False")
 
 
 def check_environment():

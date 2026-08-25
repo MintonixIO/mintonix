@@ -29,7 +29,7 @@ class TestWorkerConfigImport(unittest.TestCase):
         self.assertTrue(
             callable(mod.BenchmarkConfig),
             "BenchmarkConfig is None — vastai swallowed an ImportError "
-            "(slim images need python3-distutils for distutils.util.strtobool)",
+            "(slim images need python3-setuptools for distutils.util.strtobool)",
         )
         inner = {"input_url": "x", "request_id": "j1"}
         self.assertEqual(mod.request_parser({"input": inner}), inner)
@@ -313,10 +313,10 @@ class TestImageBootContract(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("AS trt", src)
-        self.assertIn("nvcr.io/nvidia/tensorrt:24.11-py3", src)
-        self.assertIn("nvidia/cuda:12.6.3-runtime-ubuntu22.04", src)
+        self.assertIn("nvcr.io/nvidia/tensorrt:25.01-py3", src)
+        self.assertIn("nvidia/cuda:12.8.0-runtime-ubuntu24.04", src)
         self.assertIn("ENV_PATH=/opt/worker-env", src)
-        self.assertIn("python3-distutils", src)
+        self.assertIn("python3-setuptools", src)
         self.assertIn("builder_resource", src)
         self.assertNotIn('CMD ["bash", "start_server.sh"]', src)
 
@@ -364,7 +364,7 @@ class TestImageBootContract(unittest.TestCase):
             "ld-linux-x86-64.so.2",
             "libcuda.so.1",
             "libnvidia-ml.so.1",
-            "libnvinfer_builder_resource.so.10.6.0",
+            "libnvinfer_builder_resource.so.10.8.0",
         ):
             self.assertTrue(mod.skip_copied_lib(name), name)
         for name in (

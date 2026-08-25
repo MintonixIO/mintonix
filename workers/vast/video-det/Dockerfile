@@ -1,10 +1,12 @@
-# Runtime image is CUDA 12.6 + TRT 10.6 libs only. Engines stay baked (cold-start
-# win). The NGC TensorRT devel image is a *builder* so we do not ship compilers,
-# samples, or libnvinfer_builder_resource.
+# Runtime image is CUDA 12.8 + TRT 10.8.0.43 libs only. Engines stay baked
+# (cold-start win). The NGC TensorRT devel image is a *builder* so we do not
+# ship compilers, samples, or libnvinfer_builder_resource.
 #
 # Product engines must be built against this TRT/CUDA stack / GPU arch (sm_120).
 # Product path is TRT-only (no PyTorch wheel).
-FROM nvcr.io/nvidia/tensorrt:24.11-py3 AS trt
+# 24.11 / TRT 10.6.0 cannot build sm_120 engines (Error 9: Target GPU SM 120
+# is not supported). Re-pinned to NGC 25.01 / TensorRT 10.8.0.43 / CUDA 12.8.
+FROM nvcr.io/nvidia/tensorrt:25.01-py3 AS trt
 
 # Collect inference .so files via realpath + ldd closure (libnvinfer needs
 # libcublas / libcublasLt). Copy real files, not dangling absolute symlinks.
@@ -119,10 +121,10 @@ PY
 
 # pycuda has no manylinux wheel — compile it here (g++ / CUDA toolkit) and
 # copy the finished venv into the runtime image. Do not compile on the slim stage.
-# NGC's python3 has no ensurepip/venv until python3.10-venv is installed.
+# NGC 25.01 is Ubuntu 24.04 / Python 3.12 — python3-venv, not python3.10-venv.
 COPY requirements.txt /tmp/requirements.txt
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends python3.10-venv \
+    && apt-get install -y --no-install-recommends python3-venv \
     && rm -rf /var/lib/apt/lists/* \
     && python3 -m venv /opt/worker-env \
     && /opt/worker-env/bin/python -m pip install --no-cache-dir --upgrade pip \
@@ -131,19 +133,19 @@ RUN apt-get update \
     && cp -a /opt/trt-runtime/python/. "$site/" \
     && /opt/worker-env/bin/python -c "import tensorrt, cv2, fastapi; print('tensorrt', tensorrt.__version__)"
 
-FROM nvidia/cuda:12.6.3-runtime-ubuntu22.04
+FROM nvidia/cuda:12.8.0-runtime-ubuntu24.04
 
-ENV NVIDIA_REQUIRE_CUDA="cuda>=12.6" \
+ENV NVIDIA_REQUIRE_CUDA="cuda>=12.8" \
     NVIDIA_DRIVER_CAPABILITIES=compute,utility \
-    EXPECTED_TRT_VERSION=10.6.0 \
+    EXPECTED_TRT_VERSION=10.8.0.43 \
     TRT_LIB_DIR=/usr/local/lib/trt
 
-# python3-distutils: vastai's PyWorker backend imports distutils.util.strtobool.
-# Ubuntu's python3 package does not ship distutils; without it, `from vastai
-# import BenchmarkConfig` succeeds with BenchmarkConfig=None (SDK swallows
-# ImportError) and `python -m worker` dies at config construction.
+# python3-setuptools: Ubuntu 24.04 dropped python3-distutils. vastai's
+# PyWorker still imports distutils.util.strtobool; setuptools provides it.
+# Without it, `from vastai import BenchmarkConfig` succeeds with
+# BenchmarkConfig=None (SDK swallows ImportError) and `python -m worker` dies.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 python-is-python3 python3-distutils \
+    python3 python-is-python3 python3-setuptools \
     curl ca-certificates openssl \
     libgomp1 libglib2.0-0 libgl1 \
     && rm -rf /var/lib/apt/lists/*

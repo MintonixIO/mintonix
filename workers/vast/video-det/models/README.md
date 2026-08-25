@@ -6,12 +6,22 @@ free B2→CF egress + edge cache), and the Dockerfile copies them into the image
 
 | File | Env | Role |
 |------|-----|------|
-| `yolo26x-pose.engine` | `POSE_ENGINE` | Pose TRT (FP16) |
+| `yolo26x-pose.engine` | `POSE_ENGINE` | Pose TRT (FP16, batch 16, imgsz 640) |
 | `tracknetv5_fp16_b48.engine` | `SHUTTLE_ENGINE` | TrackNet TRT (FP16, batch 48) |
 
 Product path is **engines only** — no PyTorch `.pt` fallback.
 
-Canonical listing: **[MANIFEST.json](MANIFEST.json)**.
+Canonical listing: **[MANIFEST.json](MANIFEST.json)** (sha256/bytes plus
+`trt_version`, `cuda_tag`, `gpu_arch`, `builder_image`). Rebuild and re-upload
+when those pins change.
+
+Baked **2026-08-25** on RTX 5090 (`sm_120`): TensorRT **10.8.0.43** (pip
+`tensorrt==10.8.0.43`, same as NGC `tensorrt:25.01-py3`). `load_engine` both
+files returned `ICudaEngine` (pose 2 IO tensors; shuttle 2 IO tensors). NGC
+24.11 / TRT 10.6.0 cannot build sm_120 engines (`Error 9: Target GPU SM 120
+is not supported`). Slim runtime copies this TRT into
+`nvidia/cuda:12.8.0-runtime-ubuntu24.04`. Rebuild when `MANIFEST.json` pins
+change.
 
 ## Why CDN delivery (not B2 keys / not `/presign` GET)
 
@@ -34,8 +44,10 @@ s3://mintonix-prod/models/…
 ```
 
 `MANIFEST.json` `b2_prefix` is `models` (no version folder). Engines are
-**TensorRT + GPU arch specific**. Export on a host that matches the product
-image / target GPU, then re-upload under `models/`.
+**TensorRT + GPU arch specific**. Export with `pose/export_trt.py` (defaults:
+FP16 / batch 16 / imgsz 640) and `tools/export_tracknet_trt.py`
+(`SHUTTLE_TRT_BATCH=48`) on a host matching `builder_image` + `gpu_arch`, then
+re-upload under `models/`.
 
 ## Local / CI download
 
@@ -63,7 +75,15 @@ x-pipeline-token: <SUPABASE_SERVICE_KEY>
 
 ## Upload a new version (ops)
 
-Still need write access to the private bucket (ops machine or `/presign` PUT).
+DEV first (`mintonix-dev`). Prefer `/presign` PUT when `B2_*` keys are not on
+the ops machine (`PRESIGN_SERVICE_TOKEN` + `CDN_PRESIGN_URL`, same pattern as
+`scripts/annotate_and_ingest.py` `cdn_control`):
+
+```bash
+# keys: models/yolo26x-pose.engine  models/tracknetv5_fp16_b48.engine
+# POST $CDN_PRESIGN_URL  {op:PUT, key}  → curl --upload-file the engine
+```
+
 Helper that uses B2 S3 API (ops-only keys, not for CI):
 
 ```bash

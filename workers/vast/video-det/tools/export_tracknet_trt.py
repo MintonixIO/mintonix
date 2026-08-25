@@ -81,12 +81,18 @@ def build_engine(onnx_path: Path, engine_path: Path, batch: int) -> None:
 
     logger = trt.Logger(trt.Logger.INFO)
     builder = trt.Builder(logger)
-    # TRT 11: no EXPLICIT_BATCH flag; use STRONGLY_TYPED for AutoCast FP16 graphs.
+    # TRT 10: EXPLICIT_BATCH + BuilderFlag.FP16. STRONGLY_TYPED forbids kFP16
+    # (Error 3: condition !config.getFlag(BuilderFlag::kFP16)).
+    # TRT 11: no EXPLICIT_BATCH / no kFP16 — STRONGLY_TYPED + AutoCast ONNX.
     flag = 0
-    if hasattr(trt.NetworkDefinitionCreationFlag, "STRONGLY_TYPED"):
-        flag |= 1 << int(trt.NetworkDefinitionCreationFlag.STRONGLY_TYPED)
-    elif hasattr(trt.NetworkDefinitionCreationFlag, "EXPLICIT_BATCH"):
+    strongly_typed = False
+    if hasattr(trt.BuilderFlag, "FP16") and hasattr(
+        trt.NetworkDefinitionCreationFlag, "EXPLICIT_BATCH"
+    ):
         flag |= 1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
+    elif hasattr(trt.NetworkDefinitionCreationFlag, "STRONGLY_TYPED"):
+        flag |= 1 << int(trt.NetworkDefinitionCreationFlag.STRONGLY_TYPED)
+        strongly_typed = True
     network = builder.create_network(flag)
     parser = trt.OnnxParser(network, logger)
     with open(onnx_path, "rb") as f:
@@ -102,11 +108,15 @@ def build_engine(onnx_path: Path, engine_path: Path, batch: int) -> None:
         config.max_workspace_size = 4 << 30  # type: ignore[attr-defined]
 
     # TRT 11 removed BuilderFlag.FP16 — precision comes from AutoCast ONNX types.
-    if hasattr(trt.BuilderFlag, "FP16") and builder.platform_has_fast_fp16:
+    if (
+        not strongly_typed
+        and hasattr(trt.BuilderFlag, "FP16")
+        and builder.platform_has_fast_fp16
+    ):
         config.set_flag(trt.BuilderFlag.FP16)
         print("BuilderFlag.FP16 enabled")
     else:
-        print("BuilderFlag.FP16 not available — relying on AutoCast/strongly-typed types")
+        print("BuilderFlag.FP16 skipped — relying on AutoCast/strongly-typed types")
 
     try:
         inp = network.get_input(0)
@@ -150,6 +160,8 @@ def main() -> None:
     onnx_path = out_dir / f"tracknetv5_b{batch}.onnx"
     with torch.inference_mode():
         export_onnx(model, onnx_path, batch=batch)
+    del model
+    torch.cuda.empty_cache()
     onnx_use = maybe_autocast(onnx_path)
     engine_path = out_dir / f"tracknetv5_fp16_b{batch}.engine"
     build_engine(onnx_use, engine_path, batch=batch)
