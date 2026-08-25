@@ -87,10 +87,17 @@ def build_segments_for_video(
         islands = fallback_island(frame_count_hint)
 
     geom = scoreboard_geometry(annotation)
+    sized = False
     scores: list[dict[str, Any]] = []
     for start, end in islands:
         idx = representative_frame(start, end)
         frame = read_frame(video_path, idx)
+        if not sized and frame is not None:
+            if geom is not None:
+                # Drop leftover dummy half-frame crops using decoded size.
+                fh, fw = int(frame.shape[0]), int(frame.shape[1])
+                geom = scoreboard_geometry(annotation, frame_wh=(fw, fh))
+            sized = True
         sc = ocr_score_from_frame(frame, geom) if frame is not None else {
             "t1": 0,
             "t2": 0,
@@ -105,7 +112,7 @@ def build_segments_for_video(
             )
         elif geom is None:
             log.warning(
-                "scoreboard OCR: no scoreboard_crop in annotation; "
+                "scoreboard OCR: no usable scoreboard crop; "
                 "island %d-%d conf=0",
                 start,
                 end,

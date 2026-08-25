@@ -76,8 +76,46 @@ def parse_crop(raw: Any) -> tuple[int, int, int, int] | None:
     return x, y, w, h
 
 
-def scoreboard_geometry(annotation: Mapping[str, Any] | None) -> dict[str, Any] | None:
-    """Extract crop + row split from annotation.json (court block)."""
+def _frame_wh(
+    annotation: Mapping[str, Any],
+    frame_wh: tuple[int, int] | None,
+) -> tuple[int, int] | None:
+    if frame_wh is not None:
+        try:
+            fw, fh = int(frame_wh[0]), int(frame_wh[1])
+        except (TypeError, ValueError, IndexError):
+            fw, fh = 0, 0
+        if fw > 0 and fh > 0:
+            return fw, fh
+    try:
+        fw = int(annotation.get("frame_width") or 0)
+        fh = int(annotation.get("frame_height") or 0)
+    except (TypeError, ValueError):
+        return None
+    if fw > 0 and fh > 0:
+        return fw, fh
+    return None
+
+
+def _crop_covers_too_much(w: int, h: int, frame_w: int, frame_h: int) -> bool:
+    """True when crop area is ≥ 25% of the frame.
+
+    The old annotator dummy was ``width/2 × height/2`` (exactly 25%). Reject
+    that leftover so OCR does not run on the top-left quadrant.
+    """
+    if frame_w <= 0 or frame_h <= 0 or w <= 0 or h <= 0:
+        return False
+    return w * h * 4 >= frame_w * frame_h
+
+
+def scoreboard_geometry(
+    annotation: Mapping[str, Any] | None,
+    frame_wh: tuple[int, int] | None = None,
+) -> dict[str, Any] | None:
+    """Extract crop + row split from annotation.json (court block).
+
+    Crops covering ≥ 25% of the frame are treated as missing.
+    """
     if not annotation or not isinstance(annotation, Mapping):
         return None
     court = annotation.get("court")
@@ -89,6 +127,17 @@ def scoreboard_geometry(annotation: Mapping[str, Any] | None) -> dict[str, Any] 
     if crop is None:
         return None
     x, y, w, h = crop
+    size = _frame_wh(annotation, frame_wh)
+    if size is not None and _crop_covers_too_much(w, h, size[0], size[1]):
+        log.warning(
+            "scoreboard crop %dx%d covers >= 25%% of frame %dx%d; "
+            "treating as missing",
+            w,
+            h,
+            size[0],
+            size[1],
+        )
+        return None
     row_split: int | None
     raw_split = court.get("row_split_y")
     try:

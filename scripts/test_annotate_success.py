@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Unit tests for dual-truth detect content checks (no B2 / network).
+"""Unit tests for dual-truth detect content checks and scoreboard crop fields.
 
     python3 scripts/test_annotate_success.py
 """
 
 from __future__ import annotations
 
+import inspect
 import os
 import sys
 import types
@@ -267,6 +268,48 @@ class TestEvaluateSuccessDetectContent(unittest.TestCase):
         self.assertIsNotNone(fail)
         assert fail is not None
         self.assertEqual(fail.name, "detections.segments_vs_islands")
+
+
+class TestScoreboardFields(unittest.TestCase):
+    def test_no_dummy_half_frame(self) -> None:
+        self.assertIsNone(a.scoreboard_fields(True, None)["scoreboard_crop"])
+        q = {"x": 1400, "y": 40, "w": 220, "h": 120}
+        self.assertEqual(a.scoreboard_fields(True, q)["scoreboard_crop"], q)
+
+    def test_user_lane_omits_crop_even_if_quad_given(self) -> None:
+        q = {"x": 1400, "y": 40, "w": 220, "h": 120}
+        self.assertIsNone(a.scoreboard_fields(False, q)["scoreboard_crop"])
+
+    def test_unclicked_bwf_omits_all_scoreboard_keys_from_annotation(self) -> None:
+        config = {
+            "corners": [[0, 0], [1, 0], [1, 1], [0, 1]],
+            "net_poles": [[0, 0], [1, 0]],
+            **a.scoreboard_fields(True, None),
+            "frame_width": 1920,
+            "frame_height": 1080,
+        }
+        obj = a.build_annotation_json(config, [], "test")
+        self.assertNotIn("scoreboard_crop", obj["court"])
+        self.assertNotIn("score_sub_crop", obj["court"])
+        self.assertNotIn("row_split_y", obj["court"])
+
+    def test_clicked_quad_fills_sub_crop_and_row_split(self) -> None:
+        q = {"x": 1400, "y": 40, "w": 220, "h": 120}
+        fields = a.scoreboard_fields(True, q)
+        self.assertEqual(fields["score_sub_crop"], q)
+        self.assertEqual(fields["row_split_y"], 100)
+
+    def test_crop_from_tl_br_normalizes_opposite_corners(self) -> None:
+        self.assertEqual(
+            a.crop_from_tl_br([[1620, 160], [1400, 40]]),
+            {"x": 1400, "y": 40, "w": 220, "h": 120},
+        )
+        self.assertIsNone(a.crop_from_tl_br([[10, 10], [10, 10]]))
+
+    def test_annotate_source_has_no_half_frame_dummy(self) -> None:
+        src = inspect.getsource(a.annotate)
+        self.assertNotIn("width // 2", src)
+        self.assertNotIn("height // 2", src)
 
 
 if __name__ == "__main__":

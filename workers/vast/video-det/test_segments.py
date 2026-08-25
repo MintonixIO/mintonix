@@ -109,6 +109,27 @@ class TestBuildSegmentsForVideo(unittest.TestCase):
         self.assertEqual(segs[0]["start_frame"], 0)
         self.assertEqual(segs[0]["end_frame"], 20)
 
+    def test_dummy_half_frame_crop_does_not_ocr_from_frame_size(self) -> None:
+        """Leftover dummy crop without annotation frame_width still rejected."""
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        ann = {
+            "court": {"scoreboard_crop": {"x": 0, "y": 0, "w": 960, "h": 540}},
+        }
+        log = {"frame_shifts": [{"new_start": 0, "new_end": 10}]}
+        with (
+            patch("detect.output.read_frame", return_value=frame),
+            self.assertLogs("video-det.scoreboard", level="WARNING"),
+        ):
+            segs = build_segments_for_video(
+                video_path=Path("/nonexistent.mp4"),
+                annotation=ann,
+                preprocess_log=log,
+                frame_count_hint=11,
+            )
+        self.assertEqual(len(segs), 1)
+        self.assertEqual(segs[0]["score"], {"t1": 0, "t2": 0})
+        self.assertEqual(segs[0]["score_conf"], 0.0)
+
 
 class TestBuildSegments(unittest.TestCase):
     def test_zip_scores(self) -> None:
@@ -205,6 +226,40 @@ class TestScoreboardGeometry(unittest.TestCase):
     def test_missing_crop(self) -> None:
         self.assertIsNone(scoreboard_geometry({"court": {"corners": []}}))
         self.assertIsNone(scoreboard_geometry(None))
+
+    def test_dummy_half_frame_crop_is_rejected(self) -> None:
+        """Leftover annotator dummy {0,0,w/2,h/2} must not OCR the TL quadrant."""
+        ann = {
+            "frame_width": 1920,
+            "frame_height": 1080,
+            "court": {
+                "scoreboard_crop": {"x": 0, "y": 0, "w": 960, "h": 540},
+                "score_sub_crop": {"x": 0, "y": 0, "w": 960, "h": 540},
+                "row_split_y": 270,
+            },
+        }
+        with self.assertLogs("video-det.scoreboard", level="WARNING"):
+            self.assertIsNone(scoreboard_geometry(ann))
+
+    def test_clicked_scoreboard_crop_is_kept(self) -> None:
+        ann = {
+            "frame_width": 1920,
+            "frame_height": 1080,
+            "court": {"scoreboard_crop": {"x": 1400, "y": 40, "w": 220, "h": 120}},
+        }
+        g = scoreboard_geometry(ann)
+        assert g is not None
+        self.assertEqual((g["x"], g["y"], g["w"], g["h"]), (1400, 40, 220, 120))
+
+    def test_oversized_crop_rejected_via_frame_wh(self) -> None:
+        ann = {
+            "court": {"scoreboard_crop": {"x": 0, "y": 0, "w": 960, "h": 540}},
+        }
+        with self.assertLogs("video-det.scoreboard", level="WARNING"):
+            self.assertIsNone(scoreboard_geometry(ann, frame_wh=(1920, 1080)))
+        g = scoreboard_geometry(ann)
+        assert g is not None
+        self.assertEqual((g["w"], g["h"]), (960, 540))
 
     def test_ocr_without_geometry_is_low_conf(self) -> None:
         frame = np.zeros((100, 100, 3), dtype=np.uint8)

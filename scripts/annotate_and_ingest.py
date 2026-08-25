@@ -41,7 +41,7 @@ Test-suite / monitor flags
 
 UI flow (OpenCV; skipped with --annotation or --monitor-only)
   pick frame → court corners TL→TR→BR→BL → net poles L→R tops
-  → SlimSAM player clicks + names
+  → (BWF) scoreboard TL/BR corners (Esc omits crop) → SlimSAM player clicks + names
 
 Annotation contract (required for every normalize job, both lanes)
   court.corners[4] + court.net_poles[2]  — worker hard-fails without both
@@ -675,6 +675,53 @@ def _valid_points(value: object, n: int) -> bool:
     return True
 
 
+def crop_from_tl_br(points: object) -> dict[str, int] | None:
+    """Axis-aligned ``{x,y,w,h}`` from two clicked corners (TL/BR)."""
+    if not _valid_points(points, 2):
+        return None
+    assert isinstance(points, list)
+    (x0, y0), (x1, y1) = points
+    x = int(min(x0, x1))
+    y = int(min(y0, y1))
+    w = int(abs(int(x1) - int(x0)))
+    h = int(abs(int(y1) - int(y0)))
+    if w <= 0 or h <= 0:
+        return None
+    return {"x": x, "y": y, "w": w, "h": h}
+
+
+def scoreboard_fields(
+    with_scoreboard: bool,
+    clicked_quad: dict | None,
+) -> dict:
+    """Court scoreboard keys from a clicked crop. Never invents ``{0,0,w/2,h/2}``.
+
+    Esc / no click → all values ``None`` (``build_annotation_json`` omits them).
+    """
+    empty = {
+        "scoreboard_crop": None,
+        "score_sub_crop": None,
+        "row_split_y": None,
+    }
+    if not with_scoreboard or not isinstance(clicked_quad, dict):
+        return empty
+    try:
+        x = int(clicked_quad["x"])
+        y = int(clicked_quad["y"])
+        w = int(clicked_quad["w"])
+        h = int(clicked_quad["h"])
+    except (KeyError, TypeError, ValueError):
+        return empty
+    if w <= 0 or h <= 0:
+        return empty
+    crop = {"x": x, "y": y, "w": w, "h": h}
+    return {
+        "scoreboard_crop": crop,
+        "score_sub_crop": dict(crop),
+        "row_split_y": y + h // 2,
+    }
+
+
 def build_annotation_json(config: dict, labels: list[dict], labeled_by: str) -> dict:
     """Single B2 file shape from supabase/README.md (court + labels).
 
@@ -912,6 +959,18 @@ def annotate(source, sam: SlimSam, *, with_scoreboard: bool) -> dict | None:
             if net_poles is None:
                 continue
 
+            clicked_quad = None
+            if with_scoreboard:
+                board_pts = click_points(
+                    frame, 2, "SCOREBOARD",
+                    "click the 2 scoreboard corners IN ORDER: top-left, "
+                    "bottom-right  (Enter accepts; Esc omits crop)",
+                    closed=True)
+                if board_pts is not None:
+                    clicked_quad = crop_from_tl_br(board_pts)
+                    if clicked_quad is None:
+                        print("[info] scoreboard crop empty; omitting")
+
             fps = 30.0
             if isinstance(source, FrameSource):
                 fps = source.cap.get(cv2.CAP_PROP_FPS) or 30.0
@@ -919,14 +978,10 @@ def annotate(source, sam: SlimSam, *, with_scoreboard: bool) -> dict | None:
             if labels is None:
                 continue
 
-            qw, qh = source.width // 2, source.height // 2
-            quad = {"x": 0, "y": 0, "w": qw, "h": qh}
             return {
                 "corners": corners,
                 "net_poles": net_poles,
-                "scoreboard_crop": dict(quad) if with_scoreboard else None,
-                "score_sub_crop": dict(quad) if with_scoreboard else None,
-                "row_split_y": qh // 2 if with_scoreboard else None,
+                **scoreboard_fields(with_scoreboard, clicked_quad),
                 "player_labels": labels,
                 "frame_width": source.width,
                 "frame_height": source.height,
