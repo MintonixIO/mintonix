@@ -10,6 +10,9 @@ on:
       - "contracts/**"
       - "scripts/ops_stage.py"
       - "scripts/test_stage_outputs.py"
+      - "scripts/annotate_and_ingest.py"
+      - "scripts/test_annotate_success.py"
+      - ".grok/skills/mintonix-test-suite/references/stage-contract.json"
       - "supabase/functions/ops/**"
       - "supabase/functions/jobs/**"
       - "workers/vast/video-preprocess/server.py"
@@ -20,6 +23,9 @@ on:
       - "contracts/**"
       - "scripts/ops_stage.py"
       - "scripts/test_stage_outputs.py"
+      - "scripts/annotate_and_ingest.py"
+      - "scripts/test_annotate_success.py"
+      - ".grok/skills/mintonix-test-suite/references/stage-contract.json"
       - "supabase/functions/ops/**"
       - "supabase/functions/jobs/**"
       - "workers/vast/video-preprocess/server.py"
@@ -34,6 +40,9 @@ jobs:
 
       - name: Python stage_outputs goldens
         run: python3 scripts/test_stage_outputs.py
+
+      - name: Python dual-truth detect content
+        run: python3 scripts/test_annotate_success.py
 
       - name: Deno stage_outputs unit tests
         uses: denoland/setup-deno@v2
