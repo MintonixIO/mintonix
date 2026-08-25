@@ -55,10 +55,11 @@
 // npm: (not esm.sh) — CI/deploy bundle must not depend on a live CDN (522s).
 import { createClient } from "npm:@supabase/supabase-js@2.45.4";
 import { jwtVerify, SignJWT } from "npm:jose@5.9.6";
+import { invokeVast } from "./invoke.ts";
+import { invokeFailurePolicy } from "./warming.ts";
 
-const MAX_ATTEMPTS = 3; // dispatches per stage before terminally failed
+const MAX_ATTEMPTS = 3; // real GPU starts per stage; warming does not count
 const TOKEN_AUD = "jobs-callback";
-const ROUTE_DEADLINE_MS = 240_000; // GPU cold start budget within waitUntil
 
 function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -218,6 +219,8 @@ interface DispatchedJob {
   team1_player2: string | null;
   team2_player1: string | null;
   team2_player2: string | null;
+  /** Prior jobs.error; warming:<iso> is returned by dispatch_next_job so the 20 min clock survives claim. */
+  error?: string | null;
 }
 
 /** The worker's callback body: {request_id, status, error?, …stage result}. */
@@ -319,7 +322,7 @@ const STAGES: Record<string, {
   detect: {
     route: "/detect/sync",
     // Separate GPU image/endpoint from preprocess; falls back to the preprocess
-    // endpoint name in invokeVast if unset (single-endpoint local wiring).
+    // endpoint name in resolveVastEndpointName if unset (single-endpoint local wiring).
     endpointEnv: "VAST_DETECT_ENDPOINT_NAME",
 
     async buildEnvelope(job, token) {
@@ -355,167 +358,12 @@ const STAGES: Record<string, {
   },
 };
 
-// ---------------------------------------------------------------- vast
-
-let vastClient: Deno.HttpClient | null | undefined;
-function getVastClient(): Deno.HttpClient | undefined {
-  if (vastClient !== undefined) return vastClient ?? undefined;
-  const ca = Deno.env.get("VAST_TLS_CA");
-  if (!ca) {
-    vastClient = null;
-    return undefined;
-  }
-  try {
-    vastClient = Deno.createHttpClient({ caCerts: [ca] });
-  } catch (e) {
-    console.warn(`VAST_TLS_CA set but createHttpClient unavailable (${e}); using default TLS roots`);
-    vastClient = null;
-  }
-  return vastClient ?? undefined;
-}
-
-let endpointKeyCache: { name: string; key: string; fetchedAt: number } | null = null;
-
-async function resolveEndpointKey(endpointName: string, accountKey: string): Promise<string> {
-  const now = Date.now();
-  if (
-    endpointKeyCache && endpointKeyCache.name === endpointName &&
-    now - endpointKeyCache.fetchedAt < 3600_000
-  ) {
-    return endpointKeyCache.key;
-  }
-  const resp = await fetch("https://console.vast.ai/api/v0/endptjobs/", {
-    headers: { Authorization: `Bearer ${accountKey}` },
-  });
-  if (!resp.ok) throw new Error(`vast endptjobs failed: ${resp.status}`);
-  const data = await resp.json() as {
-    results?: Array<{ endpoint_name: string; api_key: string }>;
-  };
-  const match = data.results?.find((r) => r.endpoint_name === endpointName);
-  if (!match) throw new Error(`vast endpoint '${endpointName}' not found on this account`);
-  endpointKeyCache = { name: endpointName, key: match.api_key, fetchedAt: now };
-  return match.api_key;
-}
-
-/**
- * Resolve the vast serverless endpoint name for a stage.
- *
- * Prefer the stage-specific env (e.g. VAST_DETECT_ENDPOINT_NAME), then
- * VAST_PREPROCESS_ENDPOINT_NAME, then deprecated
- * VAST_NORMALIZE_ENDPOINT_NAME / VAST_ENDPOINT_NAME.
- */
-function resolveVastEndpointName(endpointEnv?: string): {
-  name: string | undefined;
-  usedEnv: string;
-} {
-  if (endpointEnv) {
-    const staged = Deno.env.get(endpointEnv);
-    if (staged) return { name: staged, usedEnv: endpointEnv };
-  }
-
-  const preprocess = Deno.env.get("VAST_PREPROCESS_ENDPOINT_NAME");
-  if (preprocess) {
-    return { name: preprocess, usedEnv: "VAST_PREPROCESS_ENDPOINT_NAME" };
-  }
-
-  const normalize = Deno.env.get("VAST_NORMALIZE_ENDPOINT_NAME");
-  if (normalize) {
-    console.warn(
-      "VAST_NORMALIZE_ENDPOINT_NAME is deprecated; set VAST_PREPROCESS_ENDPOINT_NAME",
-    );
-    return { name: normalize, usedEnv: "VAST_NORMALIZE_ENDPOINT_NAME" };
-  }
-
-  const legacy = Deno.env.get("VAST_ENDPOINT_NAME");
-  if (legacy) {
-    console.warn(
-      "VAST_ENDPOINT_NAME is deprecated; set VAST_PREPROCESS_ENDPOINT_NAME " +
-        "(and VAST_DETECT_ENDPOINT_NAME for detect)",
-    );
-    return { name: legacy, usedEnv: "VAST_ENDPOINT_NAME" };
-  }
-
-  return {
-    name: undefined,
-    usedEnv: endpointEnv ?? "VAST_PREPROCESS_ENDPOINT_NAME",
-  };
-}
-
-async function invokeVast(
-  route: string,
-  envelope: Record<string, unknown>,
-  jobId: string,
-  endpointEnv?: string,
-): Promise<void> {
-  // Stage-specific name first; detect may fall back to the preprocess endpoint
-  // so a single-endpoint local deploy still works.
-  const { name: endpoint, usedEnv } = resolveVastEndpointName(endpointEnv);
-  const accountKey = Deno.env.get("VAST_API_KEY");
-  if (!endpoint || !accountKey) {
-    throw new Error(
-      `${usedEnv} / VAST_API_KEY not configured`,
-    );
-  }
-  const apiKey = await resolveEndpointKey(endpoint, accountKey);
-  const autoscaler = Deno.env.get("VAST_AUTOSCALER_URL") ?? "https://run.vast.ai";
-
-  let requestIdx = 0;
-  let auth: Record<string, unknown> | null = null;
-  let delay = 1000;
-  const deadline = Date.now() + ROUTE_DEADLINE_MS;
-  while (Date.now() < deadline) {
-    const resp = await fetch(`${autoscaler}/route/`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({
-        endpoint,
-        api_key: apiKey,
-        cost: 10000,
-        request_idx: requestIdx,
-        replay_timeout: 60,
-      }),
-    });
-    if (!resp.ok) {
-      throw new Error(`vast /route/ failed: ${resp.status} ${(await resp.text()).slice(0, 300)}`);
-    }
-    const body = await resp.json() as Record<string, unknown>;
-    requestIdx = (body.request_idx as number) ?? requestIdx;
-    if (body.url) {
-      auth = body;
-      break;
-    }
-    await new Promise((r) => setTimeout(r, delay));
-    delay = Math.min(delay * 2, 15_000);
-  }
-  if (!auth) {
-    throw new Error(`no vast worker became ready within ${ROUTE_DEADLINE_MS / 1000}s`);
-  }
-
-  console.log(JSON.stringify({ event: "dispatch.routed", jobId, worker: auth.url }));
-  const workerResp = await fetch(`${auth.url}${route}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-    body: JSON.stringify({ auth_data: auth, session_id: null, payload: { input: envelope } }),
-    ...(getVastClient() ? { client: getVastClient() } : {}),
-  } as RequestInit);
-  const workerBody = (await workerResp.text()).slice(0, 500);
-  console.log(JSON.stringify({
-    event: "dispatch.worker_responded",
-    jobId,
-    status: workerResp.status,
-    body: workerBody,
-  }));
-  // 4xx/5xx means the job never started — treat as invoke failure so we requeue.
-  if (!workerResp.ok) {
-    throw new Error(`vast worker ${route} failed: ${workerResp.status} ${workerBody}`);
-  }
-}
-
 async function failJob(
   service: ReturnType<typeof serviceClient>,
   job: DispatchedJob,
   error: string,
   retry: boolean,
+  warming = false,
 ): Promise<void> {
   // CAS on attempt+stage so a late invoke failure from attempt N cannot
   // clobber attempt N+1 after VT reclaim re-dispatched the same job_id.
@@ -526,6 +374,7 @@ async function failJob(
     p_retry: retry,
     p_expected_attempt: job.attempt,
     p_expected_stage: job.stage,
+    p_warming: warming,
   });
   if (rpcError) {
     console.error(JSON.stringify({
@@ -612,14 +461,15 @@ async function handleDispatch(request: Request): Promise<Response> {
         envelope,
         job.job_id,
         spec.endpointEnv,
+        { priorError: job.error },
       ).catch(async (e) => {
         console.error(JSON.stringify({
           event: "dispatch.invoke_failed",
           jobId: job.job_id,
           error: String(e),
         }));
-        // Re-queue (or terminal-fail) so the job does not sit processing forever.
-        await failJob(service, job, `invoke: ${e}`, job.attempt < MAX_ATTEMPTS);
+        const policy = invokeFailurePolicy(e, Date.now(), job.attempt, MAX_ATTEMPTS);
+        await failJob(service, job, policy.error, policy.retry, policy.warming);
       });
       // Fail closed if waitUntil is unavailable: await invoke so the job
       // cannot be left processing with no background work scheduled.
@@ -755,6 +605,7 @@ async function handleCallback(request: Request): Promise<Response> {
     team1_player2: m.team1_player2,
     team2_player1: m.team2_player1,
     team2_player2: m.team2_player2,
+    error: null,
   };
 
   const spec = STAGES[job.stage];
