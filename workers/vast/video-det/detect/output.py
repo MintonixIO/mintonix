@@ -82,6 +82,7 @@ def build_segments_for_video(
     """Islands from preprocess-log + per-island scoreboard OCR."""
     shifts = parse_preprocess_log(preprocess_log)
     islands = islands_from_frame_shifts(shifts)
+    # Non-empty shift islands must not collapse to a single full-video fallback.
     if not islands:
         islands = fallback_island(frame_count_hint)
 

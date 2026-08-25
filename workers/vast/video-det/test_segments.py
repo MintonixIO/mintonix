@@ -6,9 +6,15 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+
 import numpy as np
 
-from detect.output import ensure_segments, write_detections_json
+from detect.output import (
+    build_segments_for_video,
+    ensure_segments,
+    write_detections_json,
+)
 from detect.scoreboard import (
     ocr_score_from_frame,
     parse_crop,
@@ -63,6 +69,45 @@ class TestIslands(unittest.TestCase):
     def test_representative(self) -> None:
         self.assertEqual(representative_frame(0, 180), 90)
         self.assertEqual(representative_frame(10, 10), 10)
+
+
+class TestBuildSegmentsForVideo(unittest.TestCase):
+    def test_shifts_not_replaced_with_fallback(self) -> None:
+        log = {
+            "frame_shifts": [
+                {"new_start": 0, "new_end": 10},
+                {"new_start": 11, "new_end": 20},
+            ]
+        }
+        with (
+            patch("detect.output.read_frame", return_value=None),
+            patch("detect.output.fallback_island") as fb,
+        ):
+            fb.return_value = [(0, 20)]
+            segs = build_segments_for_video(
+                video_path=Path("/nonexistent.mp4"),
+                annotation=None,
+                preprocess_log=log,
+                frame_count_hint=21,
+            )
+        self.assertEqual(len(segs), 2)
+        self.assertEqual(segs[0]["start_frame"], 0)
+        self.assertEqual(segs[0]["end_frame"], 10)
+        self.assertEqual(segs[1]["start_frame"], 11)
+        self.assertEqual(segs[1]["end_frame"], 20)
+        fb.assert_not_called()
+
+    def test_empty_shifts_use_fallback_island(self) -> None:
+        with patch("detect.output.read_frame", return_value=None):
+            segs = build_segments_for_video(
+                video_path=Path("/nonexistent.mp4"),
+                annotation=None,
+                preprocess_log={"frame_shifts": []},
+                frame_count_hint=21,
+            )
+        self.assertEqual(len(segs), 1)
+        self.assertEqual(segs[0]["start_frame"], 0)
+        self.assertEqual(segs[0]["end_frame"], 20)
 
 
 class TestBuildSegments(unittest.TestCase):

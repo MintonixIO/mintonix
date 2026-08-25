@@ -11,8 +11,8 @@ still-wrapped body):
           "request_id": "...",                 # job_id
           "input_url": "...",                  # presigned GET or file:// normalized.mp4
           "output_upload_url": "...",          # presigned PUT or file:// for detections.json
-          "annotation_url": "...",             # optional presigned GET annotation.json
-          "preprocess_log_url": "...",         # optional presigned GET preprocess-log.json
+          "annotation_url": "...",             # presigned GET; required if present
+          "preprocess_log_url": "...",         # presigned GET; required if present
           "annotation": { … },                 # optional inline (tests / local)
           "preprocess_log": { … },             # optional inline (tests / local)
           "callback_url": "...",               # jobs/callback
@@ -355,7 +355,7 @@ async def detect_sync(request: Request) -> Response:
 # ---------------------------------------------------------------------------
 
 def _download_json(url: str | None, *, label: str) -> dict | None:
-    """Best-effort GET of a small JSON sidecar. Missing URL or HTTP fail → None."""
+    """GET a small JSON sidecar. Missing URL → None. Present URL: fail closed."""
     if not url or not isinstance(url, str):
         return None
     fd, name = tempfile.mkstemp(suffix=".json")
@@ -364,10 +364,13 @@ def _download_json(url: str | None, *, label: str) -> dict | None:
     try:
         download(url, tmp, max_bytes=32 * 1024 * 1024)
         data = json.loads(tmp.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else None
+        if not isinstance(data, dict):
+            raise ValueError("expected JSON object")
+        return data
     except Exception as e:  # noqa: BLE001
-        log.warning("optional %s download failed: %s", label, safe_error_message(e))
-        return None
+        raise RuntimeError(
+            f"{label} download failed: {safe_error_message(e)}"
+        ) from None
     finally:
         tmp.unlink(missing_ok=True)
 
@@ -400,6 +403,17 @@ def _run_job(
         if preprocess_log is None:
             preprocess_log = _download_json(
                 preprocess_log_url, label="preprocess-log.json"
+            )
+        # jobs always sends both URLs; a present URL must yield an object.
+        if isinstance(annotation_url, str) and annotation_url and annotation is None:
+            raise RuntimeError("annotation.json download failed: missing object")
+        if (
+            isinstance(preprocess_log_url, str)
+            and preprocess_log_url
+            and preprocess_log is None
+        ):
+            raise RuntimeError(
+                "preprocess-log.json download failed: missing object"
             )
 
         meta = probe_video(video_tmp)

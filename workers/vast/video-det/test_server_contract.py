@@ -919,5 +919,137 @@ class TestDetectSync202(unittest.TestCase):
         run_job.assert_not_called()
 
 
+class TestSidecarFailClosed(unittest.TestCase):
+    """annotation_url / preprocess_log_url are required when present."""
+
+    def _import_server(self):
+        try:
+            import server as server_mod
+
+            return server_mod
+        except ImportError as e:
+            self.skipTest(f"server deps missing: {e}")
+
+    def test_download_json_raises_when_url_fails(self) -> None:
+        server_mod = self._import_server()
+        with patch.object(
+            server_mod, "download", side_effect=RuntimeError("connection refused")
+        ):
+            with self.assertRaises(RuntimeError) as ctx:
+                server_mod._download_json(
+                    "https://example.invalid/preprocess-log.json",
+                    label="preprocess-log.json",
+                )
+        self.assertIn("preprocess-log.json", str(ctx.exception))
+        self.assertIn("download failed", str(ctx.exception))
+
+    def test_download_json_raises_when_body_is_not_object(self) -> None:
+        server_mod = self._import_server()
+
+        def write_array(url, dest, **kwargs):
+            Path(dest).write_text("[]", encoding="utf-8")
+
+        with patch.object(server_mod, "download", new=write_array):
+            with self.assertRaises(RuntimeError) as ctx:
+                server_mod._download_json(
+                    "https://example/annotation.json", label="annotation.json"
+                )
+        self.assertIn("annotation.json", str(ctx.exception))
+        self.assertIn("download failed", str(ctx.exception))
+
+    def test_download_json_none_when_url_missing(self) -> None:
+        server_mod = self._import_server()
+        self.assertIsNone(server_mod._download_json(None, label="annotation.json"))
+        self.assertIsNone(server_mod._download_json("", label="preprocess-log.json"))
+
+    def test_run_job_raises_before_gpu_when_preprocess_log_url_unresolved(self) -> None:
+        server_mod = self._import_server()
+        prev = server_mod._detector
+        server_mod._detector = MagicMock()
+        try:
+            with (
+                patch.object(
+                    server_mod,
+                    "download",
+                    side_effect=lambda url, dest, **k: Path(dest).write_bytes(b"x"),
+                ),
+                patch.object(server_mod, "_download_json", return_value=None),
+                patch.object(
+                    server_mod,
+                    "probe_video",
+                    return_value={
+                        "fps": 30.0,
+                        "width": 64,
+                        "height": 64,
+                        "frame_count_hint": 10,
+                    },
+                ),
+                patch.object(
+                    server_mod, "_stream_detections_json", return_value=5
+                ) as gpu,
+                patch.object(server_mod, "upload_file"),
+            ):
+                with self.assertRaises(RuntimeError) as ctx:
+                    server_mod._run_job(
+                        request_id="j1",
+                        input_url="https://example/in.mp4",
+                        output_upload_url="https://example/out.json",
+                        annotation=None,
+                        preprocess_log=None,
+                        annotation_url=None,
+                        preprocess_log_url=(
+                            "https://example.invalid/preprocess-log.json"
+                        ),
+                    )
+                gpu.assert_not_called()
+            self.assertIn("preprocess-log.json", str(ctx.exception))
+            self.assertIn("download failed", str(ctx.exception))
+        finally:
+            server_mod._detector = prev
+
+    def test_run_job_raises_before_gpu_when_annotation_url_unresolved(self) -> None:
+        server_mod = self._import_server()
+        prev = server_mod._detector
+        server_mod._detector = MagicMock()
+        try:
+            with (
+                patch.object(
+                    server_mod,
+                    "download",
+                    side_effect=lambda url, dest, **k: Path(dest).write_bytes(b"x"),
+                ),
+                patch.object(server_mod, "_download_json", return_value=None),
+                patch.object(
+                    server_mod,
+                    "probe_video",
+                    return_value={
+                        "fps": 30.0,
+                        "width": 64,
+                        "height": 64,
+                        "frame_count_hint": 10,
+                    },
+                ),
+                patch.object(
+                    server_mod, "_stream_detections_json", return_value=5
+                ) as gpu,
+                patch.object(server_mod, "upload_file"),
+            ):
+                with self.assertRaises(RuntimeError) as ctx:
+                    server_mod._run_job(
+                        request_id="j1",
+                        input_url="https://example/in.mp4",
+                        output_upload_url="https://example/out.json",
+                        annotation=None,
+                        preprocess_log={"frame_shifts": []},
+                        annotation_url="https://example/annotation.json",
+                        preprocess_log_url=None,
+                    )
+                gpu.assert_not_called()
+            self.assertIn("annotation.json", str(ctx.exception))
+            self.assertIn("download failed", str(ctx.exception))
+        finally:
+            server_mod._detector = prev
+
+
 if __name__ == "__main__":
     unittest.main()
