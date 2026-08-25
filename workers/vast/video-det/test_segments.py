@@ -127,14 +127,24 @@ class TestBuildSegments(unittest.TestCase):
         with self.assertRaises(ValueError):
             build_segments([(0, 1)], [])
 
-    def test_clamp(self) -> None:
+    def test_clamp_shortens_end_without_dropping(self) -> None:
+        segs = [
+            {"start_frame": 0, "end_frame": 999, "score": {"t1": 1, "t2": 0}},
+            {"start_frame": 10, "end_frame": 20, "score": {"t1": 2, "t2": 0}},
+        ]
+        out = clamp_segments_to_frame_count(segs, 100)
+        self.assertEqual(len(out), 2)
+        self.assertEqual(out[0]["end_frame"], 99)
+        self.assertEqual(out[1]["end_frame"], 20)
+
+    def test_clamp_wholly_past_eof_raises(self) -> None:
         segs = [
             {"start_frame": 0, "end_frame": 999, "score": {"t1": 1, "t2": 0}},
             {"start_frame": 5000, "end_frame": 5001, "score": {"t1": 2, "t2": 0}},
         ]
-        out = clamp_segments_to_frame_count(segs, 100)
-        self.assertEqual(len(out), 1)
-        self.assertEqual(out[0]["end_frame"], 99)
+        with self.assertRaises(RuntimeError) as ctx:
+            clamp_segments_to_frame_count(segs, 100)
+        self.assertIn("5000", str(ctx.exception))
 
     def test_ensure_fallback(self) -> None:
         out = ensure_segments([], 50)
@@ -142,6 +152,35 @@ class TestBuildSegments(unittest.TestCase):
         self.assertEqual(out[0]["start_frame"], 0)
         self.assertEqual(out[0]["end_frame"], 49)
         self.assertEqual(out[0]["score"], {"t1": 0, "t2": 0})
+
+    def test_ensure_segments_shift_islands_not_replaced_with_fallback(self) -> None:
+        segs = [
+            {
+                "start_frame": 100,
+                "end_frame": 110,
+                "score": {"t1": 5, "t2": 3},
+                "score_conf": 0.9,
+            },
+            {
+                "start_frame": 111,
+                "end_frame": 120,
+                "score": {"t1": 5, "t2": 4},
+                "score_conf": 0.8,
+            },
+        ]
+        with self.assertRaises(RuntimeError):
+            ensure_segments(segs, 5)
+
+    def test_ensure_segments_preserves_count_when_clamping_end(self) -> None:
+        segs = [
+            {"start_frame": 0, "end_frame": 10, "score": {"t1": 1, "t2": 0}},
+            {"start_frame": 11, "end_frame": 20, "score": {"t1": 2, "t2": 0}},
+        ]
+        out = ensure_segments(segs, 15)
+        self.assertEqual(len(out), 2)
+        self.assertEqual(out[0]["end_frame"], 10)
+        self.assertEqual(out[1]["start_frame"], 11)
+        self.assertEqual(out[1]["end_frame"], 14)
 
 
 class TestScoreboardGeometry(unittest.TestCase):
@@ -331,6 +370,40 @@ class TestWriteDetectionsJson(unittest.TestCase):
             self.assertEqual(len(body["segments"]), 1)
             self.assertEqual(body["segments"][0]["end_frame"], 0)
             self.assertEqual(len(body["rallies"]), 1)
+
+    def test_shift_segments_past_eof_do_not_become_fallback(self) -> None:
+        frames = [
+            FrameResult(frame=i, poses=[], shuttle=[]) for i in range(5)
+        ]
+        segs = [
+            {
+                "start_frame": 100,
+                "end_frame": 110,
+                "score": {"t1": 5, "t2": 3},
+                "score_conf": 0.9,
+            },
+            {
+                "start_frame": 111,
+                "end_frame": 120,
+                "score": {"t1": 5, "t2": 4},
+                "score_conf": 0.8,
+            },
+        ]
+        with tempfile.TemporaryDirectory() as td:
+            dest = Path(td) / "d.json"
+            with self.assertRaises(RuntimeError) as ctx:
+                write_detections_json(
+                    dest,
+                    request_id="job-shifts",
+                    video_path=Path(td) / "v.mp4",
+                    frame_chunks=[frames],
+                    segments=segs,
+                    fps=30.0,
+                    width=64,
+                    height=64,
+                )
+            self.assertIn("100", str(ctx.exception))
+            self.assertFalse(dest.exists())
 
 
 class TestDebugSidecars(unittest.TestCase):

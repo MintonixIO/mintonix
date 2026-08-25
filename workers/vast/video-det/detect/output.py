@@ -124,15 +124,18 @@ def ensure_segments(
     segments: Sequence[Mapping[str, Any]],
     frame_count: int,
 ) -> list[dict[str, Any]]:
-    """Guarantee non-empty segments covering decoded frames when possible."""
-    clamped = clamp_segments_to_frame_count(segments, frame_count)
-    if clamped:
-        return clamped
-    islands = fallback_island(frame_count)
-    if not islands:
-        return []
-    scores = [{"t1": 0, "t2": 0, "score_conf": 0.0} for _ in islands]
-    return build_segments(islands, scores)
+    """Empty input may synthesize one full-video island; non-empty is clamp-only.
+
+    Shift-derived segments must not be replaced with ``fallback_island`` when
+    clamp would drop them — ``clamp_segments_to_frame_count`` raises instead.
+    """
+    if not segments:
+        islands = fallback_island(frame_count)
+        if not islands:
+            return []
+        scores = [{"t1": 0, "t2": 0, "score_conf": 0.0} for _ in islands]
+        return build_segments(islands, scores)
+    return clamp_segments_to_frame_count(segments, frame_count)
 
 
 def write_detections_json(
@@ -171,12 +174,6 @@ def write_detections_json(
                     frame_count += 1
 
         final_segments = ensure_segments(segments, frame_count)
-        if frame_count > 0 and not final_segments:
-            # Defensive: should not happen if ensure_segments works.
-            final_segments = build_segments(
-                fallback_island(frame_count),
-                [{"t1": 0, "t2": 0, "score_conf": 0.0}],
-            )
         if frame_count > 0 and not final_segments:
             raise RuntimeError("detections.json requires non-empty segments")
         final_rallies = rallies_from_segments(final_segments)

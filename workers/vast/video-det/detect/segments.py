@@ -196,7 +196,13 @@ def clamp_segments_to_frame_count(
     segments: Iterable[Mapping[str, Any]],
     frame_count: int,
 ) -> list[dict[str, Any]]:
-    """Drop/clamp segments that fall outside the decoded frame range."""
+    """Clamp ``end_frame`` to the last decoded index; keep island count.
+
+    Shortens ``end_frame`` when it runs past EOF. A well-formed island that
+    starts after the last decoded frame raises ``RuntimeError`` so a
+    non-empty ``frame_shifts`` list cannot shrink or become a fallback
+    island. Malformed entries are skipped. ``frame_count <= 0`` → ``[]``.
+    """
     if frame_count <= 0:
         return []
     last = frame_count - 1
@@ -208,11 +214,15 @@ def clamp_segments_to_frame_count(
         except (KeyError, TypeError, ValueError):
             continue
         if start > last:
-            continue
+            raise RuntimeError(
+                f"segment start_frame {start} is past last decoded frame {last}"
+            )
         end = min(end, last)
         start = max(0, start)
         if end < start:
-            continue
+            raise RuntimeError(
+                f"segment {start}-{end} is empty after clamp to last={last}"
+            )
         entry = dict(seg)
         entry["start_frame"] = start
         entry["end_frame"] = end
