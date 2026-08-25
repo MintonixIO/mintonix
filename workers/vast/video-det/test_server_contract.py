@@ -316,9 +316,28 @@ class TestImageBootContract(unittest.TestCase):
         self.assertIn("nvcr.io/nvidia/tensorrt:25.01-py3", src)
         self.assertIn("nvidia/cuda:12.8.0-runtime-ubuntu24.04", src)
         self.assertIn("ENV_PATH=/opt/worker-env", src)
-        self.assertIn("python3-setuptools", src)
+        self.assertIn("from distutils.util import strtobool", src)
+        self.assertIn("libglib2.0-0t64", src)
         self.assertIn("builder_resource", src)
         self.assertNotIn('CMD ["bash", "start_server.sh"]', src)
+        manifest = json.loads(
+            (Path(__file__).resolve().parent / "models" / "MANIFEST.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertIn(
+            f"EXPECTED_TRT_VERSION={manifest['trt_version']}",
+            src,
+        )
+
+    def test_worker_env_pins_setuptools_for_distutils(self) -> None:
+        root = Path(__file__).resolve().parent
+        req = (root / "requirements.txt").read_text(encoding="utf-8")
+        self.assertIn("setuptools", req)
+        self.assertIn("<82", req)
+        src = (root / "Dockerfile").read_text(encoding="utf-8")
+        # Apt setuptools must not be the only distutils story — worker-env pip.
+        self.assertIn("from distutils.util import strtobool", src)
 
     def _check_trt_mod(self):
         import importlib.util

@@ -4,6 +4,10 @@ httpx>=0.27.0
 # <2: pycuda and TRT python bindings are compiled against NumPy 1.x C ABI.
 numpy>=1.26.0,<2
 opencv-python-headless>=4.10.0
+# Ubuntu 24.04 / Python 3.12 has no stdlib distutils. vastai-sdk imports
+# distutils.util.strtobool; setuptools 82 removed the shim. Pin in the
+# worker-env (apt python3-setuptools does not seed this venv).
+setuptools>=69,<82
 # Device buffers for TRT I/O (product path has no PyTorch).
 pycuda>=2024.1
 # PyWorker (Worker / BenchmarkConfig). `vastai` and `vastai-sdk` are the same

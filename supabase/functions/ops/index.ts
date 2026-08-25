@@ -56,6 +56,9 @@ export {
   MODEL_CACHE_PREFIX,
 } from "./model_urls.ts";
 import { isModelCacheKey, MODEL_CACHE_PREFIX } from "./model_urls.ts";
+import { opsRoute } from "./ops_route.ts";
+
+export { opsRoute } from "./ops_route.ts";
 
 function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -444,14 +447,12 @@ Deno.serve(async (request: Request): Promise<Response> => {
     return json(400, { error: "invalid_json", code: "bad_request" });
   }
 
-  if (path.endsWith("/model-urls")) {
+  const route = opsRoute(path, body);
+  if (route === "model-urls") {
     return handleModelUrls(body as ModelUrlsBody);
   }
-
-  // Require explicit /set-stage subpath (no bare /ops).
-  if (!path.endsWith("/set-stage")) {
-    return json(404, { error: "unknown_route", code: "not_found" });
+  if (route === "set-stage") {
+    return handleSetStage(body as SetStageBody);
   }
-
-  return handleSetStage(body as SetStageBody);
+  return json(404, { error: "unknown_route", code: "not_found" });
 });

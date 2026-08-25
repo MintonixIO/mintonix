@@ -5,7 +5,10 @@
 # Product engines must be built against this TRT/CUDA stack / GPU arch (sm_120).
 # Product path is TRT-only (no PyTorch wheel).
 # 24.11 / TRT 10.6.0 cannot build sm_120 engines (Error 9: Target GPU SM 120
-# is not supported). Re-pinned to NGC 25.01 / TensorRT 10.8.0.43 / CUDA 12.8.
+# is not supported). Re-pinned to NGC 25.01 / CUDA 12.8.
+# NGC python pin (CPU): docker run --rm --platform linux/amd64 --entrypoint python3
+#   nvcr.io/nvidia/tensorrt:25.01-py3 -c "import tensorrt as trt; print(trt.__version__)"
+#   → 10.8.0.43  (same string pip printed on the export host).
 FROM nvcr.io/nvidia/tensorrt:25.01-py3 AS trt
 
 # Collect inference .so files via realpath + ldd closure (libnvinfer needs
@@ -131,7 +134,7 @@ RUN apt-get update \
     && /opt/worker-env/bin/python -m pip install --no-cache-dir -r /tmp/requirements.txt \
     && site="$("/opt/worker-env/bin/python" -c "import site; print(site.getsitepackages()[0])")" \
     && cp -a /opt/trt-runtime/python/. "$site/" \
-    && /opt/worker-env/bin/python -c "import tensorrt, cv2, fastapi; print('tensorrt', tensorrt.__version__)"
+    && /opt/worker-env/bin/python -c "from distutils.util import strtobool; import tensorrt, cv2, fastapi; print('tensorrt', tensorrt.__version__, 'strtobool', int(strtobool('true')))"
 
 FROM nvidia/cuda:12.8.0-runtime-ubuntu24.04
 
@@ -140,14 +143,15 @@ ENV NVIDIA_REQUIRE_CUDA="cuda>=12.8" \
     EXPECTED_TRT_VERSION=10.8.0.43 \
     TRT_LIB_DIR=/usr/local/lib/trt
 
-# python3-setuptools: Ubuntu 24.04 dropped python3-distutils. vastai's
-# PyWorker still imports distutils.util.strtobool; setuptools provides it.
-# Without it, `from vastai import BenchmarkConfig` succeeds with
-# BenchmarkConfig=None (SDK swallows ImportError) and `python -m worker` dies.
+# distutils: Ubuntu 24.04 / Python 3.12 dropped stdlib distutils and the
+# python3-distutils apt package. Apt python3-setuptools seeds *system*
+# site-packages, not /opt/worker-env — pin setuptools<82 in requirements.txt
+# so `from distutils.util import strtobool` works in the copied venv.
+# OpenCV: Ubuntu 24.04 t64 transition renamed libglib2.0-0 → libglib2.0-0t64.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 python-is-python3 python3-setuptools \
+    python3 python-is-python3 \
     curl ca-certificates openssl \
-    libgomp1 libglib2.0-0 libgl1 \
+    libgomp1 libglib2.0-0t64 libgl1 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=trt /opt/trt-runtime/lib/ /usr/local/lib/trt/

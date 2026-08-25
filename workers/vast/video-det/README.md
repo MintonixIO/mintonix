@@ -97,9 +97,11 @@ GPU / TensorRT engine build and full e2e remain environment-specific (see
 - Product engines must match the image’s TensorRT / CUDA stack
   (TRT 10.8.0.43 / CUDA 12.8: NGC `tensorrt:25.01-py3` builder,
   `cuda:12.8.0-runtime-ubuntu24.04` final stage). Do not ship the NGC devel
-  image. Runtime apt must include `python3-setuptools` (Ubuntu 24.04 dropped
-  `python3-distutils`) so vastai's PyWorker can import
-  `distutils.util.strtobool`; without it `BenchmarkConfig` is silently `None`.
+  image. Worker-env pins `setuptools<82` so vastai's PyWorker can
+  `from distutils.util import strtobool` (Ubuntu 24.04 dropped stdlib
+  distutils; apt python3-setuptools does not seed `/opt/worker-env`).
+  Without it `BenchmarkConfig` is silently `None`. Runtime apt uses
+  `libglib2.0-0t64` for OpenCV on the t64 glibc transition.
 - **Model bake-in:** GitHub Actions mints CDN delivery URLs
   (`ops/model-urls` + `models/MANIFEST.json`) and bakes weights into
   `/app/models`. Neither GHA nor runtime workers hold B2 keys. Details:
