@@ -1,8 +1,5 @@
 import type { Metadata } from "next";
 import { BwfShell } from "@/components/bwf/shell";
-import { getStaticSearchIndex } from "@/lib/bwf/catalog";
-import { catalogUserError } from "@/lib/bwf/errors";
-import type { SearchHit } from "@/lib/bwf/types";
 
 export const metadata: Metadata = {
   title: "BWF match library",
@@ -17,13 +14,5 @@ export default async function Layout({
 }: {
   children: React.ReactNode;
 }) {
-  let searchIndex: SearchHit[] = [];
-  try {
-    searchIndex = await getStaticSearchIndex();
-  } catch (err) {
-    catalogUserError(err, "bwf/layout-search");
-    searchIndex = [];
-  }
-
-  return <BwfShell searchIndex={searchIndex}>{children}</BwfShell>;
+  return <BwfShell>{children}</BwfShell>;
 }

@@ -8,13 +8,14 @@ import {
   Video,
 } from "lucide-react";
 import {
-  BWF_STATUS_UI,
   displayDate,
   formatScoreLine,
   formatTeam,
   isAllowlistedYoutubeUrl,
   playerImageUrl,
   playerWon,
+  resultChip,
+  scoreKind,
   type CatalogMatch,
 } from "@/lib/bwf/data";
 import { PA, PB } from "@/components/bwf/tokens";
@@ -31,11 +32,13 @@ export function MatchCard({
 }) {
   const t1Won = m.winner === 1;
   const t2Won = m.winner === 2;
-  const score = formatScoreLine(m.games);
+  const score = formatScoreLine(m.games, m.result);
+  const chip = resultChip(m);
 
   const row = (
     names: string[],
     ids: string[],
+    countries: (string | null)[] | undefined,
     color: string,
     won: boolean,
     sideScores: number[],
@@ -60,6 +63,14 @@ export function MatchCard({
         )}
       >
         {formatTeam(names)}
+        {countries?.some(Boolean) ? (
+          <span className="ml-1.5 font-mono text-[10px] font-normal uppercase text-[var(--text-faint)]">
+            {countries
+              .filter(Boolean)
+              .map((c) => c!.toUpperCase())
+              .join("/")}
+          </span>
+        ) : null}
       </span>
       {sideScores.map((s, i) => (
         <span
@@ -110,6 +121,7 @@ export function MatchCard({
         {row(
           m.team1,
           m.team1Ids,
+          m.team1Countries,
           PA,
           t1Won,
           m.games.map((g) => g.t1),
@@ -117,6 +129,7 @@ export function MatchCard({
         {row(
           m.team2,
           m.team2Ids,
+          m.team2Countries,
           PB,
           t2Won,
           m.games.map((g) => g.t2),
@@ -127,16 +140,12 @@ export function MatchCard({
         <span className="font-mono text-[11px] tabular-nums text-[var(--text-muted)]">
           {score}
         </span>
+        {chip ? (
+          <span className="rounded-full border border-[var(--border-subtle)] bg-[var(--surface-2)] px-2 py-[2px] font-mono text-[10px] uppercase tracking-wide text-[var(--text-secondary)]">
+            {chip}
+          </span>
+        ) : null}
         <div className="flex-1" />
-        <span
-          className={cn(
-            "rounded-full border px-2 py-[2px] font-mono text-[10px] uppercase tracking-wide",
-            BWF_STATUS_UI[m.status]?.className ??
-              "border-[var(--border)] bg-[var(--surface-2)] text-[var(--text-muted)]",
-          )}
-        >
-          {BWF_STATUS_UI[m.status]?.label ?? m.status}
-        </span>
       </div>
 
       <div className="flex flex-wrap items-center gap-2 border-t border-[var(--border-subtle)] px-4 py-3">
@@ -214,6 +223,7 @@ export function MatchRow({
       ? formatTeam(m.team2)
       : formatTeam(m.team1)
     : null;
+  const kind = scoreKind(m);
 
   const badgeLabel =
     outcomeMode === "ab"
@@ -283,7 +293,10 @@ export function MatchRow({
       </span>
 
       <span className="font-mono text-[11px] tabular-nums text-[var(--text-muted)]">
-        {formatScoreLine(m.games)}
+        {formatScoreLine(m.games, m.result)}
+        {kind ? (
+          <span className="ml-1.5 text-[var(--text-faint)]">{kind}</span>
+        ) : null}
       </span>
 
       {!hasPlayer ? (
@@ -293,7 +306,8 @@ export function MatchRow({
         </span>
       ) : (
         <span className="hidden font-mono text-[11px] text-[var(--text-faint)] sm:inline">
-          {displayDate(m) || m.round}
+          {displayDate(m)}
+          {m.round ? ` · ${m.round}` : ""}
         </span>
       )}
 

@@ -466,14 +466,20 @@ in `wrangler.toml`).
    dispatcher with `FOR UPDATE SKIP LOCKED`.
 4. ~~**BWF catalog visibility**~~ — **decided:** the **web** BWF catalog is
    **server-private** via service role (`SUPABASE_SERVICE_ROLE_KEY`) with
-   `owner_id IS NULL` on every query. Next.js builds a single cached
-   `CatalogSnapshot` (matches + slim directory players + stats;
-   `bwf-catalog-v6`, 5 min); full profiles (form/rivals) are built on demand.
-   Catalog load does **not** enqueue GPU jobs. Multi-year data is held entirely
-   in process memory for the cache TTL — document/scale limits before loading
-   many seasons. There is no separate players table — identity is a **name
-   slug** from the four roster columns (known collision limit). Public anon
-   SELECT on system matches is **revoked**
+   `owner_id IS NULL` on every query. Home, match list, form boards, and stats
+   use targeted
+   PostgREST queries plus `bwf_catalog_stats` (not a full table dump). Search,
+   directory profiles, player profiles, and H2H use a process-local
+   `CatalogSnapshot` (5 min TTL, stale-while-revalidate), loaded only when those
+   surfaces call `getCatalogSnapshot()`. Form boards use `listFormBoard` (not
+   the dump). `bwf_catalog_stats` returns headline counts plus
+   distinct raw `tournament` strings; event/round/year/disc facets are parsed
+   in TS (`parseTournament`) so SQL does not reimplement the loader format.
+   Full profiles (form/rivals) are built on demand. Catalog load does **not**
+   enqueue GPU jobs. Multi-year snapshots stay in process RAM — document/scale
+   limits before loading many seasons. There is no separate players table —
+   identity is a **name slug** from the four roster columns (known collision
+   limit). Public anon SELECT on system matches is **revoked**
    (`20260731000000_revoke_anon_bwf_catalog_read`). User-owned matches stay
    private.
 

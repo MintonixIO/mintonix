@@ -66,6 +66,9 @@ export const BWF_SEARCH_MAX_Q = 100;
 
 export type GameScore = { t1: number; t2: number };
 
+/** Wiki match outcome. Ratings ignore walkover / retired / incomplete. */
+export type MatchResult = "completed" | "walkover" | "retired" | "incomplete";
+
 /** One finished BWF match from the `matches` table. */
 export type CatalogMatch = {
   id: string;
@@ -81,9 +84,13 @@ export type CatalogMatch = {
   team2: string[];
   team1Ids: string[];
   team2Ids: string[];
+  team1Countries: (string | null)[];
+  team2Countries: (string | null)[];
   games: GameScore[];
   /** Winning side 1 or 2, or null if undetermined. */
   winner: 1 | 2 | null;
+  /** Wiki outcome; walkover/retired are stored but not rated. */
+  result: MatchResult | null;
   threeGames: boolean;
   comeback: boolean;
   status: MatchStatus;
@@ -99,6 +106,7 @@ export type CatalogMatch = {
 export type DirectoryPlayer = {
   id: string;
   name: string;
+  country: string | null;
   disc: Disc | null;
   discs: Disc[];
   matches: number;
@@ -108,12 +116,62 @@ export type DirectoryPlayer = {
   threeGames: number;
   withVideo: number;
   imageUrl: string | null;
+  rating: FormRating | null;
+};
+
+export type FormRating = {
+  disc: Disc;
+  kind: "player" | "pair" | "individual";
+  mu: number;
+  rd?: number;
+  rankScore?: number;
+  peakMu?: number;
+  exposure?: number;
+  matches: number;
+  webId?: string;
+  name?: string;
+};
+
+/** One row on an MS / WS / MD / WD / XD form board. */
+export type FormBoardRow = {
+  id: string;
+  name: string;
+  country: string | null;
+  disc: Disc;
+  kind: "player" | "pair";
+  mu: number;
+  rd: number | null;
+  rankScore: number;
+  peakMu: number | null;
+  matches: number;
+  href: string;
+};
+
+export type H2hResult = {
+  a: DirectoryPlayer | null;
+  b: DirectoryPlayer | null;
+  meetings: CatalogMatch[];
+  aWins: number;
+  bWins: number;
+  pairMode: boolean;
+  pairARating: FormRating | null;
+  pairBRating: FormRating | null;
+};
+
+export type RivalRow = {
+  id: string;
+  name: string;
+  meetings: number;
+  wins: number;
+  /** Win rate in [0, 1] against this opponent. */
+  winRate: number;
 };
 
 /** Aggregated player profile derived from catalog matches (detail + H2H). */
 export type CatalogPlayer = {
   id: string;
   name: string;
+  country: string | null;
   /** Primary discipline by match count. */
   disc: Disc | null;
   discs: Disc[];
@@ -125,7 +183,13 @@ export type CatalogPlayer = {
   withVideo: number;
   form: ("W" | "L")[];
   /** Opponent id → meetings / wins for this player. */
-  rivals: { id: string; name: string; meetings: number; wins: number }[];
+  rivals: RivalRow[];
+  owns: RivalRow[];
+  struggles: RivalRow[];
+  rating: FormRating | null;
+  individualRating: FormRating | null;
+  /** Glicko boards this person appears on (MS / WS / MD / WD / XD). */
+  ratings: FormRating[];
   /** Optional remote image URL (currently rare). */
   imageUrl: string | null;
 };
@@ -157,6 +221,8 @@ export type MatchFilters = {
   threeGames?: boolean;
   comeback?: boolean;
   sort?: "event" | "round" | "created" | "status";
+  /** Restrict to matches involving this player id (homonym-safe). */
+  player?: string;
   page?: number;
   pageSize?: number;
 };
@@ -190,4 +256,12 @@ export type H2hPickerPlayer = {
   name: string;
   matches: number;
   disc: Disc | null;
+  country: string | null;
 };
+
+/** Same form band: rank-score within this many points. */
+export const FORM_BAND = 200;
+
+export const OWNS_MIN_MEETINGS = 4;
+export const OWNS_WIN_RATE = 0.7;
+export const STRUGGLES_WIN_RATE = 0.3;

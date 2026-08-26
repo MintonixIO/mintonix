@@ -19,6 +19,7 @@ stable key (see below). Construction is shared in `match_key.py`.
 | `match_date` | scraped date → ISO |
 | `team1_player1`, `team1_player2` | roster side 1 (singles → p2 null) |
 | `team2_player1`, `team2_player2` | roster side 2 |
+| `team1_player1_country` … `team2_player2_country` | Wikipedia flagicon codes; used to split homonyms |
 | `g1_t1`…`g3_t2` | set scores |
 | `source_url` | optional; from `video_matches.json` → `https://www.youtube.com/watch?v=…` when coverage is healthy |
 
@@ -103,5 +104,9 @@ SUPABASE_URL=… SUPABASE_SERVICE_KEY=… \
 python3 load_to_supabase.py --json-file … --videos-file … --dry-run
 ```
 
-CI (`match-data.yml`) **always applies** (no `--dry-run`): PR → dev project,
-master/schedule → prod.
+Weekly GHA (`match-data.yml`) **always applies** (no `--dry-run`): PR → dev project,
+master/schedule → prod. After the load it recomputes Glicko-2 / TrueSkill form
+ratings (`compute_ratings.py`) into `player_ratings` + `rating_individuals`.
+Ratings identity is `normalized name|country` (plus kept wiki birth-year
+parentheticals) so two people with the same display name do not share a board.
+

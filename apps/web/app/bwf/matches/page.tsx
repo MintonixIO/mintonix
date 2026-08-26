@@ -81,6 +81,7 @@ export default async function BwfMatchesPage({
         sort,
         page,
         pageSize: 24,
+        player: get("player") || undefined,
         hasVideo: lens === "video" ? true : undefined,
         threeGames: lens === "three" ? true : undefined,
         comeback: lens === "comeback" ? true : undefined,

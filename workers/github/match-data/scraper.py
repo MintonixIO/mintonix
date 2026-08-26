@@ -209,6 +209,18 @@ def strip_bold(s):
 
 FLAGICON_RE = re.compile(r"\{\{flagicon\|([^}|]+)(?:\|[^}]*)?\}\}")
 WIKILINK_RE = re.compile(r"\[\[([^\]|]+)(?:\|([^\]]*))?\]\]")
+_WO_RE = re.compile(r"\b(?:w\s*/\s*o|w/?o|walk[- ]?over)\b", re.I)
+_RET_RE = re.compile(r"\b(?:retired?|rtd|ret\.?)\b", re.I)
+
+
+def classify_result_text(*texts: str) -> str | None:
+    """walkover / retired from wiki score cells. None if the cell is a normal score."""
+    blob = " ".join(t or "" for t in texts)
+    if _WO_RE.search(blob):
+        return "walkover"
+    if _RET_RE.search(blob):
+        return "retired"
+    return None
 
 
 def parse_team_field(value):
@@ -297,16 +309,28 @@ def extract_bracket_matches(template_content, section_path, page_title, discipli
             if not team1.strip() and not team2.strip():
                 continue
             games = []
+            score_blobs: list[str] = []
             for g in range(1, 9):
                 s1 = params.get(f"RD{rd}-score{t1}-{g}")
                 s2 = params.get(f"RD{rd}-score{t2}-{g}")
-                if (s1 is None or not s1.strip()) and (s2 is None or not s2.strip()):
+                # Compact brackets also use RD1-score1 (no game suffix).
+                if g == 1:
+                    if s1 is None:
+                        s1 = params.get(f"RD{rd}-score{t1}")
+                    if s2 is None:
+                        s2 = params.get(f"RD{rd}-score{t2}")
+                if (s1 is None or not str(s1).strip()) and (
+                    s2 is None or not str(s2).strip()
+                ):
                     break
+                score_blobs.append(s1 or "")
+                score_blobs.append(s2 or "")
                 games.append({
                     "game": g,
                     "score1": parse_score_field(s1 or ""),
                     "score2": parse_score_field(s2 or ""),
                 })
+            result = classify_result_text(*score_blobs)
             round_label = (params.get(f"RD{rd}") or f"Round {rd}").strip()
             matches.append({
                 "tournament_page": page_title,
@@ -320,6 +344,7 @@ def extract_bracket_matches(template_content, section_path, page_title, discipli
                 "seed2": parse_seed_field(params.get(f"RD{rd}-seed{t2}", "")),
                 "team2": parse_team_field(team2),
                 "games": games,
+                "result": result,
             })
     return matches
 
@@ -355,6 +380,169 @@ def _iso_date(day_month, year):
         return datetime(year, mon, int(m.group(1))).date().isoformat()
     except ValueError:
         return None
+
+
+_DATE_TOKEN = re.compile(
+    r"(?P<d>\d{1,2})\s+(?P<m>Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|"
+    r"May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|"
+    r"Nov(?:ember)?|Dec(?:ember)?)(?:\s+(?P<y>19\d{2}|20\d{2}))?",
+    re.I,
+)
+# Compact same-month range: "7–12 January" / "7-12 January 2025"
+# First day must not be the tail of a year ("2024 – 3 January").
+_COMPACT_RANGE = re.compile(
+    r"(?<!\d)(?P<d0>\d{1,2})\s*[–\-]\s*(?P<d1>\d{1,2})\s+"
+    r"(?P<m>Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|"
+    r"May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|"
+    r"Nov(?:ember)?|Dec(?:ember)?)(?:\s+(?P<y>19\d{2}|20\d{2}))?",
+    re.I,
+)
+_START_DATE_TMPL = re.compile(
+    r"\{\{\s*(?:Start\s+date|End\s+date)\s*\|\s*(\d{4})\s*\|\s*(\d{1,2})\s*\|\s*(\d{1,2})",
+    re.I,
+)
+
+# Typical BWF week: Qual/R64 early, Final on the last day.
+_ROUND_DATE_FRAC = (
+    (re.compile(r"qual", re.I), 0.00),
+    (re.compile(r"\bgroup\b", re.I), 0.10),
+    (re.compile(r"round of 64|\br64\b", re.I), 0.15),
+    (re.compile(r"round of 32|\br32\b|first round", re.I), 0.30),
+    (re.compile(r"round of 16|\br16\b|second round", re.I), 0.50),
+    (re.compile(r"quarter|\bqf\b|third round", re.I), 0.70),
+    (re.compile(r"semi|\bsf\b", re.I), 0.85),
+    (re.compile(r"bronze|3rd|third place", re.I), 0.95),
+    (re.compile(r"\bfinal\b", re.I), 1.00),
+)
+
+
+def _ymd(year, month, day):
+    try:
+        return datetime(year, month, day).date()
+    except ValueError:
+        return None
+
+
+def parse_infobox_date_range(dates_raw, season):
+    """Parse Infobox ``dates`` into (start_iso, end_iso).
+
+    Handles ``7–12 January``, ``28 January – 2 February``, year-crossing
+    ``29 December – 3 January``, optional years, and {{Start date|Y|M|D}}.
+    """
+    if not dates_raw:
+        return None, None
+    text = str(dates_raw)
+    tmpls = _START_DATE_TMPL.findall(text)
+    if len(tmpls) >= 2:
+        a = _ymd(int(tmpls[0][0]), int(tmpls[0][1]), int(tmpls[0][2]))
+        b = _ymd(int(tmpls[1][0]), int(tmpls[1][1]), int(tmpls[1][2]))
+        if a and b:
+            if b < a:
+                a, b = b, a
+            return a.isoformat(), b.isoformat()
+
+    compact = _COMPACT_RANGE.search(text)
+    if compact:
+        mon = _MONTHS.get(compact.group("m")[:3].lower())
+        year = int(compact.group("y")) if compact.group("y") else season
+        if mon:
+            a = _ymd(year, mon, int(compact.group("d0")))
+            b = _ymd(year, mon, int(compact.group("d1")))
+            if a and b:
+                if b < a:
+                    a, b = b, a
+                return a.isoformat(), b.isoformat()
+    tokens = list(_DATE_TOKEN.finditer(text))
+    if not tokens:
+        return None, None
+
+    def tok_date(m, default_year, prev_month=None):
+        mon = _MONTHS.get(m.group("m")[:3].lower())
+        if not mon:
+            return None
+        year = int(m.group("y")) if m.group("y") else default_year
+        # Year-crossing: "29 December – 3 January" with season 2025 → Dec 2024.
+        if m.group("y") is None and prev_month is None and mon >= 11:
+            # First token in Nov/Dec with no year: keep season unless end is Jan.
+            pass
+        return _ymd(year, mon, int(m.group("d"))), mon, year
+
+    if len(tokens) == 1:
+        d, _, _ = tok_date(tokens[0], season)
+        if not d:
+            return None, None
+        iso = d.isoformat()
+        return iso, iso
+
+    # Two (or more) tokens: start then end.
+    t0, t1 = tokens[0], tokens[1]
+    mon0 = _MONTHS.get(t0.group("m")[:3].lower())
+    mon1 = _MONTHS.get(t1.group("m")[:3].lower())
+    y0 = int(t0.group("y")) if t0.group("y") else season
+    y1 = int(t1.group("y")) if t1.group("y") else season
+    if t0.group("y") is None and t1.group("y") is None and mon0 and mon1 and mon0 > mon1:
+        # Dec → Jan wrap: start belongs to the previous calendar year.
+        y0 = season - 1
+    start = _ymd(y0, mon0, int(t0.group("d"))) if mon0 else None
+    end = _ymd(y1, mon1, int(t1.group("d"))) if mon1 else None
+    if start and end and end < start:
+        # Same-year wrap missed (e.g. season already is the end year).
+        start = _ymd(y0 - 1, mon0, int(t0.group("d")))
+    if not start and not end:
+        return None, None
+    if start and not end:
+        return start.isoformat(), start.isoformat()
+    if end and not start:
+        return end.isoformat(), end.isoformat()
+    return start.isoformat(), end.isoformat()
+
+
+def date_for_round(round_label, start_iso, end_iso):
+    """Place a bracket match on a day inside the tournament window.
+
+    Wikipedia brackets have no per-match dates. Group-stage rows already carry
+    an exact ``date`` and must not go through this helper. Finals land on the
+    last day; qualifying on the first; other rounds interpolate.
+    """
+    if not start_iso:
+        return None
+    if not end_iso:
+        return start_iso
+    try:
+        start = datetime.fromisoformat(start_iso).date()
+        end = datetime.fromisoformat(end_iso).date()
+    except ValueError:
+        return start_iso
+    span = (end - start).days
+    if span <= 0:
+        return start_iso
+    frac = 0.5
+    label = round_label or ""
+    for pat, f in _ROUND_DATE_FRAC:
+        if pat.search(label):
+            frac = f
+            break
+    day = start.toordinal() + int(round(span * frac))
+    day = min(max(day, start.toordinal()), end.toordinal())
+    return datetime.fromordinal(day).date().isoformat()
+
+
+def assign_bracket_dates(matches, info, season):
+    """Fill missing match dates from the infobox range + round."""
+    start, end = parse_infobox_date_range(
+        (info or {}).get("dates") or (info or {}).get("date") or "",
+        season,
+    )
+    if info is not None:
+        info["_date_start"] = start
+        info["_date_end"] = end
+    if not start:
+        return matches
+    for m in matches:
+        if m.get("date"):
+            continue
+        m["date"] = date_for_round(m.get("round") or "", start, end)
+    return matches
 
 
 def extract_group_stage_matches(wikitext, discipline_start, discipline_end, page_title, discipline, season):
@@ -407,7 +595,7 @@ def extract_group_stage_matches(wikitext, discipline_start, discipline_end, page
                     continue
                 # Extract cells using the updated cell splitter
                 cells = _split_wikitable_cells(row)
-                if len(cells) < 5:
+                if len(cells) < 3:
                     continue
                 # Determine layout: if first cell looks like a date, it's a "first row"
                 # with rowspan. Otherwise, it's a continuation row (same date).
@@ -415,6 +603,8 @@ def extract_group_stage_matches(wikitext, discipline_start, discipline_end, page
                 # Check if first cell is a date (e.g. "17 Dec", "rowspan=2 | 17 Dec")
                 date_match = re.match(r'(\d{1,2}\s+\w+)', first_cell)
                 if date_match:
+                    if len(cells) < 4:
+                        continue
                     current_date = date_match.group(1)
                     p1_raw, score_raw, p2_raw = cells[1], cells[2], cells[3]
                     set_cells = cells[4:]
@@ -422,21 +612,23 @@ def extract_group_stage_matches(wikitext, discipline_start, discipline_end, page
                     # Continuation row — no date cell
                     p1_raw, score_raw, p2_raw = cells[0], cells[1], cells[2]
                     set_cells = cells[3:]
-                # Parse the score column (games won: e.g. 2–0)
+                # Parse the score column (games won: e.g. 2–0) — w/o / retired
+                # have no numeric games-won but the match still happened.
                 games_won = _parse_games_won(score_raw)
-                if games_won is None:
-                    continue
+                result = classify_result_text(score_raw, *set_cells)
                 # Parse per-game scores from set cells
                 games = []
                 for gi, sc in enumerate(set_cells, 1):
                     parsed = _parse_set_score(sc)
                     if parsed is None:
-                        break
+                        continue
                     games.append({
                         "game": gi,
                         "score1": parsed[0],
                         "score2": parsed[1],
                     })
+                if games_won is None and result is None and not games:
+                    continue
                 match_idx += 1
                 matches.append({
                     "tournament_page": page_title,
@@ -452,6 +644,7 @@ def extract_group_stage_matches(wikitext, discipline_start, discipline_end, page
                     "team2": _parse_group_player(p2_raw),
                     "games_won": games_won,
                     "games": games,
+                    "result": result,
                 })
     return matches
 
@@ -539,16 +732,20 @@ def _parse_games_won(raw):
 
 
 def _parse_set_score(raw):
-    """Parse '''21'''–10 -> (score1_dict, score2_dict). Returns None if empty/voided."""
+    """Parse '''21'''–10 -> (score1_dict, score2_dict).
+
+    Voided/strikethrough cells are dropped. A retirement that still has
+    points (``21–8 retired``) keeps the numbers; the match is tagged
+    ``result=retired`` by the caller.
+    """
     if not raw:
         return None
-    if "<s>" in raw or "voided" in raw.lower() or "retired" in raw.lower():
+    if "<s>" in raw or "voided" in raw.lower():
         return None
-    # Determine which side is bold (winner)
     s1_bold = bool(re.search(r"'''-?\d", raw))
-    # Check if the second number is bold: pattern like 21–'''10'''
     s2_bold = bool(re.search(r"\d\s*[–-]\s*'''-?\d", raw))
     cleaned = re.sub(r"'", "", raw).strip()
+    cleaned = _RET_RE.sub("", cleaned).strip()
     m = re.match(r"(\d+)\s*[–-]\s*(\d+)", cleaned)
     if not m:
         return None
@@ -595,9 +792,16 @@ def discipline_full_name(code):
 SECTION_HEADER_RE = re.compile(r"^(=+)([^=\n]+)=+\s*$", re.MULTILINE)
 
 
+# BWF pages use {{Infobox badminton event}}; keep older tournament names too.
+_INFOBOX_RE = re.compile(
+    r"\{\{\s*Infobox\s+(?:badminton\s+(?:event|tournament)|tournament)\b",
+    re.I,
+)
+
+
 def parse_infobox(wikitext):
-    """Find and parse the Infobox tournament template at the top."""
-    m = re.search(r"\{\{Infobox\s+tournament\b", wikitext)
+    """Find and parse the tournament infobox at the top (dates live here)."""
+    m = _INFOBOX_RE.search(wikitext)
     if not m:
         return {}
     start = m.start()
@@ -665,6 +869,7 @@ def parse_tournament_page(page_title, wikitext, season):
                 wikitext, start, end, page_title, code, season
             ))
 
+    assign_bracket_dates(matches, info, season)
     assign_unique_match_idx(matches)
     # Emit stable match_key once so finder/loader cannot diverge.
     tournament_title = page_title

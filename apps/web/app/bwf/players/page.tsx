@@ -2,19 +2,17 @@ import type { Metadata } from "next";
 import { BwfErrorState } from "@/components/bwf/error-state";
 import { PlayersView } from "@/components/bwf/players-view";
 import {
-  listDirectoryBoard,
   listDirectoryPlayers,
+  listFormBoard,
 } from "@/lib/bwf/catalog";
 import { catalogUserError } from "@/lib/bwf/errors";
 import type { Disc } from "@/lib/bwf/types";
 import { DISCS } from "@/lib/bwf/types";
-import type { BoardMetricKey } from "@/components/bwf/board-metrics";
-import { BOARD_METRICS } from "@/components/bwf/board-metrics";
 
 
 export const metadata: Metadata = {
   title: "BWF players",
-  description: "Player directory and leaderboards from BWF catalog results.",
+  description: "Player directory and form boards from BWF catalog results.",
 };
 
 export const revalidate = 300;
@@ -26,13 +24,6 @@ function parseDisc(raw: string | undefined): "all" | Disc {
   return "all";
 }
 
-function parseMetric(raw: string | undefined): BoardMetricKey {
-  if (raw && BOARD_METRICS.some((m) => m.key === raw)) {
-    return raw as BoardMetricKey;
-  }
-  return "winRate";
-}
-
 export default async function BwfPlayersPage({
   searchParams,
 }: {
@@ -41,32 +32,28 @@ export default async function BwfPlayersPage({
     disc?: string;
     page?: string;
     mode?: string;
-    metric?: string;
   }>;
 }) {
   const sp = await searchParams;
   const q = (sp.q ?? "").trim();
   const disc = parseDisc(sp.disc);
   const mode = sp.mode === "boards" ? "boards" : "profiles";
-  const metric = parseMetric(sp.metric);
   const page = Math.max(1, Number(sp.page) || 1);
 
   try {
     if (mode === "boards") {
-      const board = await listDirectoryBoard({
+      const board = await listFormBoard({
         q,
         disc,
-        metric,
-        limit: 50,
+        limit: 80,
       });
       return (
         <PlayersView
           mode="boards"
           q={q}
           disc={disc}
-          boardMetric={metric}
-          boardPlayers={board.players}
-          boardTotal={board.total}
+          formBoard={board.rows}
+          formBoardTotal={board.total}
           players={[]}
           total={board.total}
           page={1}
@@ -87,9 +74,8 @@ export default async function BwfPlayersPage({
         mode="profiles"
         q={q}
         disc={disc}
-        boardMetric={metric}
-        boardPlayers={[]}
-        boardTotal={0}
+        formBoard={[]}
+        formBoardTotal={0}
         players={listed.players}
         total={listed.total}
         page={listed.page}

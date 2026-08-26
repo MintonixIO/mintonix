@@ -1,41 +1,51 @@
 import type { Metadata } from "next";
-import { BwfErrorState } from "@/components/bwf/error-state";
+import { redirect } from "next/navigation";
 import { HomeView } from "@/components/bwf/home-view";
-import {
-  getCatalogStats,
-  getFeaturedMatches,
-  getTopPlayers,
-} from "@/lib/bwf/catalog";
+import { BwfErrorState } from "@/components/bwf/error-state";
+import { getCatalogStats, listFormBoard } from "@/lib/bwf/catalog";
 import { catalogUserError } from "@/lib/bwf/errors";
-import type {
-  CatalogMatch,
-  DirectoryPlayer,
-  HomeStats,
-} from "@/lib/bwf/types";
-
+import type { Disc, FormBoardRow, HomeStats } from "@/lib/bwf/types";
+import { DISCS } from "@/lib/bwf/types";
 
 export const metadata: Metadata = {
   title: "BWF home",
-  description: "BWF match catalog home — stats, top players, featured matches.",
+  description:
+    "BWF match catalog — form boards by discipline, scores, and video.",
 };
 
 export const revalidate = 300;
 
-export default async function BwfHomePage() {
+const HOME_FORM_LIMIT = 12;
+
+function firstQueryValue(
+  raw: string | string[] | undefined,
+): string | undefined {
+  return Array.isArray(raw) ? raw[0] : raw;
+}
+
+export default async function BwfHomePage({
+  searchParams,
+}: {
+  searchParams: Promise<{ disc?: string | string[] }>;
+}) {
+  const sp = await searchParams;
+  const rawDisc = firstQueryValue(sp.disc);
+  if (rawDisc && !(DISCS as string[]).includes(rawDisc)) {
+    redirect("/bwf");
+  }
+  const disc: Disc =
+    rawDisc && (DISCS as string[]).includes(rawDisc)
+      ? (rawDisc as Disc)
+      : "MS";
   let stats: HomeStats | null = null;
-  let featuredMatches: CatalogMatch[] = [];
-  let topMs: DirectoryPlayer[] = [];
-  let topWs: DirectoryPlayer[] = [];
+  let board: { rows: FormBoardRow[]; total: number } | null = null;
   let error: string | null = null;
 
   try {
-    const [full, featured, ms, ws] = await Promise.all([
+    const [full, listed] = await Promise.all([
       getCatalogStats(),
-      getFeaturedMatches(6),
-      getTopPlayers({ disc: "MS", limit: 8 }),
-      getTopPlayers({ disc: "WS", limit: 8 }),
+      listFormBoard({ disc, limit: HOME_FORM_LIMIT }),
     ]);
-    // Home only needs headline counts + disc chips — drop events/rounds/years.
     stats = {
       matches: full.matches,
       players: full.players,
@@ -43,21 +53,21 @@ export default async function BwfHomePage() {
       withVideo: full.withVideo,
       byDisc: full.byDisc,
     };
-    featuredMatches = featured;
-    topMs = ms;
-    topWs = ws;
+    board = listed;
   } catch (err) {
     error = catalogUserError(err, "bwf/home");
   }
 
-  if (error || !stats) return <BwfErrorState message={error ?? undefined} />;
+  if (error || !stats || !board) {
+    return <BwfErrorState message={error ?? undefined} />;
+  }
 
   return (
     <HomeView
       stats={stats}
-      featuredMatches={featuredMatches}
-      topMs={topMs}
-      topWs={topWs}
+      disc={disc}
+      formBoard={board.rows}
+      formBoardTotal={board.total}
     />
   );
 }

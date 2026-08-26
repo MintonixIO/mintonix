@@ -5,62 +5,80 @@ import {
   hasServiceRoleKey,
 } from "@/lib/supabase/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import {
-  resolveMatchByIdOutcome,
-  type SnapshotAttempt,
-} from "./match-by-id";
+import { resolveMatchByIdOutcome } from "./match-by-id";
 import {
   mapDbMatch,
   matchInvolvesPlayer,
   type DbMatchRow,
 } from "./parse";
 import {
+  catalogStatsFromSql,
+  filterMatchList,
+  planMatchList,
+  sanitizeFilterValue,
+  type MatchListPlan,
+  type SqlCatalogStats,
+} from "./match-query";
+import {
   aggregatePlayers,
+  applyInferredCountries,
+  applyCanonicalNames,
+  bestH2hPair,
+  applyRating,
   buildCatalogStats,
   buildSearchHits,
-  buildStaticSearchIndex,
-  filterMatches,
   formSortMatches,
   h2hFromMatches,
   paginateMatches,
-  sortMatches,
+  pairH2hFromMatches,
+  pickPlayerRating,
+  pickPairRating,
+  resolvePlayerId,
   toDirectoryPlayer,
-  topPlayersFromList,
 } from "./query";
+import {
+  buildFormBoard,
+  mapFormBoardRows,
+  type FormBoardSqlRow,
+} from "./form-board";
 import type {
   CatalogMatch,
   CatalogPlayer,
   CatalogStats,
   DirectoryPlayer,
   Disc,
+  FormBoardRow,
+  FormRating,
+  H2hResult,
   MatchFilters,
   SearchHit,
 } from "./types";
-import { BWF_SEARCH_LIMIT } from "./types";
+import { BWF_SEARCH_LIMIT, BWF_SEARCH_MAX_Q, DISCS } from "./types";
 
 const MATCH_SELECT =
-  "id,tournament,match_date,team1_player1,team1_player2,team2_player1,team2_player2,g1_t1,g1_t2,g2_t1,g2_t2,g3_t1,g3_t2,status,source_url,duration_sec,created_at";
+  "id,tournament,match_date,team1_player1,team1_player2,team2_player1,team2_player2,team1_player1_country,team1_player2_country,team2_player1_country,team2_player2_country,g1_t1,g1_t2,g2_t1,g2_t2,g3_t1,g3_t2,result,winner_side,status,source_url,duration_sec,created_at";
 
 /**
- * Server-private catalog snapshot: matches + slim directory + stats.
+ * Server-private catalog access via service role (never the public anon path).
+ *
+ * Fast path (home, match list, stats, form boards): targeted PostgREST queries +
+ * `bwf_catalog_stats` RPC. Do not page the full `matches` table for those.
+ *
+ * Slow path (search, directory profiles, player profiles, H2H): process-local
+ * `CatalogSnapshot`. Held in process RAM because Next Data Cache is 2MB.
+ * Snapshot loads only when those surfaces call `getCatalogSnapshot()`.
+ *
  * Full player profiles (form/rivals) are built on demand in getPlayerById.
- * Loaded only via service role (never the public anon path).
- *
- * Caching: multi-year snapshot is ~tens of MB. Next.js `unstable_cache` /
- * Data Cache rejects entries over 2MB, so we use a process-local TTL cache
- * with single-flight rebuild instead. Survives for the life of the Node
- * process (dev server / one server instance); not shared across workers.
- *
- * Scale note: full multi-year catalogs stay in process RAM for the TTL.
- * YEAR-SCOPE: Prefer year-scoped load later if RSS becomes a problem — no year filter on snapshot today (client filters still work after full load).
  */
 export type CatalogSnapshot = {
   matches: CatalogMatch[];
   directoryPlayers: DirectoryPlayer[];
   stats: CatalogStats;
+  ratingsByKey: Map<string, FormRating>;
+  individualsByKey: Map<string, FormRating>;
 };
 
-/** Process-local snapshot TTL (seconds), aligned with former revalidate: 300. */
+/** Snapshot TTL (ms). */
 const SNAPSHOT_TTL_MS = 300_000;
 
 type SnapshotCacheEntry = {
@@ -69,8 +87,64 @@ type SnapshotCacheEntry = {
 };
 
 let snapshotCache: SnapshotCacheEntry | null = null;
-/** In-flight build so parallel layout+page callers share one Supabase page-in. */
+/** In-flight build so parallel snapshot callers share one Supabase page-in. */
 let snapshotInflight: Promise<CatalogSnapshot> | null = null;
+
+type StatsCacheEntry = { stats: CatalogStats; expiresAt: number };
+let statsCache: StatsCacheEntry | null = null;
+let statsInflight: Promise<CatalogStats> | null = null;
+
+function requireServiceRole(): void {
+  if (!hasServiceRoleKey()) {
+    throw new Error(
+      "Missing SUPABASE_SERVICE_ROLE_KEY — BWF catalog requires service-role credentials",
+    );
+  }
+}
+
+type MatchListBuilder = PromiseLike<{
+  data: unknown;
+  error: { message: string } | null;
+  count?: number | null;
+}> & {
+  ilike: (column: string, value: string) => MatchListBuilder;
+  not: (column: string, operator: string, value: unknown) => MatchListBuilder;
+  or: (filters: string) => MatchListBuilder;
+  order: (
+    column: string,
+    opts?: { ascending?: boolean; nullsFirst?: boolean },
+  ) => MatchListBuilder;
+  range: (from: number, to: number) => MatchListBuilder;
+  limit: (n: number) => MatchListBuilder;
+};
+
+function applyMatchListPlan(
+  query: MatchListBuilder,
+  plan: MatchListPlan,
+): MatchListBuilder {
+  let q = query;
+  for (const f of plan.filters) {
+    if (f.kind === "ilike") q = q.ilike(f.column, f.value);
+    else if (f.kind === "not_is") q = q.not(f.column, "is", null);
+    else q = q.or(f.value);
+  }
+  for (const o of plan.order) {
+    q = q.order(o.column, { ascending: o.ascending, nullsFirst: false });
+  }
+  return q.range(plan.from, plan.to);
+}
+
+async function fetchCatalogStatsRemote(): Promise<CatalogStats> {
+  requireServiceRole();
+  const client = createServiceClient();
+  const { data, error } = await client.rpc("bwf_catalog_stats");
+  if (error || !data || typeof data !== "object") {
+    throw new Error(
+      `BWF catalog stats failed: ${error?.message ?? "empty response"}`,
+    );
+  }
+  return catalogStatsFromSql(data as SqlCatalogStats);
+}
 
 async function fetchPages(
   supabase: SupabaseClient,
@@ -93,7 +167,7 @@ async function fetchPages(
       return { rows: [], error: error.message };
     }
     if (!data?.length) break;
-    rows.push(...(data as DbMatchRow[]));
+    rows.push(...((data as unknown) as DbMatchRow[]));
     if (data.length < pageSize) break;
     from += pageSize;
   }
@@ -101,11 +175,102 @@ async function fetchPages(
   return { rows, error: null };
 }
 
+type RatingRow = {
+  web_id: string;
+  discipline: Disc;
+  kind: string;
+  mu: number;
+  rd: number;
+  rank_score: number;
+  peak_mu: number;
+  matches: number;
+  display_name: string | null;
+};
+
+type IndividualRow = {
+  web_id: string;
+  discipline: Disc;
+  mu: number;
+  sigma: number;
+  exposure: number;
+  matches: number;
+};
+
+async function fetchRatingTables(supabase: SupabaseClient): Promise<{
+  ratingsByKey: Map<string, FormRating>;
+  individualsByKey: Map<string, FormRating>;
+}> {
+  const ratingsByKey = new Map<string, FormRating>();
+  const individualsByKey = new Map<string, FormRating>();
+  const pageSize = 1000;
+
+  const pageIn = async <T,>(
+    table: string,
+    select: string,
+    sink: (row: T) => void,
+  ) => {
+    let from = 0;
+    for (;;) {
+      const { data, error } = await supabase
+        .from(table)
+        .select(select)
+        .order("web_id", { ascending: true })
+        .range(from, from + pageSize - 1);
+      if (error) {
+        throw new Error(`BWF ${table} load failed: ${error.message}`);
+      }
+      if (!data?.length) break;
+      for (const row of data as T[]) sink(row);
+      if (data.length < pageSize) break;
+      from += pageSize;
+    }
+  };
+
+  await pageIn<RatingRow>(
+    "player_ratings",
+    "web_id,discipline,kind,mu,rd,rank_score,peak_mu,matches,display_name",
+    (row) => {
+      if (row.kind !== "player" && row.kind !== "pair") return;
+      ratingsByKey.set(`${row.web_id}|${row.discipline}`, {
+        disc: row.discipline,
+        kind: row.kind,
+        mu: row.mu,
+        rd: row.rd,
+        rankScore: row.rank_score,
+        peakMu: row.peak_mu,
+        matches: row.matches,
+        webId: row.web_id,
+        name: row.display_name ?? undefined,
+      });
+    },
+  );
+
+  await pageIn<IndividualRow>(
+    "rating_individuals",
+    "web_id,discipline,mu,sigma,exposure,matches",
+    (row) => {
+      individualsByKey.set(`${row.web_id}|${row.discipline}`, {
+        disc: row.discipline,
+        kind: "individual",
+        mu: row.mu,
+        exposure: row.exposure,
+        matches: row.matches,
+      });
+    },
+  );
+
+  return { ratingsByKey, individualsByKey };
+}
+
 /**
  * Load full BWF catalog via service role only.
  * Always filters owner_id IS NULL (defense in depth; service role bypasses RLS).
  */
 async function fetchAllBwfRows(): Promise<CatalogMatch[]> {
+  if (process.env.CATALOG_FIXTURE === "1") {
+    const { loadPreviewSnapshot } = await import("./preview-fixture");
+    return loadPreviewSnapshot().matches;
+  }
   if (!hasServiceRoleKey()) {
     throw new Error(
       "Missing SUPABASE_SERVICE_ROLE_KEY — BWF catalog requires service-role credentials",
@@ -116,43 +281,51 @@ async function fetchAllBwfRows(): Promise<CatalogMatch[]> {
   if (svc.error) {
     throw new Error(`BWF catalog load failed: ${svc.error}`);
   }
-  return svc.rows.map(mapDbMatch);
+  return applyCanonicalNames(applyInferredCountries(svc.rows.map(mapDbMatch)));
 }
 
 async function buildCatalogSnapshot(): Promise<CatalogSnapshot> {
+  if (process.env.CATALOG_FIXTURE === "1") {
+    const { loadPreviewSnapshot } = await import("./preview-fixture");
+    return loadPreviewSnapshot();
+  }
+  const client = createServiceClient();
   const matches = await fetchAllBwfRows();
+  const { ratingsByKey, individualsByKey } = await fetchRatingTables(client);
   // Aggregate once for directory + stats; discard full CatalogPlayer[] so the
   // cache does not dual-store form/rivals for every player.
   const full = aggregatePlayers(matches);
-  const directoryPlayers = full.map(toDirectoryPlayer);
+  const directoryPlayers = full.map((p) => {
+    const slim = toDirectoryPlayer(p);
+    return {
+      ...slim,
+      rating: pickPlayerRating(p, ratingsByKey),
+    };
+  });
   const stats = buildCatalogStats(matches, directoryPlayers);
-  return { matches, directoryPlayers, stats };
+  return { matches, directoryPlayers, stats, ratingsByKey, individualsByKey };
 }
 
-/**
- * Full BWF snapshot for this server process.
- * Not `unstable_cache` — multi-year payload exceeds Next Data Cache 2MB limit
- * (~26MB observed), which forced a full rebuild every request.
- */
+/** Process RAM snapshot — Next Data Cache is 2MB. */
 export async function getCatalogSnapshot(): Promise<CatalogSnapshot> {
   const now = Date.now();
   if (snapshotCache && snapshotCache.expiresAt > now) {
     return snapshotCache.snapshot;
   }
-  if (snapshotInflight) return snapshotInflight;
-
-  snapshotInflight = buildCatalogSnapshot()
-    .then((snapshot) => {
-      snapshotCache = {
-        snapshot,
-        expiresAt: Date.now() + SNAPSHOT_TTL_MS,
-      };
-      return snapshot;
-    })
-    .finally(() => {
-      snapshotInflight = null;
-    });
-
+  if (!snapshotInflight) {
+    snapshotInflight = buildCatalogSnapshot()
+      .then((snapshot) => {
+        snapshotCache = {
+          snapshot,
+          expiresAt: Date.now() + SNAPSHOT_TTL_MS,
+        };
+        return snapshot;
+      })
+      .finally(() => {
+        snapshotInflight = null;
+      });
+  }
+  if (snapshotCache) return snapshotCache.snapshot;
   return snapshotInflight;
 }
 
@@ -162,17 +335,35 @@ export async function getDirectoryPlayers(): Promise<DirectoryPlayer[]> {
 }
 
 export async function getCatalogStats(): Promise<CatalogStats> {
-  const snap = await getCatalogSnapshot();
-  return snap.stats;
+  if (process.env.CATALOG_FIXTURE === "1") {
+    const snap = await getCatalogSnapshot();
+    return snap.stats;
+  }
+  const now = Date.now();
+  if (statsCache && statsCache.expiresAt > now) return statsCache.stats;
+  if (!statsInflight) {
+    statsInflight = fetchCatalogStatsRemote()
+      .then((stats) => {
+        statsCache = { stats, expiresAt: Date.now() + SNAPSHOT_TTL_MS };
+        return stats;
+      })
+      .finally(() => {
+        statsInflight = null;
+      });
+  }
+  if (statsCache) return statsCache.stats;
+  return statsInflight;
 }
 
 /**
- * Prefer a direct single-row fetch (cold detail pages) over loading the full
- * snapshot. Snapshot is recovery only when the direct fetch errors — a
- * confirmed miss returns null without loading the catalog.
- * Decision matrix lives in `resolveMatchByIdOutcome` (unit-tested).
+ * Direct single-row fetch. Confirmed miss is null; any query error throws.
+ * Never pages the catalog dump from a detail error.
  */
 export async function getMatchById(id: string): Promise<CatalogMatch | null> {
+  if (process.env.CATALOG_FIXTURE === "1") {
+    const snap = await getCatalogSnapshot();
+    return snap.matches.find((m) => m.id === id) ?? null;
+  }
   if (!hasServiceRoleKey()) {
     throw new Error(
       "Missing SUPABASE_SERVICE_ROLE_KEY — BWF catalog requires service-role credentials",
@@ -187,28 +378,10 @@ export async function getMatchById(id: string): Promise<CatalogMatch | null> {
     .is("owner_id", null)
     .maybeSingle();
 
-  // Cold detail path: return immediately on direct hit — never load snapshot.
-  if (data && !error) {
-    return mapDbMatch(data as DbMatchRow);
-  }
-
-  // Confirmed miss: true 404 — do not load the full catalog snapshot.
-  if (!error) {
-    return null;
-  }
-
-  let snapshot: SnapshotAttempt;
-  try {
-    const snap = await getCatalogSnapshot();
-    const hit = snap.matches.find((m) => m.id === id);
-    snapshot = hit
-      ? { status: "hit", match: hit }
-      : { status: "miss" };
-  } catch (e) {
-    snapshot = { status: "error", error: e };
-  }
-
-  return resolveMatchByIdOutcome(null, { message: error.message }, snapshot);
+  return resolveMatchByIdOutcome(
+    (data as DbMatchRow | null) ?? null,
+    error ? { message: error.message } : null,
+  );
 }
 
 export async function queryMatches(filters: MatchFilters = {}): Promise<{
@@ -218,13 +391,46 @@ export async function queryMatches(filters: MatchFilters = {}): Promise<{
   pageSize: number;
   totalPages: number;
 }> {
-  const { matches } = await getCatalogSnapshot();
-  const filtered = filterMatches(matches, filters);
-  return paginateMatches(
-    filtered,
-    filters.page ?? 1,
-    filters.pageSize ?? 24,
+  if (process.env.CATALOG_FIXTURE === "1") {
+    const { matches } = await getCatalogSnapshot();
+    return paginateMatches(
+      filterMatchList(matches, filters),
+      filters.page ?? 1,
+      filters.pageSize ?? 24,
+    );
+  }
+  requireServiceRole();
+  const plan = planMatchList(filters);
+  const client = createServiceClient();
+  const selected = plan.overFetch
+    ? client.from("matches").select(MATCH_SELECT).is("owner_id", null)
+    : client
+        .from("matches")
+        .select(MATCH_SELECT, { count: "exact" })
+        .is("owner_id", null);
+  const { data, error, count } = await applyMatchListPlan(
+    selected as unknown as MatchListBuilder,
+    plan,
   );
+  if (error) {
+    throw new Error(`BWF match list failed: ${error.message}`);
+  }
+  const mapped = (((data as DbMatchRow[] | null) ?? []) as DbMatchRow[]).map(
+    mapDbMatch,
+  );
+  if (plan.overFetch && filters.player) {
+    // Total is the JS-involved set, not the name-ilike SQL count. Window is
+    // PLAYER_OVERFETCH_LIMIT so this path cannot page the dump.
+    const involved = mapped.filter((m) =>
+      matchInvolvesPlayer(m, filters.player as string),
+    );
+    return paginateMatches(involved, filters.page ?? 1, filters.pageSize ?? 24);
+  }
+  const pageSize = Math.min(Math.max(filters.pageSize ?? 24, 1), 100);
+  const total = count ?? mapped.length;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize) || 1);
+  const page = Math.min(Math.max(filters.page ?? 1, 1), totalPages);
+  return { matches: mapped, total, page, pageSize, totalPages };
 }
 
 /**
@@ -234,11 +440,35 @@ export async function queryMatches(filters: MatchFilters = {}): Promise<{
 export async function getPlayerById(
   id: string,
 ): Promise<CatalogPlayer | null> {
-  const { matches } = await getCatalogSnapshot();
-  const involved = matches.filter((m) => matchInvolvesPlayer(m, id));
+  const snap = await getCatalogSnapshot();
+  const resolved = resolvePlayerId(id, snap.directoryPlayers);
+  const playerId = resolved.match?.id;
+  if (!playerId) return null;
+  const involved = snap.matches.filter((m) =>
+    matchInvolvesPlayer(m, playerId),
+  );
   if (involved.length === 0) return null;
   const players = aggregatePlayers(involved);
-  return players.find((p) => p.id === id) ?? null;
+  const player = players.find((p) => p.id === playerId);
+  if (!player) return null;
+  const ratingById = new Map<string, FormRating | null>();
+  for (const p of players) {
+    ratingById.set(p.id, pickPlayerRating(p, snap.ratingsByKey));
+  }
+  return applyRating(
+    player,
+    pickPlayerRating(player, snap.ratingsByKey),
+    pickPlayerRating(player, snap.individualsByKey),
+    ratingById,
+    snap.ratingsByKey,
+  );
+}
+
+export async function listPlayerHomonyms(
+  id: string,
+): Promise<DirectoryPlayer[]> {
+  const { directoryPlayers } = await getCatalogSnapshot();
+  return resolvePlayerId(id, directoryPlayers).candidates;
 }
 
 export async function getPlayerMatches(
@@ -254,18 +484,42 @@ export async function getPlayerMatches(
 export async function getH2h(
   aId: string,
   bId: string,
-): Promise<{
-  a: DirectoryPlayer | null;
-  b: DirectoryPlayer | null;
-  meetings: CatalogMatch[];
-  aWins: number;
-  bWins: number;
-}> {
-  const { directoryPlayers, matches } = await getCatalogSnapshot();
-  const a = directoryPlayers.find((p) => p.id === aId) ?? null;
-  const b = directoryPlayers.find((p) => p.id === bId) ?? null;
-  const { meetings, aWins, bWins } = h2hFromMatches(matches, aId, bId);
-  return { a, b, meetings, aWins, bWins };
+  opts?: { a2?: string; b2?: string },
+): Promise<H2hResult> {
+  const { directoryPlayers, matches, ratingsByKey } = await getCatalogSnapshot();
+  const resolve = (id: string) =>
+    resolvePlayerId(id, directoryPlayers).match ??
+    directoryPlayers.find((p) => p.id === id) ??
+    null;
+  const a = aId ? resolve(aId) : null;
+  const b = bId ? resolve(bId) : null;
+  const a2 = opts?.a2 ? resolve(opts.a2) : null;
+  const b2 = opts?.b2 ? resolve(opts.b2) : null;
+  const pairMode = Boolean(a && a2 && b && b2);
+  const { meetings, aWins, bWins } = pairMode
+    ? pairH2hFromMatches(
+        matches,
+        [a!.id, a2!.id],
+        [b!.id, b2!.id],
+      )
+    : h2hFromMatches(matches, a?.id ?? aId, b?.id ?? bId);
+  const pairDisc =
+    meetings.find((m) => m.disc === "MD" || m.disc === "WD" || m.disc === "XD")
+      ?.disc ?? null;
+  const pairARating =
+    pairMode && a && a2
+      ? pickPairRating(a.id, a2.id, pairDisc, ratingsByKey)
+      : null;
+  const pairBRating =
+    pairMode && b && b2
+      ? pickPairRating(b.id, b2.id, pairDisc, ratingsByKey)
+      : null;
+  return { a, b, meetings, aWins, bWins, pairMode, pairARating, pairBRating };
+}
+
+export async function getDefaultH2hIds(): Promise<{ a: string; b: string } | null> {
+  const { matches } = await getCatalogSnapshot();
+  return bestH2hPair(matches);
 }
 
 export async function searchCatalog(
@@ -275,13 +529,6 @@ export async function searchCatalog(
   const { directoryPlayers, matches, stats } = await getCatalogSnapshot();
   return buildSearchHits(q, directoryPlayers, matches, stats, limit);
 }
-
-/** Shell static index (players + tournaments) from the snapshot. */
-export async function getStaticSearchIndex(): Promise<SearchHit[]> {
-  const { directoryPlayers, stats } = await getCatalogSnapshot();
-  return buildStaticSearchIndex(directoryPlayers, stats);
-}
-
 
 export async function listDirectoryPlayers(opts?: {
   q?: string;
@@ -302,7 +549,10 @@ export async function listDirectoryPlayers(opts?: {
   const all = await getDirectoryPlayers();
   const filtered = all.filter((p) => {
     if (disc && p.disc !== disc && !p.discs.includes(disc)) return false;
-    if (q && !p.name.toLowerCase().includes(q)) return false;
+    if (q) {
+      const hay = `${p.name} ${p.country ?? ""}`.toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
     return true;
   });
   const total = filtered.length;
@@ -318,57 +568,25 @@ export async function listDirectoryPlayers(opts?: {
   };
 }
 
-/** Leaderboard slice computed server-side (avoids shipping full directory). */
-export async function listDirectoryBoard(opts?: {
-  q?: string;
-  disc?: Disc | "all";
-  metric?: "winRate" | "wins" | "matches" | "threeGames" | "withVideo";
-  limit?: number;
-}): Promise<{ players: DirectoryPlayer[]; total: number }> {
-  const q = (opts?.q ?? "").trim().toLowerCase();
-  const disc = opts?.disc && opts.disc !== "all" ? opts.disc : null;
-  const metric = opts?.metric ?? "winRate";
-  const limit = Math.min(Math.max(opts?.limit ?? 50, 1), 100);
-  const all = await getDirectoryPlayers();
-  let filtered = all.filter((p) => {
-    if (disc && p.disc !== disc && !p.discs.includes(disc)) return false;
-    if (q && !p.name.toLowerCase().includes(q)) return false;
-    return true;
-  });
-  if (metric === "winRate") {
-    filtered = filtered.filter((p) => p.wins + p.losses >= 3);
-  } else {
-    filtered = filtered.filter((p) => p.matches >= 1);
-  }
-  const get = (p: DirectoryPlayer) => {
-    switch (metric) {
-      case "wins":
-        return p.wins;
-      case "matches":
-        return p.matches;
-      case "threeGames":
-        return p.threeGames;
-      case "withVideo":
-        return p.withVideo;
-      default:
-        return p.winRate;
-    }
-  };
-  filtered = filtered.slice().sort((a, b) => get(b) - get(a) || b.wins - a.wins);
-  return { players: filtered.slice(0, limit), total: filtered.length };
-}
-
 /** Slim rows for H2H picker seed + remote typeahead. */
 export async function searchDirectoryPlayers(
   q: string,
   limit = 40,
 ): Promise<
-  { id: string; name: string; matches: number; disc: DirectoryPlayer["disc"] }[]
+  {
+    id: string;
+    name: string;
+    matches: number;
+    disc: DirectoryPlayer["disc"];
+    country: string | null;
+  }[]
 > {
   const query = q.trim().toLowerCase().slice(0, 100);
   const all = await getDirectoryPlayers();
   const rows = (query
-    ? all.filter((p) => p.name.toLowerCase().includes(query))
+    ? all.filter((p) =>
+        `${p.name} ${p.country ?? ""}`.toLowerCase().includes(query),
+      )
     : all.slice().sort((a, b) => b.matches - a.matches)
   ).slice(0, Math.min(Math.max(limit, 1), 80));
   return rows.map((p) => ({
@@ -376,26 +594,54 @@ export async function searchDirectoryPlayers(
     name: p.name,
     matches: p.matches,
     disc: p.disc,
+    country: p.country,
   }));
 }
 
-/** Home leaderboard rows — slim directory DTOs (no form/rivals payload). */
-export async function getTopPlayers(opts?: {
+/** Form boards: Glicko rank_score per discipline (pairs for MD/WD/XD). */
+export async function listFormBoard(opts?: {
+  q?: string;
   disc?: Disc | "all";
   limit?: number;
-}): Promise<DirectoryPlayer[]> {
-  const { directoryPlayers } = await getCatalogSnapshot();
-  return topPlayersFromList(directoryPlayers, {
-    disc: opts?.disc,
-    limit: opts?.limit,
-    minDecided: 3,
-  });
-}
-
-/** Featured matches for home: late rounds first (not chronological “recent”). */
-export async function getFeaturedMatches(
-  limit = 6,
-): Promise<CatalogMatch[]> {
-  const { matches } = await getCatalogSnapshot();
-  return sortMatches(matches, "round").slice(0, limit);
+}): Promise<{ rows: FormBoardRow[]; total: number }> {
+  if (process.env.CATALOG_FIXTURE === "1") {
+    const { ratingsByKey, directoryPlayers } = await getCatalogSnapshot();
+    const knownIds = new Set(directoryPlayers.map((p) => p.id));
+    return buildFormBoard(ratingsByKey, knownIds, opts);
+  }
+  requireServiceRole();
+  const limit = Math.min(Math.max(opts?.limit ?? 80, 1), 200);
+  const disc = opts?.disc && opts.disc !== "all" ? opts.disc : null;
+  const q = sanitizeFilterValue(opts?.q ?? "").slice(0, BWF_SEARCH_MAX_Q);
+  const client = createServiceClient();
+  let query = client
+    .from("player_ratings")
+    .select(
+      "web_id,discipline,kind,mu,rd,rank_score,peak_mu,matches,display_name",
+      { count: "exact" },
+    )
+    .in("kind", ["player", "pair"])
+    .in("discipline", [...DISCS])
+    .not("rank_score", "is", null);
+  if (disc) query = query.eq("discipline", disc);
+  if (q) {
+    query = query.ilike("display_name", `%${q}%`);
+  }
+  const { data, error, count } = await query
+    .order("rank_score", { ascending: false })
+    .order("matches", { ascending: false })
+    .order("display_name", { ascending: true })
+    .limit(limit);
+  if (error) {
+    throw new Error(`BWF form board failed: ${error.message}`);
+  }
+  if (!Array.isArray(data)) {
+    throw new Error("BWF form board failed: empty response");
+  }
+  const rows = mapFormBoardRows(data as FormBoardSqlRow[]);
+  const total = count ?? rows.length;
+  if (rows.length === 0 && total > 0) {
+    throw new Error("BWF form board failed: ratings rows did not map");
+  }
+  return { rows, total };
 }

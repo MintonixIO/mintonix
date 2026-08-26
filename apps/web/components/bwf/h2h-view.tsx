@@ -10,6 +10,7 @@ import type {
   CatalogMatch,
   DirectoryPlayer,
   H2hPickerPlayer,
+  FormRating,
 } from "@/lib/bwf/types";
 import { cn } from "@/lib/utils";
 
@@ -17,27 +18,44 @@ export function H2hView({
   players,
   initialA,
   initialB,
+  initialA2 = "",
+  initialB2 = "",
   meetings,
   aWins,
   bWins,
   a,
   b,
+  pairMode = false,
+  pairAName = null,
+  pairBName = null,
+  pairARating = null,
+  pairBRating = null,
 }: {
   /** Slim seed options for the picker (not the full directory). */
   players: H2hPickerPlayer[];
   initialA: string;
   initialB: string;
+  initialA2?: string;
+  initialB2?: string;
   meetings: CatalogMatch[];
   aWins: number;
   bWins: number;
   /** Directory stats for the selected pair (no form/rivals payload). */
   a: DirectoryPlayer | null;
   b: DirectoryPlayer | null;
+  pairMode?: boolean;
+  pairAName?: string | null;
+  pairBName?: string | null;
+  pairARating?: FormRating | null;
+  pairBRating?: FormRating | null;
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [pendingA, setPendingA] = useState<string | null>(null);
   const [pendingB, setPendingB] = useState<string | null>(null);
+  const [pendingA2, setPendingA2] = useState<string | null>(null);
+  const [pendingB2, setPendingB2] = useState<string | null>(null);
+  const [showPairs, setShowPairs] = useState(pairMode);
   const [extraLabels, setExtraLabels] = useState<
     Record<string, H2hPickerPlayer>
   >({});
@@ -45,10 +63,15 @@ export function H2hView({
   useEffect(() => {
     setPendingA(null);
     setPendingB(null);
-  }, [initialA, initialB]);
+    setPendingA2(null);
+    setPendingB2(null);
+    setShowPairs(pairMode);
+  }, [initialA, initialB, initialA2, initialB2, pairMode]);
 
   const h2hA = pendingA ?? initialA;
   const h2hB = pendingB ?? initialB;
+  const h2hA2 = pendingA2 ?? initialA2;
+  const h2hB2 = pendingB2 ?? initialB2;
   const pa = a;
   const pb = b;
 
@@ -62,6 +85,7 @@ export function H2hView({
         name: pa.name,
         matches: pa.matches,
         disc: pa.disc,
+        country: pa.country,
       });
     }
     if (pb) {
@@ -70,28 +94,73 @@ export function H2hView({
         name: pb.name,
         matches: pb.matches,
         disc: pb.disc,
+        country: pb.country,
       });
     }
     return [...map.values()];
   })();
 
-  const syncUrl = (aid: string, bid: string) => {
+  const syncUrl = (aid: string, bid: string, a2 = h2hA2, b2 = h2hB2) => {
     setPendingA(aid);
     setPendingB(bid);
+    setPendingA2(a2);
+    setPendingB2(b2);
     startTransition(() => {
-      router.replace(`/bwf/h2h?a=${aid}&b=${bid}`, { scroll: false });
+      const q = new URLSearchParams({ a: aid, b: bid });
+      if (a2) q.set("a2", a2);
+      if (b2) q.set("b2", b2);
+      router.replace(`/bwf/h2h?${q.toString()}`, { scroll: false });
     });
+  };
+
+  const remember = (player: H2hPickerPlayer) => {
+    setExtraLabels((prev) => ({ ...prev, [player.id]: player }));
   };
 
   if (!pa) {
     return (
-      <section className="rounded-[14px] border border-dashed border-[var(--border)] px-6 py-16 text-center text-[13px] text-[var(--text-muted)]">
-        No players in the catalog yet.
+      <section>
+        <div className="mb-5">
+          <h1 className="font-display text-[28px] font-semibold tracking-[-0.025em] text-[var(--text-strong)]">
+            Head-to-Head
+          </h1>
+          <p className="mt-[7px] max-w-[60ch] text-[14.5px] leading-[1.55] text-[var(--text-secondary)]">
+            Pick two players to see every catalog meeting.
+          </p>
+        </div>
+        <div className="mb-4 grid grid-cols-1 items-start gap-4 md:grid-cols-[1fr_auto_1fr]">
+          <PlayerPicker
+            players={allPlayers}
+            selectedId={h2hA}
+            accent="a"
+            remoteSearch
+            disabled={isPending}
+            onSelect={(player) => {
+              remember(player);
+              syncUrl(player.id, h2hB);
+            }}
+          />
+          <span className="pt-3 text-center font-mono text-[13px] text-[var(--text-faint)]">
+            vs
+          </span>
+          <PlayerPicker
+            players={allPlayers}
+            selectedId={h2hB}
+            accent="b"
+            placeholder="Select opponent"
+            remoteSearch
+            disabled={isPending}
+            onSelect={(player) => {
+              remember(player);
+              syncUrl(h2hA, player.id);
+            }}
+          />
+        </div>
       </section>
     );
   }
 
-  const MEETING_CAP = 50;
+  const MEETING_CAP = 200;
   const shownMeetings = meetings.slice(0, MEETING_CAP);
   const n = meetings.length;
   const truncated = n > MEETING_CAP;
@@ -99,6 +168,12 @@ export function H2hView({
     allPlayers.find((p) => p.id === h2hA)?.name ?? pa.name;
   const displayB =
     allPlayers.find((p) => p.id === h2hB)?.name ?? pb?.name ?? null;
+  const displayA2 =
+    allPlayers.find((p) => p.id === h2hA2)?.name ?? pairAName;
+  const displayB2 =
+    allPlayers.find((p) => p.id === h2hB2)?.name ?? pairBName;
+  const labelA = displayA2 ? `${displayA} / ${displayA2}` : displayA;
+  const labelB = displayB2 && displayB ? `${displayB} / ${displayB2}` : displayB;
 
   return (
     <section
@@ -113,58 +188,109 @@ export function H2hView({
           Head-to-Head
         </h1>
         <p className="mt-[7px] max-w-[60ch] text-[14.5px] leading-[1.55] text-[var(--text-secondary)]">
-          Career meetings computed from the BWF match catalog — not simulated
-          records. Search the full directory from the pickers (type 2+
-          characters). Players are keyed by display name; homonyms may be
-          merged until a dedicated identity table exists.
+          Career meetings from the BWF catalog. Same-name players are split by
+          association — country shows on every picker row. Search the full
+          directory (type 2+ characters). Doubles: add partners for pair vs pair.
         </p>
       </div>
 
-      <div className="mb-4 grid grid-cols-1 items-center gap-4 md:grid-cols-[1fr_auto_1fr]">
-        <div className="flex items-center gap-2.5">
-          <span
-            className="h-2.5 w-2.5 shrink-0 rounded-full"
-            style={{ background: PA }}
-          />
-          <PlayerPicker
-            players={allPlayers}
-            selectedId={h2hA}
-            accent="a"
-            remoteSearch
-            disabled={isPending}
-            onSelect={(player) => {
-              setExtraLabels((prev) => ({ ...prev, [player.id]: player }));
-              let nextB = h2hB;
-              if (nextB === player.id) {
-                const opp = allPlayers.find((x) => x.id !== player.id);
-                if (opp) nextB = opp.id;
-              }
-              syncUrl(player.id, nextB);
-            }}
-          />
+      <div className="mb-4 grid grid-cols-1 items-start gap-4 md:grid-cols-[1fr_auto_1fr]">
+        <div className="space-y-2">
+          <div className="flex items-center gap-2.5">
+            <span
+              className="h-2.5 w-2.5 shrink-0 rounded-full"
+              style={{ background: PA }}
+            />
+            <PlayerPicker
+              players={allPlayers}
+              selectedId={h2hA}
+              accent="a"
+              remoteSearch
+              disabled={isPending}
+              onSelect={(player) => {
+                remember(player);
+                let nextB = h2hB;
+                if (nextB === player.id) {
+                  const opp = allPlayers.find((x) => x.id !== player.id);
+                  if (opp) nextB = opp.id;
+                }
+                const nextA2 = h2hA2 === player.id ? "" : h2hA2;
+                syncUrl(player.id, nextB, nextA2, h2hB2);
+              }}
+            />
+          </div>
+          {showPairs ? (
+            <PlayerPicker
+              players={allPlayers}
+              selectedId={h2hA2}
+              accent="a"
+              excludeId={h2hA}
+              placeholder="Partner (optional)"
+              remoteSearch
+              disabled={isPending}
+              onSelect={(player) => {
+                remember(player);
+                syncUrl(h2hA, h2hB, player.id, h2hB2);
+              }}
+            />
+          ) : null}
         </div>
-        <span className="text-center font-mono text-[13px] text-[var(--text-faint)]">
+        <span className="pt-3 text-center font-mono text-[13px] text-[var(--text-faint)]">
           vs
         </span>
-        <div className="flex items-center gap-2.5">
-          <PlayerPicker
-            players={allPlayers}
-            selectedId={h2hB}
-            accent="b"
-            excludeId={h2hA}
-            placeholder="Select opponent"
-            remoteSearch
-            disabled={isPending}
-            onSelect={(player) => {
-              setExtraLabels((prev) => ({ ...prev, [player.id]: player }));
-              syncUrl(h2hA, player.id);
-            }}
-          />
-          <span
-            className="h-2.5 w-2.5 shrink-0 rounded-full"
-            style={{ background: PB }}
-          />
+        <div className="space-y-2">
+          <div className="flex items-center gap-2.5">
+            <PlayerPicker
+              players={allPlayers}
+              selectedId={h2hB}
+              accent="b"
+              excludeId={h2hA}
+              placeholder="Select opponent"
+              remoteSearch
+              disabled={isPending}
+              onSelect={(player) => {
+                remember(player);
+                const nextB2 = h2hB2 === player.id ? "" : h2hB2;
+                syncUrl(h2hA, player.id, h2hA2, nextB2);
+              }}
+            />
+            <span
+              className="h-2.5 w-2.5 shrink-0 rounded-full"
+              style={{ background: PB }}
+            />
+          </div>
+          {showPairs ? (
+            <PlayerPicker
+              players={allPlayers}
+              selectedId={h2hB2}
+              accent="b"
+              excludeId={h2hB}
+              placeholder="Partner (optional)"
+              remoteSearch
+              disabled={isPending}
+              onSelect={(player) => {
+                remember(player);
+                syncUrl(h2hA, h2hB, h2hA2, player.id);
+              }}
+            />
+          ) : null}
         </div>
+      </div>
+      <div className="mb-4">
+        <button
+          type="button"
+          onClick={() => {
+            if (showPairs) {
+              setShowPairs(false);
+              syncUrl(h2hA, h2hB, "", "");
+            } else {
+              setShowPairs(true);
+            }
+          }}
+          className="inline-flex min-h-10 items-center rounded-[10px] border border-[var(--border)] bg-[var(--surface-1)] px-3 text-[12.5px] text-[var(--text-secondary)] hover:border-[var(--border-strong)] hover:text-[var(--text-strong)]"
+        >
+          {showPairs ? "Person vs person" : "Compare as pairs"}
+        </button>
       </div>
 
       <div className="mb-3.5 grid gap-3.5 md:grid-cols-2">
@@ -180,17 +306,30 @@ export function H2hView({
                 className="mx-auto mb-2.5"
               />
               <div className="font-display text-sm font-semibold text-[var(--text-strong)]">
-                {displayA}
+                {labelA}
+                {pa.country ? (
+                  <span className="ml-1.5 font-mono text-[10.5px] font-normal uppercase text-[var(--text-faint)]">
+                    {pa.country}
+                  </span>
+                ) : null}
               </div>
               <div className="mt-1 font-mono text-[10.5px] text-[var(--text-muted)]">
                 {h2hA === pa.id
-                  ? `${pa.winRate}% career · ${pa.matches} matches`
+                  ? pairMode
+                    ? pairARating?.rankScore != null
+                      ? `pair form ${Math.round(pairARating.rankScore)}`
+                      : "pair form —"
+                    : `${pa.winRate}% career · ${pa.matches} matches${
+                        pa.rating?.rankScore != null
+                          ? ` · form ${Math.round(pa.rating.rankScore)}`
+                          : ""
+                      }`
                   : "Loading…"}
               </div>
             </div>
             <div className="text-center">
               <div className="font-mono text-[10px] uppercase tracking-wide text-[var(--text-faint)]">
-                Catalog H2H
+                {pairMode ? "Pair H2H" : "Catalog H2H"}
               </div>
               <div className="mt-1 font-display text-[32px] font-semibold tabular-nums text-[var(--text-strong)]">
                 {h2hA === pa.id && h2hB === (pb?.id ?? "")
@@ -209,7 +348,7 @@ export function H2hView({
               {displayB ? (
                 <>
                   <Avatar
-                    name={displayB}
+                    name={labelB ?? displayB}
                     src={
                       pb && h2hB === pb.id
                         ? (pb.imageUrl ?? undefined)
@@ -219,11 +358,24 @@ export function H2hView({
                     className="mx-auto mb-2.5"
                   />
                   <div className="font-display text-sm font-semibold text-[var(--text-strong)]">
-                    {displayB}
+                    {labelB}
+                    {pb?.country ? (
+                      <span className="ml-1.5 font-mono text-[10.5px] font-normal uppercase text-[var(--text-faint)]">
+                        {pb.country}
+                      </span>
+                    ) : null}
                   </div>
                   <div className="mt-1 font-mono text-[10.5px] text-[var(--text-muted)]">
                     {pb && h2hB === pb.id
-                      ? `${pb.winRate}% career · ${pb.matches} matches`
+                      ? pairMode
+                        ? pairBRating?.rankScore != null
+                          ? `pair form ${Math.round(pairBRating.rankScore)}`
+                          : "pair form —"
+                        : `${pb.winRate}% career · ${pb.matches} matches${
+                            pb.rating?.rankScore != null
+                              ? ` · form ${Math.round(pb.rating.rankScore)}`
+                              : ""
+                          }`
                       : "Loading…"}
                   </div>
                 </>
@@ -249,11 +401,18 @@ export function H2hView({
                 : n === 0
                   ? "No shared matches in the catalog"
                   : truncated
-                    ? `Showing latest ${MEETING_CAP} of ${n} meetings · scoreline + event`
-                    : `All ${n} meeting${n === 1 ? "" : "s"} · scoreline + event`}
+                    ? `Showing latest ${MEETING_CAP} of ${n} · date · event · round · 2–0/2–1`
+                    : `All ${n} meeting${n === 1 ? "" : "s"} · date · event · round · score`}
             </div>
           </div>
-          <div className="max-h-[280px] space-y-2 overflow-y-auto">
+        {pairMode ? (
+          <p className="mb-3 font-mono text-[11px] text-[var(--text-muted)]">
+            Pair vs pair
+            {pairAName ? ` · ${displayA} / ${pairAName}` : ""}
+            {pairBName ? ` vs ${displayB} / ${pairBName}` : ""}
+          </p>
+        ) : null}
+        <div className="max-h-[420px] space-y-2 overflow-y-auto">
             {h2hA !== pa.id || h2hB !== (pb?.id ?? "") ? (
               <div className="rounded-lg border border-dashed border-[var(--border)] px-3 py-8 text-center text-[12.5px] text-[var(--text-muted)]">
                 {isPending ? "Updating head-to-head…" : "Select players above."}
@@ -304,30 +463,54 @@ export function H2hView({
             Catalog comparison
           </span>
           <span className="font-mono text-[10.5px] uppercase tracking-[0.08em] text-[var(--text-faint)]">
-            from match rows
+            {pairMode ? "pair form + this H2H" : "from match rows"}
           </span>
         </div>
         {pb && h2hA === pa.id && h2hB === pb.id ? (
           <div className="space-y-3">
             {[
-              { k: "Win rate", a: pa.winRate, b: pb.winRate, unit: "%" },
-              { k: "Wins", a: pa.wins, b: pb.wins, unit: "" },
-              { k: "Matches", a: pa.matches, b: pb.matches, unit: "" },
-              {
-                k: "Three-game",
-                a: pa.threeGames,
-                b: pb.threeGames,
-                unit: "",
-              },
-              {
-                k: "With video",
-                a: pa.withVideo,
-                b: pb.withVideo,
-                unit: "",
-              },
+              ...(pairMode
+                ? [
+                    {
+                      k: "Pair form",
+                      a: pairARating?.rankScore ?? null,
+                      b: pairBRating?.rankScore ?? null,
+                      unit: "",
+                    },
+                    { k: "H2H wins", a: aWins, b: bWins, unit: "" },
+                  ]
+                : [
+                    { k: "Win rate", a: pa.winRate, b: pb.winRate, unit: "%" },
+                    {
+                      k: "Form",
+                      a: pa.rating?.rankScore ?? null,
+                      b: pb.rating?.rankScore ?? null,
+                      unit: "",
+                    },
+                    { k: "Wins", a: pa.wins, b: pb.wins, unit: "" },
+                    { k: "Matches", a: pa.matches, b: pb.matches, unit: "" },
+                    {
+                      k: "Three-game",
+                      a: pa.threeGames,
+                      b: pb.threeGames,
+                      unit: "",
+                    },
+                    {
+                      k: "With video",
+                      a: pa.withVideo,
+                      b: pb.withVideo,
+                      unit: "",
+                    },
+                  ]),
             ].map((m) => {
-              const aHi = m.a >= m.b;
-              const max = Math.max(m.a, m.b, 1);
+              const aVal = m.a;
+              const bVal = m.b;
+              const aNum = aVal ?? 0;
+              const bNum = bVal ?? 0;
+              const aHi = aVal != null && (bVal == null || aNum >= bNum);
+              const max = Math.max(aNum, bNum, 1);
+              const fmt = (v: number | null) =>
+                v == null ? "—" : `${Math.round(v)}${m.unit}`;
               return (
                 <div
                   key={m.k}
@@ -336,19 +519,18 @@ export function H2hView({
                   <span
                     className={cn(
                       "text-right font-mono text-sm tabular-nums",
-                      aHi
+                      aVal != null && aHi
                         ? "font-semibold text-[var(--player-a)]"
                         : "text-[var(--text-secondary)]",
                     )}
                   >
-                    {m.a}
-                    {m.unit}
+                    {fmt(aVal)}
                   </span>
                   <div className="flex h-2 justify-end overflow-hidden rounded-full bg-[var(--surface-3)]">
                     <div
                       className="h-full rounded-full bg-[var(--player-a)]"
                       style={{
-                        width: `${(m.a / max) * 100}%`,
+                        width: aVal == null ? "0%" : `${(aNum / max) * 100}%`,
                         opacity: aHi ? 1 : 0.5,
                       }}
                     />
@@ -360,7 +542,7 @@ export function H2hView({
                     <div
                       className="h-full rounded-full bg-[var(--player-b)]"
                       style={{
-                        width: `${(m.b / max) * 100}%`,
+                        width: bVal == null ? "0%" : `${(bNum / max) * 100}%`,
                         opacity: !aHi ? 1 : 0.5,
                       }}
                     />
@@ -368,13 +550,12 @@ export function H2hView({
                   <span
                     className={cn(
                       "font-mono text-sm tabular-nums",
-                      !aHi
+                      bVal != null && !aHi
                         ? "font-semibold text-[var(--player-b)]"
                         : "text-[var(--text-secondary)]",
                     )}
                   >
-                    {m.b}
-                    {m.unit}
+                    {fmt(bVal)}
                   </span>
                 </div>
               );

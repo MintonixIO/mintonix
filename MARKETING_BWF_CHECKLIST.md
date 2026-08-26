@@ -50,14 +50,14 @@ Last updated: 2026-08-01 (remaining issues batch)
 | F2.1 | Fail-closed env | [x] | Catalog errors + missing key path |
 | F2.2 | owner_id filter | [x] | Already enforced in catalog |
 | F2.3 | min decided copy | [x] | Home boards |
-| F2.4 | Homonym caveat | [x] | Home + profiles |
+| F2.4 | Homonym identity | [x] | Country + wiki (born YEAR) split; unique-country fill |
 | F2.5 | Form date note | [x] | Profile copy |
 | F2.6 | Doubles rivals note | [x] | Profile rivalries |
 | F2.7 | Round filter | [-] | Exact match OK; alias table deferred |
 | F2.8 | YouTube allowlist UX | [x] | Detail already omits non-YT |
 | F2.9 | Player images null-safe | [x] | Avatar handles missing src |
 | F3.2 | Cache docs | [x] | README + catalog comments |
-| F3.3 | Year-scope plan | [x] | Documented YEAR-SCOPE in catalog |
+| F3.3 | Year-scope plan | [-] | Dropped; snapshot is process RAM, not year-scoped |
 | F3.5 | H2H meeting cap | [x] | Cap 50 |
 | F3.6 | Tournament filter scale | [x] | Input + datalist typeahead |
 | F-quality | Search a11y / mobile | [x] | aria-labels + wrap |

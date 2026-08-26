@@ -1,9 +1,16 @@
 import { notFound } from "next/navigation";
 import { BwfErrorState } from "@/components/bwf/error-state";
-import { PlayerProfile } from "@/components/bwf/player-profile";
-import { getPlayerById, getPlayerMatches } from "@/lib/bwf/catalog";
+import {
+  HomonymDisambiguation,
+  PlayerProfile,
+} from "@/components/bwf/player-profile";
+import {
+  getPlayerById,
+  getPlayerMatches,
+  listPlayerHomonyms,
+} from "@/lib/bwf/catalog";
 import { catalogUserError } from "@/lib/bwf/errors";
-import type { CatalogMatch, CatalogPlayer } from "@/lib/bwf/types";
+import type { CatalogMatch, CatalogPlayer, DirectoryPlayer } from "@/lib/bwf/types";
 
 export const revalidate = 300;
 
@@ -15,11 +22,16 @@ export default async function BwfPlayerPage({
   const { id } = await params;
   let profile: CatalogPlayer | null = null;
   let matches: CatalogMatch[] = [];
+  let homonyms: DirectoryPlayer[] = [];
   let error: string | null = null;
 
   try {
     profile = await getPlayerById(id);
-    if (profile) matches = await getPlayerMatches(id, 40);
+    if (profile) {
+      matches = await getPlayerMatches(profile.id, 40);
+    } else {
+      homonyms = await listPlayerHomonyms(id);
+    }
   } catch (err) {
     error = catalogUserError(err, "bwf/player-detail");
   }
@@ -27,7 +39,12 @@ export default async function BwfPlayerPage({
   if (error) {
     return <BwfErrorState title="Could not load player" message={error} />;
   }
-  if (!profile) notFound();
+  if (!profile) {
+    if (homonyms.length > 1) {
+      return <HomonymDisambiguation queryId={id} candidates={homonyms} />;
+    }
+    notFound();
+  }
 
   return <PlayerProfile profile={profile} matches={matches} />;
 }

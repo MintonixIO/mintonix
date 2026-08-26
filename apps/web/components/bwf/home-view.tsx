@@ -1,34 +1,32 @@
+"use client";
+
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { ArrowRight } from "lucide-react";
-import { Avatar } from "@/components/ui/avatar";
-import { MatchCard } from "@/components/bwf/match-card";
-import type {
-  CatalogMatch,
-  DirectoryPlayer,
-  Disc,
-  HomeStats,
-} from "@/lib/bwf/types";
-import { DISC_LABEL } from "@/lib/bwf/types";
+import { useTransition } from "react";
+import { FormBoardList } from "@/components/bwf/form-board-list";
+import { Tabs } from "@/components/ui/tabs";
+import { DISC_LABEL, DISCS } from "@/lib/bwf/types";
+import type { Disc, FormBoardRow, HomeStats } from "@/lib/bwf/types";
+import { cn } from "@/lib/utils";
+
+function homeHref(disc: Disc): string {
+  return disc === "MS" ? "/bwf" : `/bwf?disc=${disc}`;
+}
 
 export function HomeView({
   stats,
-  featuredMatches,
-  topMs,
-  topWs,
+  disc,
+  formBoard,
+  formBoardTotal,
 }: {
   stats: HomeStats;
-  featuredMatches: CatalogMatch[];
-  topMs: DirectoryPlayer[];
-  topWs: DirectoryPlayer[];
+  disc: Disc;
+  formBoard: FormBoardRow[];
+  formBoardTotal: number;
 }) {
-  const topGroups: {
-    title: string;
-    disc: Disc;
-    players: DirectoryPlayer[];
-  }[] = [
-    { title: DISC_LABEL.MS, disc: "MS", players: topMs },
-    { title: DISC_LABEL.WS, disc: "WS", players: topWs },
-  ];
+  const router = useRouter();
+  const [isPending, startTransition] = useTransition();
 
   const chips = [
     {
@@ -54,16 +52,17 @@ export function HomeView({
   ];
 
   return (
-    <section>
+    <section
+      className={cn(isPending && "opacity-90 transition-opacity")}
+      aria-busy={isPending}
+    >
       <div className="mb-5">
         <h1 className="font-display text-[28px] font-semibold tracking-[-0.025em] text-[var(--text-strong)]">
-          BWF match catalog
+          BWF catalog
         </h1>
         <p className="mt-[7px] max-w-[62ch] text-[14.5px] leading-[1.55] text-[var(--text-secondary)]">
-          Browse finished BWF matches loaded into Mintonix — scores, disciplines,
-          and video links where we have coverage. Open a match for full detail or
-          jump into player records and head-to-head. Player identity is name-based
-          for now (homonyms may share a profile).
+          Form from catalog results (rank score = μ − 2×RD). Doubles boards
+          are pairs. Same-name players stay separate by association.
         </p>
       </div>
 
@@ -102,112 +101,54 @@ export function HomeView({
           ))}
       </div>
 
-      <div className="mb-7">
-        <div className="mb-3.5 flex items-baseline gap-2.5">
-          <h2 className="font-display text-lg font-semibold tracking-[-0.02em] text-[var(--text-strong)]">
-            Top players
-          </h2>
-          <span className="font-mono text-[11px] text-[var(--text-muted)]">
-            by win rate · min 3 decided results
-          </span>
-          <div className="flex-1" />
-          <Link
-            href="/bwf/players"
-            className="inline-flex min-h-10 items-center gap-1.5 text-[13px] text-[var(--text-link)] hover:text-[var(--accent)]"
-          >
-            All players
-            <ArrowRight className="h-3.5 w-3.5" />
-          </Link>
-        </div>
-        <div className="grid gap-3.5 lg:grid-cols-2">
-          {topGroups.map((g) => (
-            <div
-              key={g.title}
-              className="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface-1)] shadow-[var(--shadow-edge)]"
-            >
-              <div className="px-4 py-3 font-mono text-[10.5px] uppercase tracking-[0.08em] text-[var(--accent)]">
-                {g.title}
-              </div>
-              <div className="max-h-[284px] overflow-y-auto">
-                {g.players.length === 0 ? (
-                  <div className="border-t border-[var(--border-subtle)] px-4 py-6 text-[13px] text-[var(--text-muted)]">
-                    No players yet for this discipline.
-                  </div>
-                ) : (
-                  g.players.map((p, i) => (
-                    <Link
-                      key={p.id}
-                      href={`/bwf/players/${p.id}`}
-                      className="flex w-full items-center gap-3 border-t border-[var(--border-subtle)] px-4 py-3 min-h-10 text-left hover:bg-[var(--surface-2)]"
-                    >
-                      <span className="w-5 text-right font-mono text-xs tabular-nums text-[var(--text-faint)]">
-                        {i + 1}
-                      </span>
-                      <Avatar
-                        name={p.name}
-                        src={p.imageUrl ?? undefined}
-                        size={34}
-                      />
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate font-display text-sm font-semibold text-[var(--text-strong)]">
-                          {p.name}
-                        </span>
-                        <span className="mt-0.5 block font-mono text-[10.5px] text-[var(--text-muted)]">
-                          {p.wins}–{p.losses} · {p.matches} matches
-                        </span>
-                      </span>
-                      <span className="flex shrink-0 flex-col items-end">
-                        <span className="font-mono text-[13px] tabular-nums text-[var(--success-500)]">
-                          {p.winRate}%
-                        </span>
-                        <span className="font-mono text-[9px] uppercase tracking-[0.1em] text-[var(--text-faint)]">
-                          win rate
-                        </span>
-                      </span>
-                    </Link>
-                  ))
-                )}
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      <div className="mb-3.5 flex items-baseline gap-2.5">
+      <div className="mb-3.5 flex flex-wrap items-center gap-3">
         <h2 className="font-display text-lg font-semibold tracking-[-0.02em] text-[var(--text-strong)]">
-          Featured matches
+          Form board
         </h2>
-        <span className="font-mono text-[11px] text-[var(--text-muted)]">
-          late rounds first
-        </span>
+        <Tabs
+          variant="pill"
+          value={disc}
+          onChange={(v) => {
+            const next = v as Disc;
+            startTransition(() => {
+              router.replace(homeHref(next), { scroll: false });
+            });
+          }}
+          items={DISCS.map((d) => ({ value: d, label: d }))}
+          aria-label="Form board discipline"
+        />
         <div className="flex-1" />
         <Link
-          href="/bwf/matches"
+          href={`/bwf/players?mode=boards&disc=${disc}`}
           className="inline-flex min-h-10 items-center gap-1.5 text-[13px] text-[var(--text-link)] hover:text-[var(--accent)]"
         >
-          Browse all matches
+          Full {disc} board
           <ArrowRight className="h-3.5 w-3.5" />
         </Link>
       </div>
-      {featuredMatches.length === 0 ? (
-        <div className="rounded-[14px] border border-dashed border-[var(--border)] px-6 py-12 text-center">
-          <p className="text-[13px] text-[var(--text-muted)]">
-            No matches loaded yet.
-          </p>
-          <Link
-            href="/bwf/matches"
-            className="mt-4 inline-flex min-h-10 items-center justify-center rounded-[10px] border border-[var(--border)] px-4 text-[13px] font-medium text-[var(--text-strong)] hover:bg-[var(--surface-2)]"
-          >
-            Browse match library
-          </Link>
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 gap-4 pb-2 md:grid-cols-2 xl:grid-cols-3">
-          {featuredMatches.map((m) => (
-            <MatchCard key={m.id} m={m} />
-          ))}
-        </div>
-      )}
+
+      <p className="mb-4 font-mono text-[11.5px] text-[var(--text-muted)]">
+        {DISC_LABEL[disc]}
+        {disc === "MD" || disc === "WD" || disc === "XD"
+          ? " · pairs"
+          : " · singles"}
+        {formBoardTotal > 0
+          ? ` · top ${formBoard.length}${
+              formBoardTotal > formBoard.length ? ` of ${formBoardTotal}` : ""
+            }`
+          : ""}
+      </p>
+
+      <FormBoardList
+        rows={formBoard}
+        empty={
+          <div className="rounded-[14px] border border-dashed border-[var(--border)] px-6 py-12 text-center">
+            <p className="text-[13px] text-[var(--text-muted)]">
+              No form ratings for {DISC_LABEL[disc]} yet.
+            </p>
+          </div>
+        }
+      />
     </section>
   );
 }

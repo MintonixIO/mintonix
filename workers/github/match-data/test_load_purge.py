@@ -64,6 +64,36 @@ class LoadPurgeHelperTests(unittest.TestCase):
             self.assertEqual(params["owner_id"], "is.null")
             self.assertTrue(params["id"].startswith("in."))
 
+    def test_walkover_without_scores_is_persisted(self):
+        scores = {f"g{n}_t{s}": None for n in (1, 2, 3) for s in (1, 2)}
+        match = {
+            "result": "walkover",
+            "team1": {"is_winner": True},
+            "team2": {"is_winner": False},
+            "games": [],
+        }
+        winner = self.mod.resolve_winner(match, scores, 0, 0, 0, 0)
+        result = self.mod.classify_match_result(match, winner, scores)
+        self.assertEqual(result, "walkover")
+        self.assertEqual(winner, 1)
+        self.assertTrue(
+            self.mod.should_persist_match(
+                "Viktor Axelsen", "Kodai Naraoka", result, winner, scores
+            )
+        )
+
+    def test_bye_is_not_persisted(self):
+        scores = {f"g{n}_t{s}": None for n in (1, 2, 3) for s in (1, 2)}
+        self.assertFalse(
+            self.mod.should_persist_match("Viktor Axelsen", "Bye", "walkover", 1, scores)
+        )
+
+    def test_unplayed_placeholder_is_not_persisted(self):
+        scores = {f"g{n}_t{s}": None for n in (1, 2, 3) for s in (1, 2)}
+        self.assertFalse(
+            self.mod.should_persist_match("A", "B", None, None, scores)
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

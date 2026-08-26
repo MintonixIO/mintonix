@@ -5,7 +5,9 @@ Load BWF scraped JSON into Supabase `matches` (match-centric pipeline schema).
 Canonical schema: supabase/README.md + migration
 `20260712000000_init_match_pipeline.sql`.
 
-- One row per finished match on `matches` (no nations / players / match_players).
+- One row per catalog match on `matches` (completed, walkover, retired,
+  or started-but-incomplete). Unplayed byes / TBD placeholders are skipped.
+  Ratings still drop anything without two decided games.
 - `id` = sha256(utf-8 match_key).hexdigest() — stable re-scrape key; scores are
   not part of the hash.
 - Internal `match_key` is loader-only (never a DB column):
@@ -73,10 +75,33 @@ MATCH_UPSERT_COLS = (
     "team1_player2",
     "team2_player1",
     "team2_player2",
+    "team1_player1_country",
+    "team1_player2_country",
+    "team2_player1_country",
+    "team2_player2_country",
     "g1_t1", "g1_t2",
     "g2_t1", "g2_t2",
     "g3_t1", "g3_t2",
+    "result",
+    "winner_side",
     "source_url",
+)
+
+
+COUNTRY_COLS = (
+    "team1_player1_country",
+    "team1_player2_country",
+    "team2_player1_country",
+    "team2_player2_country",
+)
+
+RESULT_COLS = ("result", "winner_side")
+
+_WO_RE = re.compile(r"\b(?:w\s*/\s*o|w/?o|walk[- ]?over)\b", re.I)
+_RET_RE = re.compile(r"\b(?:retired?|rtd|ret\.?)\b", re.I)
+_NON_PLAYER = re.compile(
+    r"^(bye|tbd|n/?a|qualifier|q\d+|lucky loser)$",
+    re.I,
 )
 
 
@@ -119,6 +144,29 @@ def upsert(table, rows, on_conflict, batch_size=500):
                 if r.status_code in (200, 201, 204):
                     total += len(batch)
                     break
+                if (
+                    r.status_code == 400
+                    and any(
+                        col in (r.text or "").lower()
+                        for col in ("country", "result", "winner_side")
+                    )
+                ):
+                    drop = set()
+                    text = (r.text or "").lower()
+                    if "country" in text:
+                        drop.update(COUNTRY_COLS)
+                    if "result" in text or "winner_side" in text:
+                        drop.update(RESULT_COLS)
+                    if drop and any(k in row for row in batch for k in drop):
+                        print(
+                            f"  unknown match columns {sorted(drop)}; "
+                            "retrying this batch without them"
+                        )
+                        batch = [
+                            {k: v for k, v in row.items() if k not in drop}
+                            for row in batch
+                        ]
+                        continue
                 if r.status_code in (429, 500, 502, 503) and attempt < 5:
                     wait = 2 ** attempt
                     print(f"  {table}: {r.status_code}, retry in {wait}s...")
@@ -342,12 +390,22 @@ def player_name(p):
     return (p.get("wiki_name") or p.get("display_name") or "").strip()
 
 
-def team_slots(team: dict) -> tuple[str | None, str | None]:
-    """Map a scraped team roster to (player1, player2); singles → player2 None."""
-    names = [player_name(p) for p in (team.get("players") or []) if player_name(p)]
+def team_slots(team: dict) -> tuple[str | None, str | None, str | None, str | None]:
+    """Map a scraped team roster to (p1, p2, c1, c2); singles → p2/c2 None."""
+    names: list[str] = []
+    countries: list[str | None] = []
+    for p in team.get("players") or []:
+        n = player_name(p)
+        if not n:
+            continue
+        names.append(n)
+        c = (p.get("country") or "").strip() or None
+        countries.append(c)
     p1 = names[0] if len(names) > 0 else None
     p2 = names[1] if len(names) > 1 else None
-    return p1, p2
+    c1 = countries[0] if len(countries) > 0 else None
+    c2 = countries[1] if len(countries) > 1 else None
+    return p1, p2, c1, c2
 
 
 _MONTHS = {
@@ -437,6 +495,54 @@ def resolve_winner(match: dict, score_cols: dict, w1: int, w2: int, n1: int, n2:
     # Last resort: any non-null score columns imply in-progress, not finished.
     _ = score_cols
     return None
+
+
+def classify_match_result(match: dict, winner: int | None, score_cols: dict) -> str | None:
+    """completed / walkover / retired / incomplete. None = unplayed placeholder."""
+    tagged = match.get("result")
+    if tagged in ("walkover", "retired"):
+        return tagged
+    texts: list[str] = []
+    for g in match.get("games") or []:
+        for k in ("score1", "score2"):
+            texts.append(str((g.get(k) or {}).get("raw") or ""))
+    blob = " ".join(texts)
+    if _WO_RE.search(blob):
+        return "walkover"
+    if _RET_RE.search(blob):
+        return "retired"
+    if winner in (1, 2):
+        return "completed"
+    if any(v is not None for v in score_cols.values()):
+        return "incomplete"
+    return None
+
+
+def is_real_player_name(name: str | None) -> bool:
+    n = (name or "").strip()
+    if not n:
+        return False
+    return _NON_PLAYER.match(n) is None
+
+
+def should_persist_match(
+    t1p1: str | None,
+    t2p1: str | None,
+    result: str | None,
+    winner: int | None,
+    score_cols: dict,
+) -> bool:
+    """Keep finished matches plus walkovers / retirements / started-but-incomplete.
+
+    Pure byes, TBD slots, and never-played placeholders stay out.
+    """
+    if not is_real_player_name(t1p1) or not is_real_player_name(t2p1):
+        return False
+    if winner in (1, 2):
+        return True
+    if result in ("walkover", "retired", "incomplete"):
+        return True
+    return any(v is not None for v in score_cols.values())
 
 
 def main():
@@ -533,15 +639,20 @@ def main():
                 season, tournament, m
             )
             winner = resolve_winner(m, score_cols, w1, w2, n1, n2)
+            result = classify_match_result(m, winner, score_cols)
 
-            # Persist finished matches only (same policy as the old loader).
-            if winner is None:
-                if not any(v is not None for v in score_cols.values()):
+            t1p1, t1p2, t1c1, t1c2 = team_slots(m["team1"])
+            t2p1, t2p2, t2c1, t2c2 = team_slots(m["team2"])
+
+            # Persist completed matches plus walkovers / retirements /
+            # started-but-incomplete. Unplayed placeholders are purged.
+            if not should_persist_match(t1p1, t2p1, result, winner, score_cols):
+                if result is None and not any(
+                    v is not None for v in score_cols.values()
+                ):
                     unfinished_purge_keys.add(match_key)
                 continue
 
-            t1p1, t1p2 = team_slots(m["team1"])
-            t2p1, t2p2 = team_slots(m["team2"])
             # Compact catalog label; identity is the hashed match_key, not this.
             tournament_label = f"{tournament} · {discipline} · {rnd}"
 
@@ -554,6 +665,12 @@ def main():
                 "team1_player2": t1p2,
                 "team2_player1": t2p1,
                 "team2_player2": t2p2,
+                "team1_player1_country": t1c1,
+                "team1_player2_country": t1c2,
+                "team2_player1_country": t2c1,
+                "team2_player2_country": t2c2,
+                "result": result,
+                "winner_side": winner,
                 **score_cols,
             }
             match_rows.append(row)

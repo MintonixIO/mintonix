@@ -2,37 +2,122 @@ import type {
   CatalogMatch,
   Disc,
   GameScore,
+  MatchResult,
   MatchStatus,
 } from "./types";
 import { DISCS } from "./types";
 
 const DISC_SET = new Set<string>(DISCS);
 
-/** Strip Wikipedia-style disambiguators: `Brian Yang (badminton)`. */
+const GENERIC_PAREN = new Set(["badminton", "player", "badminton player"]);
+
+const COUNTRY_ALIASES: Record<string, string> = {
+  prc: "chn",
+  china: "chn",
+  chinesetaipei: "tpe",
+  taiwan: "tpe",
+  korea: "kor",
+  southkorea: "kor",
+  rok: "kor",
+  denmark: "den",
+  indonesia: "ina",
+  malaysia: "mas",
+  japan: "jpn",
+  thailand: "tha",
+  india: "ind",
+  england: "eng",
+  singapore: "sgp",
+  unitedstates: "usa",
+  france: "fra",
+  germany: "ger",
+  hongkong: "hkg",
+};
+
+/** Same-person spelling variants. Must stay aligned with ratings.py. */
+const NAME_ALIASES: Record<string, string> = {
+  "wang yilu": "wang yilyu",
+  "wang yilyu": "wang yilyu",
+  "an se young": "an se-young",
+  "an seyoung": "an se-young",
+  "an se yeong": "an se-young",
+  "an se-yeong": "an se-young",
+  "an se-young": "an se-young",
+};
+
+/** Strip only generic wiki suffixes; keep (born 1980) so homonyms stay split. */
 export function cleanPlayerName(raw: string | null | undefined): string {
   if (!raw) return "";
-  return raw
-    .replace(/\s*\([^)]*badminton[^)]*\)\s*/gi, " ")
-    .replace(/\s*\(\d{4}[^)]*\)\s*/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  const rewritten = raw.replace(/_/g, " ").replace(/\(([^)]*)\)/g, (_, inner: string) => {
+    const parts = inner
+      .split(/[,;]/)
+      .map((p) => p.trim())
+      .filter(Boolean);
+    const keep = parts.filter((p) => !GENERIC_PAREN.has(p.toLowerCase()));
+    return keep.length ? ` (${keep.join(", ")})` : " ";
+  });
+  return rewritten.replace(/\s+/g, " ").trim();
 }
 
-/**
- * Stable URL-safe id from a player display name.
- * Returns empty string for blank/unusable names — callers must skip those
- * (do not mint a synthetic "unknown" player).
- */
-export function playerIdFromName(name: string): string {
-  const cleaned = cleanPlayerName(name);
-  if (!cleaned) return "";
-  return cleaned
+export function normalizeCountry(raw: string | null | undefined): string {
+  if (!raw) return "";
+  const s = raw
     .normalize("NFKD")
     .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 80);
+    .replace(/[^a-z0-9]+/g, "");
+  return COUNTRY_ALIASES[s] || s;
+}
+
+/** Ratings / URL key fragment (no country). Mirrors ratings.normalize_name. */
+export function normalizePlayerKey(raw: string | null | undefined): string {
+  const cleaned = cleanPlayerName(raw);
+  if (!cleaned) return "";
+  const key = cleaned
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+  return NAME_ALIASES[key] ?? key;
+}
+
+/**
+ * Stable URL-safe id from a player display name + optional country.
+ * Homonyms with different countries get distinct ids (`chen-yu--chn`).
+ * Returns empty string for blank/unusable names.
+ */
+export function playerIdFromName(
+  name: string,
+  country?: string | null,
+): string {
+  const key = normalizePlayerKey(name);
+  if (!key) return "";
+  let slug = key.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  const cc = normalizeCountry(country ?? "");
+  if (cc) slug = `${slug}--${cc}`;
+  return slug.slice(0, 80);
+}
+
+/** Name slug without the `--cc` country suffix (`chen-yu--chn` → `chen-yu`). */
+export function playerIdBase(id: string): string {
+  const i = id.lastIndexOf("--");
+  if (i <= 0) return id;
+  const maybeCc = id.slice(i + 2);
+  if (/^[a-z0-9]{2,4}$/.test(maybeCc)) return id.slice(0, i);
+  return id;
+}
+
+/** Country fragment of a player id, or null. */
+export function playerIdCountry(id: string): string | null {
+  const i = id.lastIndexOf("--");
+  if (i <= 0) return null;
+  const maybeCc = id.slice(i + 2);
+  return /^[a-z0-9]{2,4}$/.test(maybeCc) ? maybeCc : null;
+}
+
+export function formatCountry(cc: string | null | undefined): string {
+  if (!cc) return "";
+  return cc.toUpperCase();
 }
 
 /** Clean event titles: `2026 Swiss Open (badminton)` → `2026 Swiss Open`. */
@@ -90,6 +175,14 @@ export function parseTournament(raw: string | null | undefined): {
   const year = yearMatch ? Number(yearMatch[1]) : null;
 
   return { event, year, disc, round };
+}
+
+/** Middle ` · DISC · ` token only (list disc uses `ilike % · DISC · %`). */
+export function tournamentDiscSlot(raw: string | null | undefined): Disc | null {
+  const parts = (raw || "").split(/\s*·\s*/).map((p) => p.trim());
+  if (parts.length < 3) return null;
+  const mid = parts[1]?.toUpperCase();
+  return mid && DISC_SET.has(mid) ? (mid as Disc) : null;
 }
 
 export function teamNames(
@@ -151,9 +244,16 @@ export function isComeback(games: GameScore[], winner: 1 | 2 | null): boolean {
   return g1Winner != null && g1Winner !== winner && games.length === 3;
 }
 
-export function formatScoreLine(games: GameScore[]): string {
-  if (!games.length) return "—";
-  return games.map((g) => `${g.t1}–${g.t2}`).join(", ");
+export function formatScoreLine(
+  games: GameScore[],
+  result?: MatchResult | null,
+): string {
+  const base = games.length
+    ? games.map((g) => `${g.t1}–${g.t2}`).join(", ")
+    : "";
+  if (result === "walkover") return base ? `${base} W/O` : "W/O";
+  if (result === "retired") return base ? `${base} ret.` : "ret.";
+  return base || "—";
 }
 
 export function formatDuration(sec: number | null | undefined): string | null {
@@ -198,36 +298,73 @@ export type DbMatchRow = {
   team1_player2: string | null;
   team2_player1: string | null;
   team2_player2: string | null;
+  team1_player1_country?: string | null;
+  team1_player2_country?: string | null;
+  team2_player1_country?: string | null;
+  team2_player2_country?: string | null;
   g1_t1: number | null;
   g1_t2: number | null;
   g2_t1: number | null;
   g2_t2: number | null;
   g3_t1: number | null;
   g3_t2: number | null;
+  result?: string | null;
+  winner_side?: number | null;
   status: string;
   source_url: string | null;
   duration_sec: number | null;
   created_at: string;
 };
 
-function rosterWithIds(names: string[]): { names: string[]; ids: string[] } {
+function rosterWithIds(
+  names: string[],
+  countries: (string | null | undefined)[] = [],
+): { names: string[]; ids: string[]; countries: (string | null)[] } {
   const outNames: string[] = [];
   const ids: string[] = [];
-  for (const n of names) {
-    const id = playerIdFromName(n);
+  const outCc: (string | null)[] = [];
+  for (let i = 0; i < names.length; i++) {
+    const n = names[i];
+    const cc = countries[i] ?? null;
+    const id = playerIdFromName(n, cc);
     if (!id) continue;
     outNames.push(n);
     ids.push(id);
+    outCc.push(cc ? normalizeCountry(cc) : null);
   }
-  return { names: outNames, ids };
+  return { names: outNames, ids, countries: outCc };
+}
+
+export function parseMatchResult(
+  raw: string | null | undefined,
+): MatchResult | null {
+  if (
+    raw === "completed" ||
+    raw === "walkover" ||
+    raw === "retired" ||
+    raw === "incomplete"
+  ) {
+    return raw;
+  }
+  return null;
 }
 
 export function mapDbMatch(row: DbMatchRow): CatalogMatch {
   const parsed = parseTournament(row.tournament);
-  const t1 = rosterWithIds(teamNames(row.team1_player1, row.team1_player2));
-  const t2 = rosterWithIds(teamNames(row.team2_player1, row.team2_player2));
+  const t1 = rosterWithIds(teamNames(row.team1_player1, row.team1_player2), [
+    row.team1_player1_country,
+    row.team1_player2_country,
+  ]);
+  const t2 = rosterWithIds(teamNames(row.team2_player1, row.team2_player2), [
+    row.team2_player1_country,
+    row.team2_player2_country,
+  ]);
   const games = computeGames(row);
-  const winner = computeWinner(games);
+  const fromScores = computeWinner(games);
+  const fromSide =
+    row.winner_side === 1 || row.winner_side === 2 ? row.winner_side : null;
+  const winner = fromScores ?? fromSide;
+  const result = parseMatchResult(row.result);
   const status = (
     ["pending", "processing", "ready", "failed"].includes(row.status)
       ? row.status
@@ -246,8 +383,11 @@ export function mapDbMatch(row: DbMatchRow): CatalogMatch {
     team2: t2.names,
     team1Ids: t1.ids,
     team2Ids: t2.ids,
+    team1Countries: t1.countries,
+    team2Countries: t2.countries,
     games,
     winner,
+    result,
     threeGames: games.length === 3,
     comeback: isComeback(games, winner),
     status,
