@@ -253,7 +253,7 @@ Matches the proven **normalize** pattern:
 
 | Piece | Role |
 |---|---|
-| `entrypoint.sh` | Start `server.py`, TLS, `exec python -m worker` (do not block on TRT) |
+| `entrypoint.sh` | Start `server.py`, `exec python -m worker` (no `/health` wait, no `sign_cert`; `USE_SSL=false`) |
 | `/opt/worker-env` | Prebuilt venv (no uv/pip at boot) |
 | `worker.py` | PyWorker: load reporting, proxy to model server |
 | `server.py` | FastAPI `/detect/sync` (202) + `/health` + `/benchmark/ping` (200) |

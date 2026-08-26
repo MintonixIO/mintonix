@@ -316,6 +316,27 @@ class TestImageBootContract(unittest.TestCase):
         self.assertTrue((root / "entrypoint.sh").exists())
         self.assertFalse((root / "start_server.sh").exists())
 
+    def test_entrypoint_binds_pyworker_before_sign_cert(self) -> None:
+        """Port 3000 must bind inside Vast's ~15s window; TLS is not the default."""
+        entry = (Path(__file__).resolve().parent / "entrypoint.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertRegex(entry, r'USE_SSL="\$\{USE_SSL:-false\}"')
+        boot = "\n".join(
+            ln
+            for ln in entry.splitlines()
+            if ln.strip() and not ln.lstrip().startswith("#")
+        )
+        exec_at = boot.find("exec python -m worker")
+        self.assertGreaterEqual(exec_at, 0)
+        sign_at = boot.find("sign_cert")
+        if sign_at >= 0:
+            self.assertLess(
+                exec_at,
+                sign_at,
+                "sign_cert must not run before exec python -m worker",
+            )
+
     def test_dockerfile_is_runtime_multistage(self) -> None:
         src = (Path(__file__).resolve().parent / "Dockerfile").read_text(
             encoding="utf-8"

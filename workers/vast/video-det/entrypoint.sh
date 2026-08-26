@@ -1,18 +1,19 @@
 #!/usr/bin/env bash
 # Container entrypoint (docker ENTRYPOINT launch mode on vast serverless).
 #
-# Prebuilt venv, start FastAPI in the background, optional TLS, then exec
-# PyWorker as PID 1. Do not block here on /health (TRT deserialize) — that
-# left port 3000 closed and Vast recycled the container ~15s after docker
-# start. PyWorker waits for "VideoDetector loaded" then POST /benchmark/ping
-# (HTTP 200; /detect/sync is 202). Do not install uv/pip at boot.
+# Prebuilt venv, start FastAPI in the background, then exec PyWorker as PID 1
+# so port 3000 binds inside Vast's ~15s window. Do not wait on /health (TRT)
+# or sign_cert/openssl — both delayed bind and recycled the box. Default
+# USE_SSL=false (HTTP); product detect DEV does not use Vast TLS. PyWorker
+# waits for "VideoDetector loaded" then POST /benchmark/ping (HTTP 200;
+# /detect/sync is 202). Do not install uv/pip at boot.
 set -euo pipefail
 
 ENV_PATH="${ENV_PATH:-/opt/worker-env}"
 MODEL_LOG="${MODEL_LOG:-/var/log/portal/video-det.log}"
 MODEL_SERVER_PORT="${MODEL_SERVER_PORT:-18000}"
 WORKER_PORT="${WORKER_PORT:-3000}"
-USE_SSL="${USE_SSL:-true}"
+USE_SSL="${USE_SSL:-false}"
 REPORT_ADDR="${REPORT_ADDR:-https://run.vast.ai}"
 
 PYTHON="${ENV_PATH}/bin/python"
@@ -38,35 +39,6 @@ fi
 if [ -z "${CONTAINER_ID:-}" ]; then
     echo "entrypoint: ERROR CONTAINER_ID must be set" >&2
     exit 1
-fi
-
-if [ "$USE_SSL" = true ]; then
-    cat >/etc/openssl-san.cnf <<'EOF'
-[req]
-default_bits       = 2048
-distinguished_name = req_distinguished_name
-req_extensions     = v3_req
-[req_distinguished_name]
-commonName = vast.ai
-[v3_req]
-basicConstraints = CA:FALSE
-keyUsage = nonRepudiation, digitalSignature, keyEncipherment
-subjectAltName = @alt_names
-[alt_names]
-IP.1 = 0.0.0.0
-EOF
-    openssl req -newkey rsa:2048 -subj "/CN=pyworker.vast.ai/" -nodes -sha256 \
-        -keyout /etc/instance.key -out /etc/instance.csr \
-        -config /etc/openssl-san.cnf
-    http_code=$(curl -sS -o /etc/instance.crt -w '%{http_code}' \
-        --header 'Content-Type: application/octet-stream' \
-        --data-binary @/etc/instance.csr \
-        -X POST "https://console.vast.ai/api/v0/sign_cert/?instance_id=$CONTAINER_ID")
-    if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
-        echo "entrypoint: ERROR SSL cert sign failed (HTTP $http_code)" >&2
-        exit 1
-    fi
-    echo "entrypoint: SSL cert signed"
 fi
 
 export REPORT_ADDR WORKER_PORT USE_SSL UNSECURED

@@ -32,7 +32,7 @@ worker; detect always reads that single key.
 
 | Path | Role |
 |------|------|
-| `server.py` | FastAPI model server: `/detect/sync`, `/health` |
+| `server.py` | FastAPI: `/detect/sync` (202), `/health`, `/benchmark/ping` (200) |
 | `worker.py` | vast PyWorker proxy |
 | `io_util.py` | Stream download / upload / callback |
 | `detect/` | `VideoDetector`, pose adapter, shuttle (TrackNet) |
@@ -93,7 +93,12 @@ GPU / TensorRT engine build and full e2e remain environment-specific (see
 
 - vast serverless PyWorker pattern (same family as video-preprocess):
   backend on localhost, PyWorker on the published port. Venv is baked at
-  `/opt/worker-env`; entrypoint waits for `/health` 200 then execs the worker.
+  `/opt/worker-env`. Entrypoint starts `server.py` then **immediately**
+  `exec python -m worker` (port 3000). It does **not** wait for `/health`
+  and does **not** run `sign_cert` / openssl. Default `USE_SSL=false`
+  (HTTP). PyWorker `on_load` is `VideoDetector loaded`; autoscaler probe is
+  `POST /benchmark/ping` → HTTP **200** (`/detect/sync` is 202 and is not
+  a benchmark).
 - Product engines must match the image’s TensorRT / CUDA stack
   (TRT 10.8.0.43 / CUDA 12.8: NGC `tensorrt:25.01-py3` builder,
   `cuda:12.8.0-runtime-ubuntu24.04` final stage). Do not ship the NGC devel
@@ -128,11 +133,15 @@ Verified `GET https://console.vast.ai/api/v0/…` (2026-08-25):
 | Endpoint (protect) | `VIDEO-PREPROCESS-DEV` | **33262** — never destroy |
 
 Detect endpoint 32501 and WG 41743 both have `min_load=0`. **Do not set
-`min_load=1`.** Endpoint `max_workers=1`, `cold_workers=0`,
-`inactivity_timeout=1800` (idle stop is not a substitute for DELETE after
-callback). `GET /api/v0/instances/` → `instances_found=0` at this writing;
-`POST https://run.vast.ai/get_endpoint_workers/` id 32501 and
-`get_autogroup_workers` id 41743 were empty.
+`min_load=1`.** Endpoint `max_workers=1`, `cold_workers=0`.
+`inactivity_timeout` on **32501 is `1.0`** (Task 7: `1800` respawned 5090s
+after DELETE). Idle stop is not a substitute for DELETE after callback.
+`GET /api/v0/instances/` must be `instances_found=0` when no detect job is
+running.
+
+WG 41743 `launch_args` (proof): `--env '-e USE_SSL=false -e UNSECURED=1'`.
+Image default is already `USE_SSL=false`; keep the launch_args so a template
+env cannot flip TLS back on.
 
 ### GHCR docker login (template 531046)
 
@@ -186,27 +195,34 @@ is processing.**
 
 ### Workergroup 41743 filters
 
-`GET /api/v0/workergroups/` id **41743** `search_query` (do not PUT to
-“fix” these while a job is live):
+Live Task 7 proof (`GET /api/v0/workergroups/` id **41743**; do not PUT
+to “fix” these while a job is live):
 
 | Filter | Op | Value |
 |---|---|---|
 | `gpu_name` | **eq** | **RTX 5090** |
-| `inet_down` | **gte** | **2500** |
-| `reliability2` | **gte** | **0.99** |
+| `gpu_frac` | **eq** | **1** |
+| `inet_down` | **gte** | **512** |
+| `inet_up` | **gte** | **512** |
+| `reliability2` | **gte** | **0.97** |
+| `machine_id` | **neq** | **136820** |
 | `verified` | eq | true |
 | `rentable` | eq | true |
 | `rented` | eq | false |
 | `num_gpus` | eq | 1 |
 | `dph_total` | lt | 0.45 |
-| `inet_up` | gte | 1000 |
 | `disk_space` | gte | 50 |
 | `direct_port_count` | gte | 2 |
 
-Also on that row: `gpu_ram=32`, `template_id=531046`. A PUT of
-`search_query` / `search_params` on the workergroup **can recycle workers**
-(observed `48635039` → `48635838` mid-job). **Forbidden while a detect job
-is processing.**
+Also on that row: `gpu_ram=32`, `template_id=531046`,
+`template_hash=71c7d04745b2cd0ef0d7ecbb7698576a`,
+`launch_args=--env '-e USE_SSL=false -e UNSECURED=1'`.
+
+Tighter filters (`inet_down gte 2500`, `reliability2 gte 0.99`) starved
+offers. `gpu_frac=0.5` on machine **136820** crash-looped. A PUT of
+`search_query` / `search_params` **can recycle workers** (observed
+`48635039` → `48635838` mid-job). **Forbidden while a detect job is
+processing.**
 
 ### Destroy leftover GPUs after callback
 
