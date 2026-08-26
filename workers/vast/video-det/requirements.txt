@@ -1,10 +1,15 @@
 fastapi>=0.111.0
 uvicorn[standard]>=0.30.0
 httpx>=0.27.0
-# <2: the base image's pycuda and the torch 2.3.1 cu121 wheels are compiled
-# against the NumPy 1.x C ABI — NumPy 2 makes them fail at import.
+# <2: pycuda and TRT python bindings are compiled against NumPy 1.x C ABI.
 numpy>=1.26.0,<2
 opencv-python-headless>=4.10.0
-# PyWorker framework (worker.py) — NOT `vastai` (that's the CLI, whose classes
-# have a different, incompatible API). Same package the video-preprocess worker uses.
+# Ubuntu 24.04 / Python 3.12 has no stdlib distutils. vastai-sdk imports
+# distutils.util.strtobool; setuptools 82 removed the shim. Pin in the
+# worker-env (apt python3-setuptools does not seed this venv).
+setuptools>=69,<82
+# Device buffers for TRT I/O (product path has no PyTorch).
+pycuda>=2024.1
+# PyWorker (Worker / BenchmarkConfig). `vastai` and `vastai-sdk` are the same
+# PyPI project; either name installs the serverless package.
 vastai-sdk

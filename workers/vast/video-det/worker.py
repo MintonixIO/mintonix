@@ -11,11 +11,19 @@ Request envelope (SDK delivers {"input": {...}}; request_parser unwraps it):
 """
 
 import os
-import uuid
 
 import aiohttp.web
 
-from vastai import Worker, WorkerConfig, HandlerConfig, LogActionConfig, BenchmarkConfig
+# Import the serverless classes from the submodule. `from vastai import
+# BenchmarkConfig` can bind None: vastai/__init__.py swallows any ImportError
+# in that try-block (missing distutils, aiohttp, …) and sets the names to None.
+from vastai.serverless.server.worker import (
+    BenchmarkConfig,
+    HandlerConfig,
+    LogActionConfig,
+    Worker,
+    WorkerConfig,
+)
 
 # Same patch as the video-preprocess worker: SDK AppRunner(handler_cancellation=True)
 # turns a dispatcher disconnect into a cancel, which zeroes reported load and
@@ -36,8 +44,9 @@ MODEL_SERVER_PORT = int(os.environ.get("MODEL_SERVER_PORT", "18000"))
 MODEL_LOG_FILE = os.environ.get("MODEL_LOG", "/var/log/portal/video-det.log")
 MODEL_HEALTHCHECK_ENDPOINT = "/health"
 
-# uvicorn prints this once the FastAPI app is serving; readiness gate.
-MODEL_LOAD_LOG_MSG = ["Application startup complete."]
+# Gate on TRT load, not uvicorn's "Application startup complete." (that can
+# fire before engines are ready). PyWorker then benchmarks — see ping below.
+MODEL_LOAD_LOG_MSG = ["VideoDetector loaded"]
 MODEL_ERROR_LOG_MSGS = [
     "Traceback (most recent call last):",
     "ERROR:    Application startup failed.",
@@ -55,15 +64,11 @@ def request_parser(request: dict) -> dict:
     return request
 
 
-def benchmark_generator() -> dict:
-    # Self-contained local paths so the autoscaler can measure capacity without
-    # external hosting. Fails fast if sample/engines are missing — preferred
-    # over routing real jobs to an unproven image.
-    return {
-        "input_url": os.environ.get("BENCHMARK_INPUT_URL", "file:///app/sample.mp4"),
-        "output_upload_url": f"file:///tmp/benchmark_{uuid.uuid4().hex}.json",
-        "request_id": "benchmark",
-    }
+def ping_benchmark_generator() -> dict:
+    # PyWorker treats only HTTP 200 as a successful benchmark. /detect/sync
+    # returns 202, which marked the worker errored and Vast recycled it ~15s
+    # after docker start. Ping is 200 and does not start GPU work.
+    return {"ping": True}
 
 
 worker_config = WorkerConfig(
@@ -78,10 +83,18 @@ worker_config = WorkerConfig(
             allow_parallel_requests=ALLOW_PARALLEL,
             request_parser=request_parser,
             max_queue_time=900.0,
+        ),
+        HandlerConfig(
+            route="/benchmark/ping",
+            workload_calculator=lambda _data: 1.0,
+            allow_parallel_requests=True,
+            request_parser=request_parser,
+            max_queue_time=0.0,
             benchmark_config=BenchmarkConfig(
-                generator=benchmark_generator,
+                generator=ping_benchmark_generator,
                 concurrency=1,
-                runs=2,
+                runs=1,
+                do_warmup=False,
             ),
         ),
     ],

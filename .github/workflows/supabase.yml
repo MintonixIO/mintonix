@@ -61,8 +61,8 @@ jobs:
       - uses: denoland/setup-deno@v2
         with:
           deno-version: v2.x
-      - name: Deno ops unit tests
-        run: deno test supabase/functions/ops/stage_outputs_test.ts
+      - name: Deno unit tests
+        run: deno test supabase/functions/ops/stage_outputs_test.ts supabase/functions/ops/model_urls_test.ts supabase/functions/ops/ops_route_test.ts supabase/functions/jobs/invoke_test.ts
       - name: Python stage_outputs goldens
         run: python3 scripts/test_stage_outputs.py
 

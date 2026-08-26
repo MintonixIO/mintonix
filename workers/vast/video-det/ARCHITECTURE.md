@@ -3,9 +3,9 @@
 ## Overview
 
 A vast.ai serverless GPU worker for the pipeline **detect** stage. It downloads
-a normalized match video via a presigned URL, runs pose + shuttle (+ optional
-ReID), uploads `detections.json` to B2, and reports completion to the Supabase
-`jobs/callback` route.
+a normalized match video via a presigned URL, runs pose + shuttle, uploads
+`detections.json` to B2, and reports completion to the Supabase `jobs/callback`
+route.
 
 Workers hold **no** B2 or Supabase service credentials — only presigned URLs
 and a single-use `callback_token` (HMAC JWT).
@@ -24,15 +24,15 @@ normalize  →  detect (this worker)  →  analyze (not wired yet)
 
 | | |
 |---|---|
-| **In** | `normalized.mp4` (presigned GET); optional `player_mask_url` PNG |
+| **In** | `normalized.mp4` (presigned GET) |
 | **Out** | `detections.json` (presigned PUT) |
 | **Route** | `POST /detect/sync` |
 | **Dispatcher** | `supabase/functions/jobs` → `STAGES.detect` |
+| **HTTP** | **202** `{ "request_id" }` once the job thread is running (connection held until GPU + callback). **422** bad envelope, **503** models not loaded (sync, no thread). **200** `POST /benchmark/ping` for PyWorker (SDK counts only 200). Callback is the settle path. |
 
-Always feeds `normalized.mp4`. For BWF, normalize already writes the cleaned
-court cut to that key when the preprocess path is BWF). Optional
-`player_mask_url` is accepted by the worker but not yet presigned by jobs
-(ReID `player_id` stays null until mask lands).
+Always feeds `normalized.mp4`. For BWF, preprocess already writes the cleaned
+court cut to that key. `player_id` in poses is always `null`
+(identity / ReID is not in the product path).
 
 ---
 
@@ -56,11 +56,14 @@ jobs/dispatch
   │  POST vast worker /detect/sync  { auth_data, payload: { input: envelope } }
   ▼
 vast PyWorker (worker.py)  ──proxy──►  server.py
+  │  HTTP 202 {request_id} as soon as the job thread is running;
+  │  ASGI connection held until GPU + callback finish (PyWorker load).
   │
-  ├─ GET input_url          download video (HTTP or file://)
-  ├─ optional player_mask   SlimSAM PNG → ReID seeds
-  ├─ VideoDetector          single-pass OpenCV: pose + shuttle (+ exclusive ReID)
-  ├─ stream detections.json  (chunked write, then streaming PUT)
+  ├─ GET input_url          download video (HTTP stream or file://)
+  ├─ GET annotation_url     optional; scoreboard crop for OCR
+  ├─ GET preprocess_log_url optional; frame_shifts → segments[]
+  ├─ VideoDetector          OpenCV decode; pose then shuttle (one GPU)
+  ├─ stream detections.json  (meta + segments + rallies + frames)
   └─ POST callback_url      Bearer callback_token
        { request_id, status: "success"|"failed", frame_count?, error? }
             │
@@ -77,9 +80,10 @@ vast PyWorker (worker.py)  ──proxy──►  server.py
   "request_id": "uuid",                 // job_id
   "input_url": "https://…",             // presigned GET or file://
   "output_upload_url": "https://…",     // presigned PUT or file://
+  "annotation_url": "https://…",        // optional presigned GET
+  "preprocess_log_url": "https://…",    // optional presigned GET
   "callback_url": "https://…/functions/v1/jobs/callback",
-  "callback_token": "<jwt>",
-  "player_mask_url": "https://…"        // optional PNG
+  "callback_token": "<jwt>"
 }
 ```
 
@@ -94,15 +98,52 @@ vast PyWorker (worker.py)  ──proxy──►  server.py
 
 Auth: `Authorization: Bearer <callback_token>` (not a body field).
 
+`POST /detect/sync` status codes:
+
+| Status | When | Body |
+|--------|------|------|
+| **202** | Envelope valid, models loaded, job thread running | `{ "request_id" }` (connection held until `run_and_report` returns) |
+| **422** | Missing URLs or callback URL not allowed | `{ "request_id", "error" }` (sync, no thread) |
+| **503** | Detector not loaded | `{ "request_id", "error" }` (sync, no thread) |
+
+A job that later fails still ends the stream as **202** — settlement is the callback (`success` / `failed`), not the HTTP status the dispatcher already left.
+
 ---
 
 ## Output schema (`detections.json`)
 
-One JSON for pose + shuttle (frame-aligned). Analyze consumes this single asset.
+Engine contract: one JSON so 3D reconstruction can form **rallies** from
+scoreboard-scored court islands. Engine fails loud if required fields are
+missing. Frame indices are always on the **`normalized.mp4` timeline**
+(0-based) — the same indices pose/shuttle already use.
+
+### Top level
+
+| Field | Type | Required | Notes |
+|-------|------|----------|--------|
+| `job_id` | string \| null | no | Echo of detect `request_id` |
+| `fps` | number | **yes** | Delivery fps of the video actually decoded |
+| `width` | int | **yes** | Frame width (pixels) |
+| `height` | int | **yes** | Frame height (pixels) |
+| `segments` | array | **yes** | Non-empty; one OCR unit per preprocess island |
+| `rallies` | array | **yes** | Same-score islands with at most one island between them |
+| `frames` | array | **yes** | Non-empty; per-frame pose + shuttle |
 
 ```jsonc
 {
   "job_id": "uuid",
+  "fps": 30,
+  "width": 1920,
+  "height": 1080,
+  "segments": [
+    { "start_frame": 0, "end_frame": 180, "score": { "t1": 5, "t2": 3 }, "score_conf": 0.92 },
+    { "start_frame": 181, "end_frame": 240, "score": { "t1": 5, "t2": 3 }, "score_conf": 0.88 },
+    { "start_frame": 241, "end_frame": 400, "score": { "t1": 5, "t2": 4 }, "score_conf": 0.91 }
+  ],
+  "rallies": [
+    { "start_frame": 0, "end_frame": 240, "score": { "t1": 5, "t2": 3 }, "score_conf": 0.92 },
+    { "start_frame": 241, "end_frame": 400, "score": { "t1": 5, "t2": 4 }, "score_conf": 0.91 }
+  ],
   "frames": [
     {
       "frame": 0,
@@ -111,7 +152,7 @@ One JSON for pose + shuttle (frame-aligned). Analyze consumes this single asset.
           "keypoints": [[x, y, conf], /* 17 COCO */],
           "bbox": [x1, y1, x2, y2],   // normalized [0,1]
           "conf": 0.91,
-          "player_id": 1              // null without mask/ReID
+          "player_id": null           // always null in product path
         }
       ],
       "shuttle": [
@@ -123,12 +164,50 @@ One JSON for pose + shuttle (frame-aligned). Analyze consumes this single asset.
 }
 ```
 
-Shuttle is **top-K heatmap peaks** (default K=8, min_conf=0.05) for high
-recall — not a single tracked point. Precision is analyze's job.
+### `segments[]` (OCR unit)
 
-Optional `player_mask_url`: single-channel PNG, `0` = background, each positive
-value = one player on frame 0. Seeds ReID reference embeddings; assignment is
-**exclusive** (greedy bipartite by cosine similarity).
+One entry per **preprocess court-visible island** (`preprocess-log.json`
+`frame_shifts[]` → `new_start` / `new_end`). Detect OCRs the BWF scoreboard
+(top-left crop from `annotation.json`) once per island.
+
+| Field | Type | Required | Notes |
+|-------|------|----------|--------|
+| `start_frame` | int ≥ 0 | **yes** | Inclusive, normalized timeline |
+| `end_frame` | int ≥ 0 | **yes** | Inclusive; `end_frame >= start_frame` |
+| `score` | object | **yes** | Scoreboard points while this island was shown |
+| `score.t1` | int ≥ 0 | **yes** | Row/team 1 (top of scoreboard) |
+| `score.t2` | int ≥ 0 | **yes** | Row/team 2 (bottom of scoreboard) |
+| `score_conf` | number ∈ [0,1] | no | OCR confidence (also accepted as `score.conf`) |
+
+User-upload / missing `frame_shifts`: one fallback segment covering the full
+decoded video. Missing crop or unreadable digits: `t1`/`t2` = 0 with low
+`score_conf` — never invent high-confidence scores.
+
+### `rallies[]` (physics run)
+
+Same fields as a segment. Detect groups islands with the **same** `(t1, t2)`
+when their index distance is **at most 2** (adjacent, or one island
+between). The rally span is min(start)…max(end) of the group so a single
+mid-rally cutaway stays one physics run. Same score farther away is a new
+rally. Engine should consume ``rallies[]`` — do not merge every equal
+score across the match. Detect does **not** emit video bytes or
+`preprocess-log.json`.
+
+### `frames[]` (geometry)
+
+| Field | Type | Required | Notes |
+|-------|------|----------|--------|
+| `frame` | int | **yes** | Unique index in normalized video |
+| `poses` | array | **yes** | 0–N persons (may be empty) |
+| `poses[].keypoints` | 17×`[x,y,conf]` | **yes** if pose present | COCO-17, **normalized [0,1]** |
+| `poses[].bbox` | `[x1,y1,x2,y2]` | no | Normalized |
+| `poses[].conf` | number | no | Detection confidence |
+| `poses[].player_id` | int \| null | no | Often null |
+| `shuttle` | array | **yes** | Top-K candidates, may be `[]` |
+| `shuttle[].x/y/conf` | number | **yes** each | Normalized UV + conf |
+
+Shuttle is **top-K heatmap peaks** (default K=8, min_conf=0.05) for high
+recall — not a single tracked point. Precision is Engine/analyze's job.
 
 ---
 
@@ -137,53 +216,34 @@ value = one player on frame 0. Seeds ReID reference embeddings; assignment is
 | | Job boundary | Pose engine |
 |---|---|---|
 | **Code** | `server.py`, `io_util.py`, `detect/`, `worker.py` | `pose/` package |
-| **Owns** | Envelope, B2 I/O (`file://` + HTTP), callback, shuttle+ReID schedule, JSON | YOLO26x-pose TRT, letterbox, CUDA-graph batch infer |
+| **Owns** | Envelope, B2 I/O, callback, shuttle schedule, JSON | YOLO26x-pose TRT, letterbox, CUDA-graph batch infer |
 | **Coords in API** | Normalized `[0,1]` in `detections.json` | Original pixels inside engine; adapter normalizes |
 
 ```
 server.py → DetectConfig.from_env() → detect.VideoDetector
-              single OpenCV VideoCapture (one producer thread owns the cap):
-              one-chunk lookahead decode (Queue maxsize=1 data-only + EOS Event):
-              main thread per chunk, **serial on one GPU**:
+              single-thread OpenCV VideoCapture:
+              read up to chunk_size frames (+ one peek for shuttle next):
+              **serial on one GPU** (shared CUDA context + lock):
               ├─ pose.PoseEngine.run_batch (pad last incomplete engine batch)
               │    detect/pose.py to_pose_result normalizes pixels → [0,1]
-              │    product GpuConsumer is K=1: stage_host → run_gpu → sync
-              ├─ detect/shuttle.py TrackNetV5 **stride-1 sliding windows**
-              │    for global frame i: triplet (i-1, i, i+1), **center** heatmap
-              │    one-frame hold in run() only (prev/next stitch → _process_chunk)
-              │    list edges pad by repeating edge; micro-batch ≤16 triplets
-              │    PyTorch path (not TRT) — known gap vs pose
-              └─ detect/reid.py (optional OSNet; seed + match on **main** thread)
+              └─ detect/shuttle.py TrackNetV5 **stride-1 sliding windows**
+                   for global frame i: triplet (i-1, i, i+1), **center** heatmap
+                   prev/next from peek + previous chunk last frame
+                   list edges pad by repeating edge; micro-batch ≤48 triplets
+                   TensorRT only (`SHUTTLE_ENGINE`) — no `.pt` fallback
 ```
 
 **One product path:** OpenCV frame index is the sole authority for pose and
-shuttle. No full-video pose map, no second VideoCapture pass, no multi-ffmpeg
-product feed (frame desync risk). Zero-frame videos fail the job.
+shuttle. No producer thread, no second VideoCapture pass, no multi-ffmpeg
+product feed. Zero-frame videos fail the job.
 
-**Decode/process overlap:** a CPU-only producer thread fills the next BGR chunk
-while the main thread runs pose→shuttle→ReID. Data queue is **maxsize=1**
-(one pending chunk). EOS is a separate ``threading.Event`` (always writable;
-never competes for a queue slot; main drains remaining items on EOS before
-breaking — no TOCTOU drop). Peak BGR residency when the producer is
-**put-blocked** is about **producer fill buffer + one queued chunk +
-main-thread current chunk + one held boundary frame** (≈**3×** ``chunk_size``
-pipeline frames + 1 held frame; each BGR already `.copy()`'d).
+**Serial pose → shuttle (intentional):** both models share one GPU. The
+image sets `PARALLEL_DETECT=0`. If enabled, a process-wide GPU lock still
+prevents concurrent TRT execute. CUDA context is detached after load so
+`/detect/sync` (job thread) can push it.
 
-**Cross-chunk shuttle:** hold lives only in ``run()``. The last frame of each
-OpenCV chunk is held (BGR + index) until the next chunk (or EOS); ``run()``
-then calls pure ``_process_chunk`` with resolved ``prev_frame`` / ``next_frame``.
-Video start/end still edge-pad.
-
-**Serial pose → shuttle (intentional):** both models share one GPU. Dual-stream
-pose+shuttle is deliberately out of scope for the product path — simpler
-scheduling, correct frame alignment, no multi-stream CUDA complexity.
-ReID (pycuda/TRT) runs only on the main thread.
-
-Engine tensor shape is the authority for batch/imgsz after load. Product
-`GpuConsumer` uses a single CUDA-graph buffer (no multi-K research ring). Multi-K
-`feed` / decode-ring APIs live only under `tools/ffmpeg_pose_bench/`.
-Shuttle requires CUDA at construction (GPU worker) and remains **PyTorch**
-(TrackNetV5 `.pt`); full TensorRT export is a known deferred project.
+Engine tensor shape and **binding dtype** (FLOAT or HALF) are the authority
+after load. Host buffers are sized from `engine.get_tensor_dtype`.
 
 ---
 
@@ -193,13 +253,14 @@ Matches the proven **normalize** pattern:
 
 | Piece | Role |
 |---|---|
-| `entrypoint.sh` | Start `server.py`, then `start_server.sh` |
-| `start_server.sh` | vast bootstrap: TLS, venv, `python -m worker` |
+| `entrypoint.sh` | Start `server.py`, `exec python -m worker` (no `/health` wait, no `sign_cert`; `USE_SSL=false` required — `true` exits 1) |
+| `/opt/worker-env` | Prebuilt venv (no uv/pip at boot) |
 | `worker.py` | PyWorker: load reporting, proxy to model server |
-| `server.py` | FastAPI `/detect/sync` + `/health` (lifespan model load) |
-| `io_util.py` | download / upload / callback (`file://` + HTTP) |
-| `detect/` | VideoDetector, shuttle, reid, types |
-| `pose/` | PoseEngine + TRT runtime + export helpers |
+| `server.py` | FastAPI `/detect/sync` (202) + `/health` + `/benchmark/ping` (200) |
+| `io_util.py` | stream download / upload / callback (`file://` + HTTP) |
+| `detect/` | VideoDetector, shuttle, types, Engine output |
+| `trt_io.py` | Shared CUDA context + TRT binding dtype helpers |
+| `pose/` | PoseEngine + TRT runner + export helpers |
 | `tools/` | visualize + non-product `ffmpeg_pose_bench/` |
 | `/app/sample.mp4` | Local benchmark input (`BENCHMARK_INPUT_URL`) |
 
@@ -209,7 +270,7 @@ Matches the proven **normalize** pattern:
 | PyWorker port | `3000` (`WORKER_PORT`, autoscaler-facing) |
 | Parallelism | One job per GPU (`allow_parallel_requests=False`) |
 | Handler cancel | Forced off — dispatcher disconnect must not kill load accounting |
-| Benchmark | `file:///app/sample.mp4` → `file:///tmp/benchmark_*.json` |
+| Benchmark | `POST /benchmark/ping` → HTTP 200 (not `/detect/sync` 202) |
 
 ---
 
@@ -219,18 +280,20 @@ Matches the proven **normalize** pattern:
 workers/vast/video-det/
 ├── server.py           # FastAPI job boundary (lifespan startup)
 ├── worker.py           # PyWorker config
-├── io_util.py          # file:// + HTTP transport (streaming PUT)
-├── entrypoint.sh
-├── start_server.sh
-├── detect/             # VideoDetector, shuttle, reid, types
-│   └── tracknet.py     # TrackNetV5 (loads tracknetv5.pt)
-├── pose/               # PoseEngine + product GpuConsumer (K=1) + export
+├── io_util.py          # file:// + HTTP transport (stream GET/PUT)
+├── trt_io.py           # CUDA context push/pop + FLOAT/HALF bindings
+├── entrypoint.sh          # preprocess-style: baked venv + health gate
+├── detect/             # VideoDetector, shuttle, types, Engine output
+│   ├── segments.py     # islands from frame_shifts → segments[] + rallies[]
+│   ├── scoreboard.py   # annotation crop + lightweight digit OCR
+│   ├── output.py       # write detections.json (meta + segments + rallies + frames)
+│   └── tracknet.py     # TrackNetV5 topology (export tools only; not product)
+├── pose/               # PoseEngine + TRT runner + export
 ├── tools/
 │   ├── visualize_detections.py
-│   └── ffmpeg_pose_bench/   # non-product multi-ffmpeg research (RingGpuConsumer)
+│   └── ffmpeg_pose_bench/   # non-product multi-ffmpeg research
 ├── sample.mp4          # generated in Docker image
 ├── Dockerfile
-├── .dockerignore
 ├── requirements.txt
 ├── test_*.py           # contract / unit suite (CPU-safe)
 └── ARCHITECTURE.md
@@ -253,42 +316,44 @@ workers/vast/video-det/
 ## Ops notes
 
 - TensorRT engines are GPU-arch + TRT-version specific; build via
-  `pose/export_trt.py` on a host matching the product image
-  (`tensorrt:24.04-py3`).
-- Weights expected under `/app/models/` (mount or download at start):
-  - pose TRT engine (`POSE_ENGINE`; spatial size + batch from tensor shape)
-  - `tracknetv5.pt` (`SHUTTLE_CKPT`)
-  - optional `osnet_reid_int8.engine` (`REID_ENGINE`)
-- Detect env (see `detect/config.py`): `POSE_ENGINE`, `SHUTTLE_CKPT`,
-  `REID_ENGINE`, `POSE_CONF`. Startup **fails** if pose/shuttle weights are
-  missing unless `ALLOW_MISSING_MODELS=1` (CI). `/health` returns **503** when
-  models are not loaded. Mount models **before** `server.py` starts
-  (see `entrypoint.sh` comment).
+  `pose/export_trt.py` / `tools/export_tracknet_trt.py` on a host matching the
+  product image (TRT 10 / CUDA 12.4 — NGC `tensorrt:24.04-py3` builder,
+  CUDA runtime final stage) and target GPU arch.
+- **Model cache (baked into image):** CI mints CDN delivery URLs via Supabase
+  `ops/model-urls` using GitHub Environment naming
+  (`vars.SUPABASE_PROJECT_REF` + `secrets.SUPABASE_SERVICE_KEY`; edge
+  `PIPELINE_SERVICE_TOKEN` is the same value as the service key), downloads
+  through Cloudflare (free B2→CF egress), writes `models/`
+  (`tools/fetch_models.sh` + `models/MANIFEST.json`), then `Dockerfile` copies
+  to `/app/models/`. Runtime workers and GHA hold **no** B2 keys. See
+  `models/README.md`.
+- Default paths under `/app/models/` (engines only — no `.pt`):
+  - `yolo26x-pose.engine` (`POSE_ENGINE`)
+  - `tracknetv5_fp16_b48.engine` (`SHUTTLE_ENGINE`)
+- Detect env (see `detect/config.py` + Dockerfile): `POSE_ENGINE`,
+  `SHUTTLE_ENGINE`, `POSE_CONF`, batching / overlap flags.
+  `PARALLEL_DETECT` defaults to **0** (one GPU). Startup **fails** if
+  engines are missing or fail to load unless `ALLOW_MISSING_MODELS=1`
+  (CI unit tests). `/health` returns **503** when models are not loaded.
 - `ALLOW_FILE_URLS=1` required for `file://` benchmark I/O (set in Dockerfile for
   `sample.mp4`). **Reads** allowlisted under `/app`, `/tmp`, or
   `tempfile.gettempdir()`. **Writes** allowlisted under `/tmp` /
-  `tempfile.gettempdir()` only (not `/app`, so jobs cannot overwrite app assets).
-  Production jobs use https presigned URLs.
-  Downloads capped by `MAX_DOWNLOAD_BYTES` / `MAX_MASK_BYTES`. HTTP clients use
-  `follow_redirects=False`; **3xx is a hard error** (B2/S3 presigns do not redirect).
-- CI smoke: `import server, worker, detect` + `test_*.py` with CUDA stub;
-  set `ALLOW_MISSING_MODELS=1` if the model server process is started without
-  weights.
+  `tempfile.gettempdir()` only (not `/app`). Production jobs use https
+  presigned URLs. Downloads capped by `MAX_DOWNLOAD_BYTES`. HTTP clients use
+  `follow_redirects=False`; **3xx is a hard error**.
+- CI smoke: fetch models via CDN delivery → bake → assert files present →
+  `import server, worker, detect` + `test_*.py` with CUDA stub and
+  `ALLOW_MISSING_MODELS=1` (tests that exercise missing-model 503).
 - Env for jobs function: `VAST_DETECT_ENDPOINT_NAME` (optional fallback to
   `VAST_PREPROCESS_ENDPOINT_NAME`, then legacy `VAST_NORMALIZE_ENDPOINT_NAME` /
   `VAST_ENDPOINT_NAME`).
-- Download parallelism: `DL_CONNECTIONS` (default 8) for range-capable GETs.
 - Upload streams from disk (no full-file `read_bytes` into RAM). Exception
   text for callbacks/API is redacted (presigned query strings stripped).
 
-### Dual CUDA stacks (intentional)
+### CUDA stacks
 
-- Pose: torch + TensorRT CUDA graphs (product `GpuConsumer` K=1)
-- Shuttle: torch TrackNetV5 (PyTorch, not TRT — known gap)
-- ReID: pycuda + TensorRT (optional; leave as-is)
-
-Do not big-bang rewrite ReID onto one stack unless needed. Full TrackNet TRT
-export is deferred (large project; product stays on improved PyTorch path).
+- Pose: TensorRT engine (pycuda I/O; no PyTorch)
+- Shuttle: TrackNetV5 TRT engine only (`SHUTTLE_ENGINE` required; no `.pt`)
 
 ### Payload sizing (analyze consumers)
 
@@ -299,7 +364,7 @@ frame with default K=8 shuttle peaks and up to 4 poses × 17 kpts:
 |---|---|
 | ~bytes / frame | ~2–4 KiB JSON (varies with pose count) |
 | 30 min @ 30 fps | ~54k frames → ~100–200 MiB JSON |
-| Peak worker RAM | video file + ≈3× chunk BGR when put-blocked (producer fill + 1 queued + main current; ≤96 frames each; ~48×1080p ≈ 300 MiB/chunk) + one held boundary frame + TrackNet micro-batch host tensors (≤16 triplets) + output file (not full JSON in RAM). Queue is maxsize=1 data-only; EOS is an Event |
+| Peak worker RAM | video file + one chunk of BGR (~48×1080p) + one peek frame + TrackNet micro-batch (≤48 triplets) + output file |
 
 Analyze should stream-parse the frames array rather than loading whole files
 when matches grow long.

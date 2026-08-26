@@ -1,0 +1,25 @@
+{
+  "version": "2026-08-25-trt-10.8.0.43-sm120",
+  "description": "Product detect TRT engines baked into the video-det image. No PyTorch checkpoints. Object keys are s3://mintonix-{dev,prod}/models/<file>. Engines are TRT/GPU-stack specific — rebuild and re-upload when the Dockerfile base or target GPU arch changes.",
+  "b2_prefix": "models",
+  "trt_version": "10.8.0.43",
+  "cuda_tag": "nvidia/cuda:12.8.0-runtime-ubuntu24.04",
+  "gpu_arch": "sm_120",
+  "builder_image": "nvcr.io/nvidia/tensorrt:25.01-py3",
+  "files": [
+    {
+      "name": "yolo26x-pose.engine",
+      "role": "pose_trt",
+      "notes": "YOLO26x-pose FP16 TRT, batch 16, imgsz 640. Ultralytics JSON header; product load_engine strips it.",
+      "sha256": "2848e82e5be2d8d08861e56e23ab7416c4478de300b92a1b77ce7a43e844c29f",
+      "bytes": 125579156
+    },
+    {
+      "name": "tracknetv5_fp16_b48.engine",
+      "role": "shuttle_trt",
+      "notes": "TrackNetV5 FP16 TRT fixed batch 48",
+      "sha256": "5af7aede05ae76bde8b3f2a3589e8e02b52d344cfcd8b0143e50ca12df3c32be",
+      "bytes": 33989300
+    }
+  ]
+}

@@ -7,12 +7,25 @@
 **/.gitignore
 **/*.md
 !ARCHITECTURE.md
+!models/README.md
 
-# Non-product multi-ffmpeg research bench (not needed at runtime).
-tools/ffmpeg_pose_bench/
+# Export / research / local debug — not needed at runtime.
+# CI fetch_models.sh runs on the runner *before* docker build.
+# Keep tools/check_trt_runtime.py so bake/CI can verify native TRT.
+tools/*
+!tools/check_trt_runtime.py
+debug.py
+pose/export_trt.py
+pose/download_model.py
+pose/torch_engine.py
+detect/tracknet.py
 
 # Local test artifacts
 **/sample_local.*
-**/*.engine
-**/*.pt
-**/*.onnx
+
+# Do NOT ignore models/ — CI fetches weights into models/ and the Dockerfile
+# COPYs them into /app/models. Loose engines/checkpoints outside models/ stay out.
+*.engine
+*.pt
+*.onnx
+!models/**

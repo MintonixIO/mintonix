@@ -115,7 +115,7 @@ bwf/<match_id>/                    # system-owned (BWF); readable to signed-in
   normalized.mp4          ≤1080p/30fps H.264/AAC; BWF: cleaned cut is primary (normalize)
   thumbnail.jpg                                            (normalize)
   preprocess-log.json     frame shifts + worker + timings  (normalize)
-  detections.json         per-frame pose + shuttle tracks  (detect)
+  detections.json         pose + shuttle + OCR segments    (detect; Engine contract)
   analysis.json           3D positions, metrics, resolved  (analyze)
 ```
 
@@ -197,6 +197,22 @@ PyWorker may wrap as `{ input: env }`.
 // file:// not supported; frame_shifts live only in preprocess-log.json
 ```
 
+#### Dispatcher → worker (detect)
+
+```jsonc
+{
+  "request_id": "<job_id>",
+  "input_url": "<presigned GET normalized.mp4>",
+  "output_upload_url": "<presigned PUT detections.json>",
+  "annotation_url": "<presigned GET annotation.json>",
+  "preprocess_log_url": "<presigned GET preprocess-log.json>",
+  "callback_url": "https://<ref>.supabase.co/functions/v1/jobs/callback",
+  "callback_token": "<HS256 JWT>"
+}
+// Worker route: POST /detect/sync (video-det)
+// detections.json: fps/width/height + segments[] + rallies[] + frames[]
+```
+
 #### Worker → `jobs/callback` (Bearer `callback_token`)
 
 Wire status is **`success` | `failed`**. The jobs function maps `success` → DB
@@ -265,7 +281,7 @@ Regression *to* stage S deletes S outputs **and** every later stage's outputs.
 | Stage | Worker | Status | In | Out |
 |---|---|---|---|---|
 | `normalize` | `workers/vast/video-preprocess` (`POST /preprocess/sync`) | ✅ | original / YouTube URL (worker yt-dlp ✅); always annotation.json (corners + net poles for later stages). Path: YouTube→BWF court cut, B2/CDN→full encode; `file://` not supported | normalized.mp4, thumbnail.jpg, preprocess-log.json |
-| `detect` | `workers/vast/video-det` | 🚧 worker + `STAGES.detect` wired; analyze next; embedding module 📐 | normalized.mp4 (BWF cut already primary) | detections.json (pose + TrackNetV5 **top-K shuttle candidates** in **source-frame** UV [0,1] + optional exclusive ReID). `server.py` + `detect/` + `pose/` |
+| `detect` | `workers/vast/video-det` | 🚧 worker + `STAGES.detect` wired; Engine envelope live | normalized.mp4 + annotation.json + preprocess-log.json | detections.json (`fps`/`width`/`height`, `segments[]` islands + scoreboard OCR, `rallies[]` same-score islands with at most one island between them, `frames[]` pose + TrackNetV5 **top-K shuttle** UV [0,1]; `player_id` always null). TRT-only pose + shuttle. `server.py` + `detect/` + `pose/` |
 | `analyze` | `workers/…/analysis` | 📐 | detections.json + annotation.json | analysis.json: 3D shuttle trajectory (physics fit), player ground-plane positions (homography), metrics (TBD) |
 
 `analyze` is CPU-dominant (geometry + curve fitting, no NN inference) — it can

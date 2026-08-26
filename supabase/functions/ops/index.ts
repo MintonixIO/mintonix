@@ -1,5 +1,5 @@
 /**
- * ops — service-only control plane for manual per-match stage control.
+ * ops — service-only control plane (pipeline token auth).
  *
  *   POST /functions/v1/ops/set-stage   (verify_jwt=false; token auth in-function)
  *     Body: {
@@ -14,9 +14,19 @@
  *       purged?: string[]
  *     }
  *
+ *   POST /functions/v1/ops/model-urls
+ *     Body: { keys: string[] }   // each key must be under models/<file>
+ *     -> 200 {
+ *       urls: { [key]: "https://cdn…/<key>?t=<jwt>" },
+ *       expiresAt: iso
+ *     }
+ *     Mints short-lived CDN *delivery* tokens (data plane) so CI can pull
+ *     product weights through Cloudflare (Bandwidth Alliance free egress).
+ *     Does NOT return direct B2 presigns.
+ *
  * Dual truth: jobs.stage/status is what runs next; B2 objects are stage evidence.
  *
- * Flow (never irreversible DELETE before DB accept; never enqueue while purging):
+ * Flow set-stage (never irreversible DELETE before DB accept; never enqueue while purging):
  *   purge=false → one ops_set_stage(enqueue as requested)
  *   purge=true  → ops_set_stage(enqueue=false) → LIST+DELETE →
  *                 if user enqueue=true, second ops_set_stage(enqueue=true)
@@ -24,11 +34,14 @@
  * Secrets:
  *   PIPELINE_SERVICE_TOKEN  (same auth path as matches-ingest)
  *   CDN_PRESIGN_URL, PRESIGN_SERVICE_TOKEN  (only when purge=true)
+ *   CDN_JWT_PRIVATE_KEY, CDN_BASE_URL       (model-urls delivery mint)
+ *   MODELS_DELIVERY_TOKEN_TTL_SECONDS       optional, default 1800
  * SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY injected by the platform.
  */
 
 // npm: (not esm.sh) — CI/deploy bundle must not depend on a live CDN (522s).
 import { createClient } from "npm:@supabase/supabase-js@2.45.4";
+import { importPKCS8, SignJWT } from "npm:jose@5.9.6";
 import {
   isStage,
   outputsToPurge,
@@ -38,6 +51,14 @@ import {
 
 // Re-export pure helpers for callers/tests that import from index.
 export { outputsToPurge, relativeBasename, isStage } from "./stage_outputs.ts";
+export {
+  isModelCacheKey,
+  MODEL_CACHE_PREFIX,
+} from "./model_urls.ts";
+import { isModelCacheKey, MODEL_CACHE_PREFIX } from "./model_urls.ts";
+import { opsRoute } from "./ops_route.ts";
+
+export { opsRoute } from "./ops_route.ts";
 
 function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -306,17 +327,109 @@ async function handleSetStage(body: SetStageBody): Promise<Response> {
   });
 }
 
-/** Auth: PIPELINE_SERVICE_TOKEN via x-pipeline-token (same as matches-ingest). */
+/**
+ * Auth: x-pipeline-token must match PIPELINE_SERVICE_TOKEN and/or the service
+ * role key. CI uses GitHub `SUPABASE_SERVICE_KEY` (service role) with the same
+ * header; local tooling may still use a dedicated pipeline token. Either is
+ * accepted so both naming schemes work without dual edge secrets.
+ */
 async function authorizeOps(request: Request): Promise<Response | null> {
-  const expected = Deno.env.get("PIPELINE_SERVICE_TOKEN");
-  if (!expected) {
+  const pipeline = Deno.env.get("PIPELINE_SERVICE_TOKEN") ?? "";
+  const serviceRole = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+  if (!pipeline && !serviceRole) {
     return json(500, { error: "pipeline_token_not_configured", code: "config_error" });
   }
   const provided = request.headers.get("x-pipeline-token") ?? "";
-  if (!provided || !(await timingSafeEqual(provided, expected))) {
+  if (!provided) {
+    return json(401, { error: "bad_token", code: "unauthorized" });
+  }
+  const okPipeline = pipeline ? await timingSafeEqual(provided, pipeline) : false;
+  const okService = serviceRole ? await timingSafeEqual(provided, serviceRole) : false;
+  if (!okPipeline && !okService) {
     return json(401, { error: "bad_token", code: "unauthorized" });
   }
   return null;
+}
+
+// ---------------------------------------------------------------- model-urls
+
+type SigningKey = Awaited<ReturnType<typeof importPKCS8>>;
+let cachedSigningKey: SigningKey | undefined;
+
+async function getSigningKey(): Promise<SigningKey> {
+  if (!cachedSigningKey) {
+    const pem = Deno.env.get("CDN_JWT_PRIVATE_KEY");
+    if (!pem) throw new Error("CDN_JWT_PRIVATE_KEY is not set");
+    cachedSigningKey = await importPKCS8(pem, "EdDSA");
+  }
+  return cachedSigningKey;
+}
+
+async function mintDeliveryUrl(key: string, ttlSec: number): Promise<string> {
+  const base = Deno.env.get("CDN_BASE_URL");
+  if (!base) throw new Error("CDN_BASE_URL is not set");
+  const token = await new SignJWT({ key })
+    .setProtectedHeader({ alg: "EdDSA" })
+    .setIssuedAt()
+    .setExpirationTime(`${ttlSec}s`)
+    .sign(await getSigningKey());
+  return `${base.replace(/\/$/, "")}/${key}?t=${token}`;
+}
+
+interface ModelUrlsBody {
+  keys?: string[];
+}
+
+/**
+ * Mint CDN data-plane delivery URLs for product model weights.
+ * Keys must pass isModelCacheKey (models/<filename>).
+ */
+async function handleModelUrls(body: ModelUrlsBody): Promise<Response> {
+  const keys = body.keys;
+  if (!Array.isArray(keys) || keys.length === 0) {
+    return json(400, {
+      error: "keys must be a non-empty array",
+      code: "bad_request",
+    });
+  }
+  if (keys.length > 32) {
+    return json(400, { error: "too many keys (max 32)", code: "bad_request" });
+  }
+
+  const bad = keys.filter((k) => typeof k !== "string" || !isModelCacheKey(k));
+  if (bad.length) {
+    return json(403, {
+      error: `keys must be under ${MODEL_CACHE_PREFIX}<filename>`,
+      code: "forbidden_key",
+      rejected: bad.slice(0, 8),
+    });
+  }
+
+  const ttl = Number(
+    Deno.env.get("MODELS_DELIVERY_TOKEN_TTL_SECONDS") ??
+      Deno.env.get("DELIVERY_TOKEN_TTL_SECONDS") ??
+      "1800",
+  );
+  const ttlSec = Number.isFinite(ttl) && ttl > 0 ? Math.min(ttl, 7200) : 1800;
+
+  try {
+    const urls: Record<string, string> = {};
+    for (const key of keys) {
+      urls[key] = await mintDeliveryUrl(key, ttlSec);
+    }
+    return json(200, {
+      op: "model-urls",
+      urls,
+      expiresAt: new Date(Date.now() + ttlSec * 1000).toISOString(),
+      ttl_sec: ttlSec,
+    });
+  } catch (e) {
+    console.error(JSON.stringify({
+      event: "ops.model_urls_error",
+      error: e instanceof Error ? e.message : String(e),
+    }));
+    return json(500, { error: "mint_failed", code: "config_error" });
+  }
 }
 
 Deno.serve(async (request: Request): Promise<Response> => {
@@ -327,17 +440,19 @@ Deno.serve(async (request: Request): Promise<Response> => {
 
   const path = new URL(request.url).pathname;
 
-  let body: SetStageBody;
+  let body: Record<string, unknown>;
   try {
     body = await request.json();
   } catch {
     return json(400, { error: "invalid_json", code: "bad_request" });
   }
 
-  // Require explicit /set-stage subpath (no bare /ops).
-  if (!path.endsWith("/set-stage")) {
-    return json(404, { error: "unknown_route", code: "not_found" });
+  const route = opsRoute(path, body);
+  if (route === "model-urls") {
+    return handleModelUrls(body as ModelUrlsBody);
   }
-
-  return handleSetStage(body);
+  if (route === "set-stage") {
+    return handleSetStage(body as SetStageBody);
+  }
+  return json(404, { error: "unknown_route", code: "not_found" });
 });

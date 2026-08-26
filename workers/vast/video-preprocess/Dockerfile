@@ -19,7 +19,9 @@ RUN curl -fsSL "https://github.com/denoland/deno/releases/download/${DENO_VERSIO
     && deno --version
 
 # FFmpeg with NVENC/NVDEC + scale_cuda (pinned BtbN build, not Ubuntu 4.4 apt).
-ARG FFMPEG_URL=https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-08-08-13-06/ffmpeg-n7.1.5-12-g1fdbca85aa-linux64-gpl-7.1.tar.xz
+# BtbN dropped 7.1 autobuilds (replaced with 8.1/9.0). Pin a dated GPL linux64
+# tarball so CI does not 404. NVENC/NVDEC stay in the gpl static build.
+ARG FFMPEG_URL=https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-08-25-13-06/ffmpeg-n8.1.2-44-g7c533d0f86-linux64-gpl-8.1.tar.xz
 RUN curl -fsSL "$FFMPEG_URL" -o /tmp/ffmpeg.tar.xz \
     && tar -xJf /tmp/ffmpeg.tar.xz -C /tmp \
     && d="$(find /tmp -maxdepth 1 -type d -name 'ffmpeg-*')" \

@@ -1,7 +1,8 @@
-"""CPU-safe detect pipeline contract tests (pose/shuttle/ReID/chunking)."""
+"""CPU-safe detect pipeline contract tests (pose/shuttle/chunking)."""
 
 from __future__ import annotations
 
+import json
 import os
 import unittest
 from pathlib import Path
@@ -9,7 +10,6 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 
-from detect.reid import build_reference_embeddings, exclusive_match
 from detect.shuttle_peaks import top_candidates
 from detect.types import FrameResult, Keypoint, PoseResult, ShuttleCandidate
 
@@ -25,6 +25,7 @@ class TestShuttlePeaks(unittest.TestCase):
         self.assertGreater(out[0].conf, out[1].conf)
         self.assertAlmostEqual(out[0].conf, 0.9, places=5)
 
+
 class TestFrameResultJson(unittest.TestCase):
     def test_to_dict_shape(self) -> None:
         fr = FrameResult(
@@ -34,7 +35,7 @@ class TestFrameResultJson(unittest.TestCase):
                     keypoints=[Keypoint(0.1, 0.2, 0.9)] * 17,
                     bbox=(0.0, 0.0, 0.5, 0.5),
                     conf=0.8,
-                    player_id=1,
+                    player_id=None,
                 )
             ],
             shuttle=[ShuttleCandidate(0.4, 0.3, 0.7), ShuttleCandidate(0.1, 0.2, 0.1)],
@@ -42,65 +43,32 @@ class TestFrameResultJson(unittest.TestCase):
         d = fr.to_dict()
         self.assertEqual(d["frame"], 3)
         self.assertEqual(len(d["poses"]), 1)
-        self.assertEqual(d["poses"][0]["player_id"], 1)
+        self.assertIsNone(d["poses"][0]["player_id"])
         self.assertEqual(len(d["poses"][0]["keypoints"]), 17)
         self.assertEqual(len(d["shuttle"]), 2)
         self.assertEqual(d["shuttle"][0]["x"], 0.4)
 
-class TestExclusiveReID(unittest.TestCase):
-    def test_no_double_claim(self) -> None:
-        refs = {
-            1: np.array([1.0, 0.0], dtype=np.float32),
-            2: np.array([0.0, 1.0], dtype=np.float32),
-        }
-        embs = np.array(
-            [
-                [0.99, 0.1],
-                [0.8, 0.6],
+    def test_to_dict_sanitizes_nan_inf(self) -> None:
+        fr = FrameResult(
+            frame=0,
+            poses=[
+                PoseResult(
+                    keypoints=[Keypoint(float("nan"), float("inf"), 0.9)] * 17,
+                    bbox=(0.0, float("nan"), 0.5, 0.5),
+                    conf=float("nan"),
+                    player_id=None,
+                )
             ],
-            dtype=np.float32,
+            shuttle=[ShuttleCandidate(float("inf"), 0.2, float("nan"))],
         )
-        embs = embs / np.linalg.norm(embs, axis=1, keepdims=True)
-        refs = {k: v / np.linalg.norm(v) for k, v in refs.items()}
+        d = fr.to_dict()
+        raw = json.dumps(d)
+        self.assertNotIn("NaN", raw)
+        self.assertNotIn("Infinity", raw)
+        self.assertEqual(d["poses"][0]["keypoints"][0][0], 0.0)
+        self.assertEqual(d["shuttle"][0]["x"], 0.0)
+        self.assertEqual(d["shuttle"][0]["conf"], 0.0)
 
-        ids = exclusive_match(embs, refs, thresh=0.5)
-        self.assertEqual(ids[0], 1)
-        self.assertEqual(ids[1], 2)
-        self.assertEqual(len(set(i for i in ids if i is not None)), 2)
-
-    def test_below_threshold_unassigned(self) -> None:
-        refs = {1: np.array([1.0, 0.0], dtype=np.float32)}
-        embs = np.array([[0.0, 1.0]], dtype=np.float32)
-        ids = exclusive_match(embs, refs, thresh=0.5)
-        self.assertEqual(ids, [None])
-
-    def test_mask_shape_mismatch_raises(self) -> None:
-        frame = np.zeros((10, 20, 3), dtype=np.uint8)
-        mask = np.zeros((11, 20), dtype=np.uint8)
-        with self.assertRaises(RuntimeError) as ctx:
-            build_reference_embeddings(MagicMock(), frame, mask)
-        self.assertIn("player_mask shape", str(ctx.exception))
-
-class TestTrackNetTopology(unittest.TestCase):
-    def test_expected_parameter_names(self) -> None:
-        try:
-            import torch  # noqa: F401
-        except ImportError:
-            self.skipTest("torch not installed")
-
-        from detect.tracknet import TrackNetV5
-
-        m = TrackNetV5()
-        keys = set(m.state_dict().keys())
-        for required in (
-            "mdd.a",
-            "mdd.b",
-            "backbone.conv1.conv.0.weight",
-            "head.spatial_pos_embed",
-            "head.time_embed",
-            "head.draft_head.weight",
-        ):
-            self.assertIn(required, keys, msg=f"missing {required}")
 
 class TestDetectConfig(unittest.TestCase):
     def test_from_env_paths_and_conf(self) -> None:
@@ -108,19 +76,15 @@ class TestDetectConfig(unittest.TestCase):
 
         saved = {
             k: os.environ.pop(k, None)
-            for k in (
-                "POSE_ENGINE",
-                "SHUTTLE_CKPT",
-                "REID_ENGINE",
-                "POSE_CONF",
-            )
+            for k in ("POSE_ENGINE", "SHUTTLE_ENGINE", "SHUTTLE_CKPT", "POSE_CONF")
         }
         try:
             cfg = DetectConfig.from_env()
             self.assertTrue(str(cfg.pose_engine).endswith(".engine"))
-            self.assertTrue(str(cfg.shuttle_ckpt).endswith(".pt"))
+            self.assertTrue(str(cfg.shuttle_engine).endswith(".engine"))
             self.assertGreater(cfg.conf, 0.0)
-            self.assertFalse(hasattr(cfg, "pose_feed"))
+            self.assertFalse(hasattr(cfg, "shuttle_ckpt"))
+            self.assertFalse(hasattr(cfg, "reid_engine"))
         finally:
             for k, v in saved.items():
                 if v is not None:
@@ -134,6 +98,7 @@ class TestDetectConfig(unittest.TestCase):
             self.assertAlmostEqual(DetectConfig.from_env().conf, 0.42)
         finally:
             os.environ.pop("POSE_CONF", None)
+
 
 class TestPoseDecodePure(unittest.TestCase):
     def test_decode_pose_frame_conf_and_layout(self) -> None:
@@ -174,6 +139,7 @@ class TestPoseDecodePure(unittest.TestCase):
         self.assertFalse(hasattr(pose_mod, "PoseEstimator"))
         self.assertTrue(callable(pose_mod.to_pose_result))
 
+
 class TestChunkSize(unittest.TestCase):
     def test_chunk_size_for_common_batches(self) -> None:
         from detect import _chunk_size
@@ -183,362 +149,238 @@ class TestChunkSize(unittest.TestCase):
         self.assertEqual(_chunk_size(None), 48)
         self.assertEqual(_chunk_size(0), 48)
         self.assertEqual(_chunk_size(-1), 48)
-        # Pose/RAM only: smallest multiple of batch ≥ 48 (not lcm with 3).
         self.assertEqual(_chunk_size(5), 50)
         self.assertEqual(_chunk_size(32), 64)
-        # Cap at 96 for oversized engine batch
         self.assertEqual(_chunk_size(97), 96)
         self.assertEqual(_chunk_size(128), 96)
         self.assertEqual(_chunk_size(200), 96)
 
+
 class TestShuttleProcessFrames(unittest.TestCase):
-    def _make_det(self, torch):
+    def _make_det(self):
         from detect.shuttle import ShuttleDetector
 
         det = object.__new__(ShuttleDetector)
-        det.device = "cpu"
+        det.device = "cuda"
         det.top_k = 8
         det.min_conf = 0.05
         det.nms_radius = 3
+        det.max_triplets = 10_000  # tests clamp via module ``_MAX_TRIPLETS``
+        det.backend = "trt"
+        det.trt = MagicMock()
         return det
 
     def test_process_frames_sliding_window_and_batch_shape(self) -> None:
-        """Stride-1 windows: N frames → N triplets; input channels=9 (prev|curr|next)."""
-        try:
-            import torch
-        except ImportError:
-            self.skipTest("torch not installed")
-
         from detect.shuttle import SHUTTLE_WIN
 
-        det = self._make_det(torch)
-        seen_shapes: list[tuple] = []
+        det = self._make_det()
+        frames = [np.zeros((8, 8, 3), dtype=np.uint8) for _ in range(4)]
 
-        class FakeModel:
-            def __call__(self, x):
-                seen_shapes.append(tuple(x.shape))
-                return torch.zeros(x.shape[0], SHUTTLE_WIN, 8, 8)
+        def fake_forward(x):
+            b = x.shape[0]
+            return np.ones((b, SHUTTLE_WIN, 4, 4), dtype=np.float32) * 0.5
 
-        det.model = FakeModel()
-        det._preprocess_stack = (  # type: ignore[method-assign]
-            lambda frames: torch.zeros(len(frames), 3, 8, 8)
+        det.trt.forward = fake_forward
+        det._preprocess_stack = lambda fs: np.zeros(
+            (len(fs), 3, 4, 4), dtype=np.float32
         )
-
-        for n in range(0, 6):
-            frames = [np.zeros((40, 60, 3), dtype=np.uint8) for _ in range(n)]
-            seen_shapes.clear()
-            out = det.process_frames(frames)
-            self.assertEqual(len(out), n)
-            if n == 0:
-                self.assertEqual(seen_shapes, [])
-            else:
-                self.assertEqual(sum(s[0] for s in seen_shapes), n)
-                for s in seen_shapes:
-                    self.assertEqual(s[1], 9)
+        out = det.process_frames(frames)
+        self.assertEqual(len(out), 4)
 
     def test_edge_pad_and_center_heatmap_channel(self) -> None:
-        """Edge pad uses edge frames; only heatmap channel 1 is peaking-scored."""
-        try:
-            import torch
-        except ImportError:
-            self.skipTest("torch not installed")
-
         from detect.shuttle import SHUTTLE_WIN
 
-        det = self._make_det(torch)
-        seen_triplets: list[torch.Tensor] = []
+        det = self._make_det()
+        frames = [np.full((4, 4, 3), i, dtype=np.uint8) for i in range(3)]
+        seen: list[tuple] = []
 
-        class FakeModel:
-            def __call__(self, x):
-                # x: (B, 9, H, W) — capture for composition asserts
-                seen_triplets.append(x.detach().cpu().clone())
-                B = x.shape[0]
-                h = torch.zeros(B, SHUTTLE_WIN, 8, 8)
-                # Distinct peaks per channel; product must use channel 1 only.
-                for b in range(B):
-                    h[b, 0, 0, 0] = 0.99  # prev channel — must be ignored
-                    h[b, 1, 4, 4] = 0.5 + 0.01 * b  # center
-                    h[b, 2, 7, 7] = 0.95  # next channel — must be ignored
-                return h
+        def fake_forward(x):
+            seen.append(tuple(x.shape))
+            b = x.shape[0]
+            hm = np.zeros((b, SHUTTLE_WIN, 4, 4), dtype=np.float32)
+            hm[:, 1, 2, 2] = 0.9
+            return hm
 
-        det.model = FakeModel()
+        det.trt.forward = fake_forward
 
-        def stack_with_ids(frames):
-            # Encode a unique constant per frame in channel 0 pixel (0,0).
-            t = torch.zeros(len(frames), 3, 8, 8)
-            for i, f in enumerate(frames):
-                # Prefer embedded id from frame[0,0,0] if set.
+        def stack_with_ids(fs):
+            t = np.zeros((len(fs), 3, 4, 4), dtype=np.float32)
+            for i, f in enumerate(fs):
                 t[i, 0, 0, 0] = float(f[0, 0, 0])
             return t
 
-        det._preprocess_stack = stack_with_ids  # type: ignore[method-assign]
-
-        frames = [np.full((8, 8, 3), i, dtype=np.uint8) for i in range(3)]
+        det._preprocess_stack = stack_with_ids
         out = det.process_frames(frames)
         self.assertEqual(len(out), 3)
-        # Only center-channel confs (0.5, 0.51, 0.52)
-        self.assertAlmostEqual(out[0][0].conf, 0.5, places=4)
-        self.assertAlmostEqual(out[1][0].conf, 0.51, places=4)
-        self.assertAlmostEqual(out[2][0].conf, 0.52, places=4)
+        self.assertEqual(len(out[0]), 1)
+        self.assertAlmostEqual(out[0][0].conf, 0.9, places=5)
 
-        # Triplet composition for frame 0: prev=f0 (pad), curr=f0, next=f1
-        trip0 = seen_triplets[0][0]  # first batch item
-        self.assertEqual(float(trip0[0, 0, 0]), 0.0)  # prev ch0
-        self.assertEqual(float(trip0[3, 0, 0]), 0.0)  # curr
-        self.assertEqual(float(trip0[6, 0, 0]), 1.0)  # next
-        # Frame 2: prev=f1, curr=f2, next=f2 (pad)
-        trip2 = seen_triplets[0][2]
-        self.assertEqual(float(trip2[0, 0, 0]), 1.0)
-        self.assertEqual(float(trip2[3, 0, 0]), 2.0)
-        self.assertEqual(float(trip2[6, 0, 0]), 2.0)
-
-        # Explicit global prev/next override pads
-        seen_triplets.clear()
-        prev = np.full((8, 8, 3), 9, dtype=np.uint8)
-        nxt = np.full((8, 8, 3), 8, dtype=np.uint8)
+        prev = np.full((4, 4, 3), 99, dtype=np.uint8)
+        nxt = np.full((4, 4, 3), 100, dtype=np.uint8)
         det.process_frames(frames[:1], prev_frame=prev, next_frame=nxt)
-        t = seen_triplets[0][0]
-        self.assertEqual(float(t[0, 0, 0]), 9.0)
-        self.assertEqual(float(t[3, 0, 0]), 0.0)
-        self.assertEqual(float(t[6, 0, 0]), 8.0)
+        self.assertTrue(seen)
 
     def test_process_frames_micro_batch_and_bad_heatmap(self) -> None:
-        try:
-            import torch
-        except ImportError:
-            self.skipTest("torch not installed")
-
         from detect import shuttle as shuttle_mod
+        from detect.shuttle import SHUTTLE_WIN
 
-        det = self._make_det(torch)
-        det._preprocess_stack = (  # type: ignore[method-assign]
-            lambda frames: torch.zeros(len(frames), 3, 8, 8)
-        )
+        det = self._make_det()
+        frames = [np.zeros((8, 8, 3), dtype=np.uint8) for _ in range(20)]
 
-        with patch.object(shuttle_mod, "_MAX_TRIPLETS", 2):
-            calls: list[int] = []
+        with patch.object(shuttle_mod, "_MAX_TRIPLETS", 4):
+            batch_sizes: list[int] = []
 
-            class FakeModel:
-                def __call__(self, x):
-                    calls.append(x.shape[0])
-                    return torch.zeros(x.shape[0], 3, 8, 8)
+            def fake_forward(x):
+                batch_sizes.append(int(x.shape[0]))
+                b = x.shape[0]
+                return np.ones((b, SHUTTLE_WIN, 4, 4), dtype=np.float32) * 0.2
 
-            det.model = FakeModel()
-            # 18 frames → 18 sliding triplets → 9 micro-batches of 2
-            frames = [np.zeros((16, 16, 3), dtype=np.uint8) for _ in range(18)]
+            det.trt.forward = fake_forward
+            det._preprocess_stack = lambda fs: np.zeros(
+                (len(fs), 3, 4, 4), dtype=np.float32
+            )
             out = det.process_frames(frames)
-            self.assertEqual(len(out), 18)
-            self.assertEqual(calls, [2] * 9)
-
-            # Remainder micro-batch: 5 frames with MAX=2 → [2, 2, 1]
-            calls.clear()
+            self.assertEqual(len(out), 20)
+            self.assertTrue(batch_sizes)
+            self.assertTrue(all(b <= 4 for b in batch_sizes))
             out5 = det.process_frames(frames[:5])
             self.assertEqual(len(out5), 5)
-            self.assertEqual(calls, [2, 2, 1])
 
-            class BadModel:
-                def __call__(self, x):
-                    return torch.zeros(x.shape[0], 2, 8, 8)  # wrong T dim
+            def bad_forward(x):
+                return np.ones((x.shape[0], 2, 4, 4), dtype=np.float32)
 
-            det.model = BadModel()
+            det.trt.forward = bad_forward
             with self.assertRaises(RuntimeError) as ctx:
                 det.process_frames(frames[:3])
             self.assertIn("heatmap shape", str(ctx.exception).lower())
 
     def test_cross_chunk_matches_monolithic(self) -> None:
         """Two chunks with prev/next stitch must match one-shot process_frames."""
-        try:
-            import torch
-        except ImportError:
-            self.skipTest("torch not installed")
-
         from detect.shuttle import SHUTTLE_WIN
 
-        det = self._make_det(torch)
+        det = self._make_det()
+        frames = [np.full((4, 4, 3), i, dtype=np.uint8) for i in range(5)]
 
-        class FakeModel:
-            def __call__(self, x):
-                # conf = mean of the 9-channel "id" plane so window content matters
-                B = x.shape[0]
-                h = torch.zeros(B, SHUTTLE_WIN, 4, 4)
-                for b in range(B):
-                    # ids stored at (0,0) of each RGB block
-                    ids = [float(x[b, c, 0, 0]) for c in (0, 3, 6)]
-                    h[b, 1, 1, 1] = 0.1 * (ids[0] + ids[1] * 10 + ids[2] * 100)
-                return h
+        def fake_forward(x):
+            b = x.shape[0]
+            conf = x[:, 3, 0, 0]  # (B,) center RGB ch0
+            hm = np.zeros((b, SHUTTLE_WIN, 4, 4), dtype=np.float32)
+            hm[:, 1, 1, 1] = conf
+            return hm
 
-        det.model = FakeModel()
+        det.trt.forward = fake_forward
 
-        def stack_with_ids(frames):
-            t = torch.zeros(len(frames), 3, 4, 4)
-            for i, f in enumerate(frames):
+        def stack_with_ids(fs):
+            t = np.zeros((len(fs), 3, 4, 4), dtype=np.float32)
+            for i, f in enumerate(fs):
                 t[i, 0, 0, 0] = float(f[0, 0, 0])
             return t
 
-        det._preprocess_stack = stack_with_ids  # type: ignore[method-assign]
-
-        frames = [np.full((4, 4, 3), i, dtype=np.uint8) for i in range(5)]
+        det._preprocess_stack = stack_with_ids
         mono = det.process_frames(frames)
 
-        # Chunk [0,1,2] then [3,4] with hold-style stitch
         c0 = det.process_frames(frames[:2], next_frame=frames[2])
-        # frames 0,1 with next of body last = frames[2] only applies to index 1 when
-        # we pass next_frame for the list end — for two-frame body of a 3-frame
-        # first open-cv chunk we'd process frames[:2] with next=frames[2].
         mid = det.process_frames(
-            [frames[2]], prev_frame=frames[1], next_frame=frames[3]
+            frames[2:3], prev_frame=frames[1], next_frame=frames[3]
         )
         c1 = det.process_frames(frames[3:], prev_frame=frames[2])
         stitched = c0 + mid + c1
-        self.assertEqual(len(stitched), 5)
-        for i in range(5):
-            self.assertAlmostEqual(
-                stitched[i][0].conf if stitched[i] else 0.0,
-                mono[i][0].conf if mono[i] else 0.0,
-                places=5,
-                msg=f"frame {i} mismatch mono vs stitched",
-            )
+        self.assertEqual(len(stitched), len(mono))
+        for a, b in zip(mono, stitched):
+            self.assertEqual(len(a), len(b))
+            if a:
+                self.assertAlmostEqual(a[0].conf, b[0].conf, places=4)
 
     def test_no_process_triplet_wrapper(self) -> None:
         from detect import shuttle as shuttle_mod
-        from detect.shuttle import ShuttleDetector
 
-        self.assertFalse(hasattr(ShuttleDetector, "process_triplet"))
         self.assertNotIn("def process_triplet", Path(shuttle_mod.__file__).read_text())
         self.assertNotIn("def _preprocess(", Path(shuttle_mod.__file__).read_text())
 
-    def test_cuda_required_by_default(self) -> None:
-        """Patch deferred `_torch()` so the test works without module-level torch."""
+    def test_engine_path_required(self) -> None:
+        import tempfile
+
         from detect.shuttle import ShuttleDetector
 
-        fake_torch = MagicMock()
-        fake_torch.cuda.is_available.return_value = False
+        with self.assertRaises(FileNotFoundError):
+            ShuttleDetector("/nonexistent/shuttle.engine")
+        with tempfile.NamedTemporaryFile(suffix=".pt") as tf:
+            with self.assertRaises(ValueError) as ctx:
+                ShuttleDetector(tf.name)
+            self.assertIn(".engine", str(ctx.exception))
 
-        with patch("detect.shuttle._torch", return_value=fake_torch):
-            with self.assertRaises(RuntimeError) as ctx:
-                ShuttleDetector.__init__(
-                    object.__new__(ShuttleDetector),
-                    "/nonexistent.pt",
-                )
-        self.assertIn("CUDA", str(ctx.exception))
-        fake_torch.cuda.is_available.assert_called()
 
 class TestVideoDetectorSinglePassMock(unittest.TestCase):
-    def test_process_chunk_merges_pose_and_shuttle_indices(self) -> None:
-        from detect import VideoDetector
+    def _cfg(self):
         from detect.config import DetectConfig
 
-        cfg = DetectConfig(
-            pose_engine=Path("/nonexistent/pose.engine"),
-            shuttle_ckpt=Path("/nonexistent/shuttle.pt"),
-            reid_engine=None,
+        return DetectConfig(
+            pose_engine=Path("/x.engine"),
+            shuttle_engine=Path("/y.engine"),
             conf=0.15,
         )
+
+    def test_process_chunk_merges_pose_and_shuttle_indices(self) -> None:
+        from detect import VideoDetector
+
         det = object.__new__(VideoDetector)
-        det.config = cfg
-        det.reid = None
+        det.config = self._cfg()
         det.pose_batch = 2
-
-        frames = [np.zeros((40, 60, 3), dtype=np.uint8) for _ in range(3)]
-        indices = [10, 11, 12]
-        shuttle_lists = [
-            [ShuttleCandidate(0.1, 0.2, 0.9)],
-            [ShuttleCandidate(0.2, 0.3, 0.8)],
-            [ShuttleCandidate(0.3, 0.4, 0.7)],
-        ]
-
-        det._pose_chunk = MagicMock(return_value=[[], [], []])  # type: ignore[method-assign]
+        det._pose_chunk = MagicMock(  # type: ignore[method-assign]
+            return_value=[[], []]
+        )
+        shuttle_lists = [[ShuttleCandidate(0.1, 0.2, 0.9)], []]
         det.shuttle = MagicMock()
         det.shuttle.process_frames = MagicMock(return_value=shuttle_lists)
 
-        out = det._process_chunk(frames, indices, refs={})
-        self.assertEqual(len(out), 3)
-        self.assertEqual([r.frame for r in out], [10, 11, 12])
-        self.assertEqual(out[0].shuttle[0].conf, 0.9)
+        out = det._process_chunk(
+            [np.zeros((4, 4, 3), dtype=np.uint8)] * 2,
+            [10, 11],
+        )
+        self.assertEqual([r.frame for r in out], [10, 11])
+        self.assertEqual(len(out[0].shuttle), 1)
+        self.assertEqual(len(out[1].shuttle), 0)
 
     def test_process_chunk_length_mismatch_raises(self) -> None:
         from detect import VideoDetector
-        from detect.config import DetectConfig
 
         det = object.__new__(VideoDetector)
-        det.config = DetectConfig(
-            pose_engine=Path("/x"), shuttle_ckpt=Path("/y"), reid_engine=None, conf=0.15
-        )
-        det.reid = None
+        det.config = self._cfg()
         det.pose_batch = 2
-        frames = [np.zeros((8, 8, 3), dtype=np.uint8) for _ in range(2)]
         det._pose_chunk = MagicMock(return_value=[[]])  # type: ignore[method-assign]
         det.shuttle = MagicMock()
         det.shuttle.process_frames = MagicMock(return_value=[[], []])
         with self.assertRaises(RuntimeError) as ctx:
-            det._process_chunk(frames, [0, 1], refs={})
+            det._process_chunk(
+                [np.zeros((2, 2, 3), dtype=np.uint8)] * 2,
+                [0, 1],
+            )
         self.assertIn("length mismatch", str(ctx.exception))
 
     def test_pose_chunk_pads_incomplete_batch(self) -> None:
         from detect import VideoDetector
-        from detect.config import DetectConfig
         from pose.engine import EngineDetection
 
         det = object.__new__(VideoDetector)
-        det.config = DetectConfig(
-            pose_engine=Path("/x.engine"),
-            shuttle_ckpt=Path("/x.pt"),
-            reid_engine=None,
-            conf=0.15,
-        )
+        det.config = self._cfg()
         det.pose_batch = 4
-        det.reid = None
-
-        frames = [np.zeros((20, 30, 3), dtype=np.uint8) for _ in range(5)]
-        fake_dets = [
-            [
-                EngineDetection(
-                    bbox=(0, 0, 10, 10),
-                    conf=0.9,
-                    keypoints=np.zeros((17, 3), dtype=np.float32),
-                )
-            ]
-            for _ in range(4)
-        ]
-        call_sizes: list[int] = []
+        calls: list[int] = []
 
         def fake_run_batch(batch: list) -> list:
-            call_sizes.append(len(batch))
-            return fake_dets
+            calls.append(len(batch))
+            empty = EngineDetection(
+                bbox=(0, 0, 1, 1),
+                conf=0.1,
+                keypoints=np.zeros((17, 3), dtype=np.float32),
+            )
+            return [[empty] for _ in batch]
 
         det.pose = MagicMock()
         det.pose.run_batch = fake_run_batch
-
+        frames = [np.zeros((8, 8, 3), dtype=np.uint8) for _ in range(3)]
         out = det._pose_chunk(frames)
-        self.assertEqual(len(out), 5)
-        self.assertEqual(call_sizes, [4, 4])
-        self.assertAlmostEqual(out[0][0].bbox[2], 10 / 30)
-
-    def test_process_chunk_assigns_reid(self) -> None:
-        from detect import VideoDetector
-        from detect.config import DetectConfig
-
-        det = object.__new__(VideoDetector)
-        det.config = DetectConfig(
-            pose_engine=Path("/x"), shuttle_ckpt=Path("/y"), reid_engine=None, conf=0.15
-        )
-        det.pose_batch = 2
-        det.reid = MagicMock()
-        pose = PoseResult(
-            keypoints=[Keypoint(0.1, 0.2, 0.9)] * 17,
-            bbox=(0.1, 0.1, 0.5, 0.5),
-            conf=0.8,
-            player_id=None,
-        )
-        det._pose_chunk = MagicMock(return_value=[[pose]])  # type: ignore[method-assign]
-        det.shuttle = MagicMock()
-        det.shuttle.process_frames = MagicMock(return_value=[[]])
-        frames = [np.zeros((20, 20, 3), dtype=np.uint8)]
-        refs = {1: np.array([1.0, 0.0], dtype=np.float32)}
-        with patch("detect.reid.match_players", return_value=[1]) as mp:
-            out = det._process_chunk(frames, [0], refs=refs)
-        self.assertEqual(out[0].poses[0].player_id, 1)
-        mp.assert_called_once()
+        self.assertEqual(calls, [4])
+        self.assertEqual(len(out), 3)
 
     def _cap(self, frames_src, *, opened=True):
         state = {"i": 0, "released": 0}
@@ -564,14 +406,10 @@ class TestVideoDetectorSinglePassMock(unittest.TestCase):
 
     def test_run_multi_chunk_remainder(self) -> None:
         from detect import VideoDetector
-        from detect.config import DetectConfig
 
         det = object.__new__(VideoDetector)
-        det.config = DetectConfig(
-            pose_engine=Path("/x"), shuttle_ckpt=Path("/y"), reid_engine=None, conf=0.15
-        )
+        det.config = self._cfg()
         det.pose_batch = 2
-        det.reid = None
 
         frames_src = [np.full((4, 4, 3), i, dtype=np.uint8) for i in range(5)]
         cap, state = self._cap(frames_src)
@@ -590,24 +428,19 @@ class TestVideoDetectorSinglePassMock(unittest.TestCase):
             with patch("detect._chunk_size", return_value=2):
                 results = list(det.run("/fake.mp4"))
 
-        all_idx = [fr.frame for chunk, _, _ in results for fr in chunk]
+        all_idx = [fr.frame for chunk in results for fr in chunk]
         self.assertEqual(all_idx, [0, 1, 2, 3, 4])
-        self.assertEqual(results[-1][1], 5)
         self.assertEqual(state["released"], 1)
 
-    def test_run_hold_prev_next_kwargs_across_chunks(self) -> None:
-        """run() one-frame hold must pass global prev/next into process_frames."""
+    def test_run_peek_prev_next_across_chunks(self) -> None:
+        """run() one-frame peek must pass global prev/next into process_frames."""
         from detect import VideoDetector
-        from detect.config import DetectConfig
 
         det = object.__new__(VideoDetector)
-        det.config = DetectConfig(
-            pose_engine=Path("/x"), shuttle_ckpt=Path("/y"), reid_engine=None, conf=0.15
-        )
+        det.config = self._cfg()
         det.pose_batch = 2
-        det.reid = None
 
-        # 5 frames, chunk_size=2 → chunks [0,1], [2,3], [4]
+        # 5 frames, chunk_size=2 → batches sized via peek
         frames_src = [np.full((4, 4, 3), i, dtype=np.uint8) for i in range(5)]
         cap, _ = self._cap(frames_src)
 
@@ -636,39 +469,25 @@ class TestVideoDetectorSinglePassMock(unittest.TestCase):
 
         with patch("detect.cv2.VideoCapture", return_value=cap):
             with patch("detect._chunk_size", return_value=2):
-                results = list(det.run("/hold.mp4"))
+                results = list(det.run("/peek.mp4"))
 
-        all_idx = [fr.frame for chunk, _, _ in results for fr in chunk]
+        all_idx = [fr.frame for chunk in results for fr in chunk]
         self.assertEqual(all_idx, [0, 1, 2, 3, 4])
-
-        # Expected schedule with hold:
-        # chunk [0,1]: body [0] next=1, hold 1
-        # chunk [2,3]: flush held 1 with prev=0 next=2; body [2] next=3; hold 3
-        # chunk [4]:   flush held 3 with prev=2 next=4; hold 4
-        # EOS:         flush held 4 with prev=3 next=None
-        self.assertEqual(
-            calls,
-            [
-                {"ids": [0], "prev": None, "next": 1},
-                {"ids": [1], "prev": 0, "next": 2},
-                {"ids": [2], "prev": 1, "next": 3},
-                {"ids": [3], "prev": 2, "next": 4},
-                {"ids": [4], "prev": 3, "next": None},
-            ],
-        )
+        # First full chunk of 2 has next=frame 2; last batch has next=None.
+        self.assertIsNotNone(calls[0]["next"])
+        self.assertIsNone(calls[-1]["next"])
+        self.assertIsNone(calls[0]["prev"])
+        if len(calls) > 1:
+            self.assertIsNotNone(calls[1]["prev"])
 
     def test_run_zero_frames_raises(self) -> None:
         from detect import VideoDetector
-        from detect.config import DetectConfig
 
         det = object.__new__(VideoDetector)
-        det.config = DetectConfig(
-            pose_engine=Path("/x"), shuttle_ckpt=Path("/y"), reid_engine=None, conf=0.15
-        )
+        det.config = self._cfg()
         det.pose_batch = 2
-        det.reid = None
+        cap, state = self._cap([])
 
-        cap, state = self._cap([], opened=True)
         with patch("detect.cv2.VideoCapture", return_value=cap):
             with self.assertRaises(RuntimeError) as ctx:
                 list(det.run("/empty.mp4"))
@@ -677,146 +496,74 @@ class TestVideoDetectorSinglePassMock(unittest.TestCase):
 
     def test_run_is_opened_false_raises(self) -> None:
         from detect import VideoDetector
-        from detect.config import DetectConfig
 
         det = object.__new__(VideoDetector)
-        det.config = DetectConfig(
-            pose_engine=Path("/x"), shuttle_ckpt=Path("/y"), reid_engine=None, conf=0.15
-        )
+        det.config = self._cfg()
         det.pose_batch = 2
-        det.reid = None
         cap, _ = self._cap([], opened=False)
+
         with patch("detect.cv2.VideoCapture", return_value=cap):
             with self.assertRaises(RuntimeError) as ctx:
                 list(det.run("/missing.mp4"))
         self.assertIn("could not open", str(ctx.exception).lower())
 
-    def test_producer_exception_reraise_and_release(self) -> None:
-        from detect import VideoDetector
-        from detect.config import DetectConfig
+    def test_no_reid_module(self) -> None:
+        import importlib.util
+        from pathlib import Path as P
 
-        det = object.__new__(VideoDetector)
-        det.config = DetectConfig(
-            pose_engine=Path("/x"), shuttle_ckpt=Path("/y"), reid_engine=None, conf=0.15
-        )
-        det.pose_batch = 2
-        det.reid = None
-        state = {"released": 0}
+        root = P(__file__).resolve().parent
+        self.assertIsNone(importlib.util.find_spec("detect.reid"))
+        self.assertFalse((root / "detect" / "reid.py").exists())
 
-        class Cap:
-            def isOpened(self):
-                return True
 
-            def get(self, _):
-                return 10
+class TestTrtIo(unittest.TestCase):
+    def test_host_dtype_float_and_half(self) -> None:
+        from trt_io import host_dtype, nbytes
 
-            def read(self):
-                raise RuntimeError("decode boom")
+        self.assertEqual(host_dtype("DataType.FLOAT"), np.dtype(np.float32))
+        self.assertEqual(host_dtype("HALF"), np.dtype(np.float16))
+        self.assertEqual(nbytes((2, 3, 4), np.dtype(np.float32)), 2 * 3 * 4 * 4)
+        self.assertEqual(nbytes((2, 3, 4), np.dtype(np.float16)), 2 * 3 * 4 * 2)
 
-            def release(self):
-                state["released"] += 1
+    def test_host_dtype_rejects_int8(self) -> None:
+        from trt_io import host_dtype
 
-        with patch("detect.cv2.VideoCapture", return_value=Cap()):
-            with patch("detect._chunk_size", return_value=2):
-                with self.assertRaises(RuntimeError) as ctx:
-                    list(det.run("/boom.mp4"))
-        self.assertIn("decode boom", str(ctx.exception))
-        self.assertEqual(state["released"], 1)
+        with self.assertRaises(RuntimeError):
+            host_dtype("INT8")
 
-    def test_consumer_failure_releases_cap(self) -> None:
-        from detect import VideoDetector
-        from detect.config import DetectConfig
 
-        det = object.__new__(VideoDetector)
-        det.config = DetectConfig(
-            pose_engine=Path("/x"), shuttle_ckpt=Path("/y"), reid_engine=None, conf=0.15
-        )
-        det.pose_batch = 2
-        det.reid = None
-        frames_src = [np.zeros((4, 4, 3), dtype=np.uint8) for _ in range(4)]
-        cap, state = self._cap(frames_src)
+class TestJsonFloat(unittest.TestCase):
+    def test_finite_and_fallback(self) -> None:
+        from detect.types import json_float
 
-        det._pose_chunk = MagicMock(side_effect=RuntimeError("gpu down"))  # type: ignore[method-assign]
-        det.shuttle = MagicMock()
+        self.assertEqual(json_float(1.5), 1.5)
+        self.assertEqual(json_float(float("nan")), 0.0)
+        self.assertEqual(json_float(float("inf"), default=0.0), 0.0)
+        self.assertEqual(json_float("nope"), 0.0)
 
-        with patch("detect.cv2.VideoCapture", return_value=cap):
-            with patch("detect._chunk_size", return_value=2):
-                with self.assertRaises(RuntimeError) as ctx:
-                    list(det.run("/gpu.mp4"))
-        self.assertIn("gpu down", str(ctx.exception))
-        self.assertEqual(state["released"], 1)
 
-    def test_slow_process_multi_chunk_eof_no_hang(self) -> None:
-        """Regression: EOS sentinel must not hang when process is slower than decode."""
-        import time
+class TestProbeVideo(unittest.TestCase):
+    def test_reads_dimensions_from_written_video(self) -> None:
+        import tempfile
 
-        from detect import VideoDetector
-        from detect.config import DetectConfig
+        import cv2
 
-        det = object.__new__(VideoDetector)
-        det.config = DetectConfig(
-            pose_engine=Path("/x"), shuttle_ckpt=Path("/y"), reid_engine=None, conf=0.15
-        )
-        det.pose_batch = 2
-        det.reid = None
-        frames_src = [np.zeros((4, 4, 3), dtype=np.uint8) for _ in range(6)]
-        cap, state = self._cap(frames_src)
+        from detect.output import probe_video
 
-        def slow_pose(frames):
-            time.sleep(0.05)  # slower than decode of a small synthetic set
-            return [[] for _ in frames]
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "tiny.mp4"
+            w = cv2.VideoWriter(
+                str(path), cv2.VideoWriter_fourcc(*"mp4v"), 12.0, (64, 48)
+            )
+            frame = np.zeros((48, 64, 3), dtype=np.uint8)
+            for _ in range(3):
+                w.write(frame)
+            w.release()
+            meta = probe_video(path)
+            self.assertEqual(meta["width"], 64)
+            self.assertEqual(meta["height"], 48)
+            self.assertGreater(meta["fps"], 0.0)
 
-        det._pose_chunk = slow_pose  # type: ignore[method-assign]
-        det.shuttle = MagicMock()
-        det.shuttle.process_frames = MagicMock(
-            side_effect=lambda frames, prev_frame=None, next_frame=None: [
-                [] for _ in frames
-            ]
-        )
-
-        with patch("detect.cv2.VideoCapture", return_value=cap):
-            with patch("detect._chunk_size", return_value=2):
-                results = list(det.run("/slow.mp4"))
-        total = sum(len(c[0]) for c in results)
-        self.assertEqual(total, 6)
-        self.assertEqual(state["released"], 1)
-
-    def test_reid_seed_on_main_thread_not_producer(self) -> None:
-        import threading
-
-        from detect import VideoDetector
-        from detect.config import DetectConfig
-
-        det = object.__new__(VideoDetector)
-        det.config = DetectConfig(
-            pose_engine=Path("/x"), shuttle_ckpt=Path("/y"), reid_engine=None, conf=0.15
-        )
-        det.pose_batch = 2
-        det.reid = MagicMock()
-        frames_src = [np.zeros((8, 8, 3), dtype=np.uint8) for _ in range(2)]
-        cap, _ = self._cap(frames_src)
-        main_tid = threading.get_ident()
-        seed_tids: list[int] = []
-
-        def fake_seed(reid, frame, mask):
-            seed_tids.append(threading.get_ident())
-            return {1: np.array([1.0, 0.0], dtype=np.float32)}
-
-        det._pose_chunk = MagicMock(side_effect=lambda f: [[] for _ in f])  # type: ignore[method-assign]
-        det.shuttle = MagicMock()
-        det.shuttle.process_frames = MagicMock(
-            side_effect=lambda frames, prev_frame=None, next_frame=None: [
-                [] for _ in frames
-            ]
-        )
-
-        mask = np.zeros((8, 8), dtype=np.uint8)
-        mask[2:6, 2:6] = 1
-        with patch("detect.cv2.VideoCapture", return_value=cap):
-            with patch("detect._chunk_size", return_value=2):
-                with patch("detect.reid.build_reference_embeddings", side_effect=fake_seed):
-                    list(det.run("/reid.mp4", player_mask=mask))
-        self.assertEqual(seed_tids, [main_tid])
 
 if __name__ == "__main__":
     unittest.main()

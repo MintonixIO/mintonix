@@ -1,20 +1,31 @@
+import math
 from dataclasses import dataclass
 from typing import Optional
 
 
+def json_float(value: object, default: float = 0.0) -> float:
+    """Finite float for JSON (NaN/Inf → default). ``json.dumps`` emits invalid NaN."""
+    try:
+        out = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+    return out if math.isfinite(out) else default
+
+
 @dataclass
 class Keypoint:
-    x: float    # normalized [0, 1]
+    x: float  # normalized [0, 1]
     y: float
     conf: float
 
 
 @dataclass
 class PoseResult:
-    keypoints: list[Keypoint]                       # 17 COCO keypoints
-    bbox: tuple[float, float, float, float]         # x1, y1, x2, y2 normalized
+    keypoints: list[Keypoint]  # 17 COCO keypoints
+    bbox: tuple[float, float, float, float]  # x1, y1, x2, y2 normalized
     conf: float
-    player_id: Optional[int] = None                 # matched via ReID against the SlimSAM reference mask
+    # Always null in product path (ReID removed until jobs ships masks).
+    player_id: Optional[int] = None
 
 
 @dataclass
@@ -23,8 +34,7 @@ class ShuttleCandidate:
 
     TrackNet preprocesses with anisotropic stretch to 512×288. Peak indices
     are converted with ``(px+0.5)/net_w`` which equals source-frame UV under
-    pure stretch (``sx/W = px/net_w``). Same product space as pose keypoints
-    (letterbox undo → source UV). Analyze must not re-apply letterbox math.
+    pure stretch. Same product space as pose keypoints.
     """
 
     x: float  # source-frame [0, 1]
@@ -36,23 +46,30 @@ class ShuttleCandidate:
 class FrameResult:
     frame: int
     poses: list[PoseResult]
-    # Top-K shuttle peaks for this frame, highest conf first. Empty only if the
-    # heatmap has no mass above the floor — analyze picks the true shuttle later.
+    # Top-K shuttle peaks for this frame, highest conf first.
     shuttle: list[ShuttleCandidate]
 
     def to_dict(self) -> dict:
         return {
-            "frame": self.frame,
+            "frame": int(self.frame),
             "poses": [
                 {
-                    "keypoints": [[kp.x, kp.y, kp.conf] for kp in p.keypoints],
-                    "bbox": list(p.bbox),
-                    "conf": p.conf,
+                    "keypoints": [
+                        [json_float(kp.x), json_float(kp.y), json_float(kp.conf)]
+                        for kp in p.keypoints
+                    ],
+                    "bbox": [json_float(v) for v in p.bbox],
+                    "conf": json_float(p.conf),
                     "player_id": p.player_id,
                 }
                 for p in self.poses
             ],
             "shuttle": [
-                {"x": c.x, "y": c.y, "conf": c.conf} for c in self.shuttle
+                {
+                    "x": json_float(c.x),
+                    "y": json_float(c.y),
+                    "conf": json_float(c.conf),
+                }
+                for c in self.shuttle
             ],
         }

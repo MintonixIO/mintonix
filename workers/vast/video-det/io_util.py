@@ -1,36 +1,28 @@
-"""HTTP / local file I/O shared by the detect job server.
+"""HTTP / local file I/O for the detect job server.
 
-Mirrors the video-preprocess worker contract: `file://` for local benchmark paths
-(when ALLOW_FILE_URLS=1, allowlisted roots only), HTTP for production
-presigned URLs. Parallel byte-range GET when the server supports Range
-(S3/B2 presigned URLs do). Redirects are never followed — 3xx is a hard error
+Simple contract: stream download, stream upload, callback POST.
+`file://` is only for local autoscaler benchmarks (ALLOW_FILE_URLS=1,
+allowlisted roots only). Redirects are never followed — 3xx is a hard error
 (B2/S3 presigns are direct object URLs and do not redirect).
 """
 from __future__ import annotations
 
-import concurrent.futures
 import logging
-import math
 import os
 import re
 import shutil
 import tempfile
-import threading
 import time
 from pathlib import Path
 from urllib.parse import urlparse
 
 log = logging.getLogger("video-det.io")
 
-# Tunable: parallel download connections (same defaults as normalize).
-DL_CONNECTIONS = int(os.environ.get("DL_CONNECTIONS", "8"))
-# Skip multi-range when the object is smaller than this many bytes.
-_MIN_RANGE_BYTES = 8 * 1024 * 1024
 _UPLOAD_ATTEMPTS = 5
+_CALLBACK_ATTEMPTS = 5
 
-# Default caps: ~2 GiB video, ~50 MiB mask PNG (override via env).
+# Default cap: ~2 GiB video (override via env).
 MAX_DOWNLOAD_BYTES = int(os.environ.get("MAX_DOWNLOAD_BYTES", str(2 * 1024**3)))
-MAX_MASK_BYTES = int(os.environ.get("MAX_MASK_BYTES", str(50 * 1024**2)))
 
 # Presigned URLs often appear in httpx exception text — strip query strings.
 _URL_RE = re.compile(r"https?://[^\s'\"<>]+", re.IGNORECASE)
@@ -74,10 +66,7 @@ def _dedupe_roots(roots: list[Path]) -> list[Path]:
 
 
 def _file_url_read_roots() -> list[Path]:
-    """Roots allowed for file:// *reads* when ALLOW_FILE_URLS=1.
-
-    Includes ``/app`` so the Docker benchmark can load ``file:///app/sample.mp4``.
-    """
+    """Roots allowed for file:// reads when ALLOW_FILE_URLS=1."""
     return _dedupe_roots(
         [
             Path("/app").resolve(),
@@ -88,12 +77,7 @@ def _file_url_read_roots() -> list[Path]:
 
 
 def _file_url_write_roots() -> list[Path]:
-    """Roots allowed for file:// *writes* when ALLOW_FILE_URLS=1.
-
-    Deliberately excludes ``/app`` so a hostile job cannot overwrite app/models
-    even when file URLs are enabled for local benchmarks. Writes stay under
-    temp dirs only (``/tmp`` / ``tempfile.gettempdir()``).
-    """
+    """Roots allowed for file:// writes (temp only — never /app)."""
     return _dedupe_roots(
         [
             Path("/tmp").resolve(),
@@ -102,16 +86,8 @@ def _file_url_write_roots() -> list[Path]:
     )
 
 
-# Back-compat alias (read roots).
-def _file_url_roots() -> list[Path]:
-    return _file_url_read_roots()
-
-
 def _resolve_file_url(url: str, *, for_write: bool = False) -> Path:
-    """Parse file:// URL, require ALLOW_FILE_URLS, enforce root allowlist.
-
-    ``for_write=True`` uses the tighter write allowlist (no ``/app``).
-    """
+    """Parse file:// URL, require ALLOW_FILE_URLS, enforce root allowlist."""
     if not _allow_file_urls():
         raise RuntimeError(
             "file:// URLs are disabled (set ALLOW_FILE_URLS=1 for local/benchmark)"
@@ -126,9 +102,7 @@ def _resolve_file_url(url: str, *, for_write: bool = False) -> Path:
         except ValueError:
             continue
     kind = "write" if for_write else "read"
-    raise RuntimeError(
-        f"file:// {kind} path outside allowlist {roots}: {path}"
-    )
+    raise RuntimeError(f"file:// {kind} path outside allowlist {roots}: {path}")
 
 
 def _httpx():
@@ -143,7 +117,6 @@ def _http_client(httpx_mod, timeout: float):
 
 
 def _reject_redirect(status_code: int, url: str) -> None:
-    """3xx is a hard failure when follow_redirects=False (presigns do not redirect)."""
     if 300 <= status_code < 400:
         raise RuntimeError(
             f"HTTP {status_code} redirect not allowed "
@@ -152,7 +125,6 @@ def _reject_redirect(status_code: int, url: str) -> None:
 
 
 def _check_response_status(response, url: str, httpx_mod) -> None:
-    """Fail on 3xx (redirect) or 4xx/5xx without embedding request URL secrets."""
     code = response.status_code
     _reject_redirect(code, url)
     if code >= 400:
@@ -183,15 +155,10 @@ def _upload_retryable(exc: BaseException, httpx_mod) -> bool:
 def download(
     url: str,
     dest: Path,
-    connections: int | None = None,
     *,
     max_bytes: int | None = None,
 ) -> None:
-    """Download `url` to `dest`. Supports `file://` (gated + allowlisted) and HTTP(S).
-
-    Uses parallel byte-range GETs when Content-Range is available and the
-    object is large enough; falls back to a single stream otherwise.
-    """
+    """Download `url` to `dest` (single HTTP stream or file:// copy)."""
     dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
     limit = MAX_DOWNLOAD_BYTES if max_bytes is None else max_bytes
@@ -210,134 +177,8 @@ def download(
     if not (url.startswith("http://") or url.startswith("https://")):
         raise ValueError(f"unsupported URL scheme: {_redact(url)}")
 
-    connections = connections or DL_CONNECTIONS
     httpx = _httpx()
-    log.info(
-        "download(start): %s -> %s (%d conns, max=%d)",
-        _redact(url),
-        dest,
-        connections,
-        limit,
-    )
-    t0 = time.monotonic()
-
-    total = 0
-    ranges_ok = False
-    if connections > 1:
-        try:
-            with _http_client(httpx, 60.0) as client:
-                probe = client.get(url, headers={"Range": "bytes=0-0"})
-                _reject_redirect(probe.status_code, url)
-                if probe.status_code == 206:
-                    cr = probe.headers.get("Content-Range", "")  # bytes 0-0/12345
-                    if "/" in cr:
-                        total = int(cr.split("/")[-1])
-                        ranges_ok = total > 0
-        except RuntimeError:
-            raise
-        except Exception as e:  # noqa: BLE001
-            log.info(
-                "download: range probe failed (%s); single stream",
-                safe_error_message(e),
-            )
-
-    if ranges_ok and total > limit:
-        raise RuntimeError(
-            f"download too large: {total} bytes > max_bytes={limit} "
-            f"({_redact(url)})"
-        )
-
-    if not ranges_ok or total < _MIN_RANGE_BYTES:
-        _download_stream(url, dest, max_bytes=limit)
-        return
-
-    log.info(
-        "download(content-length): %d bytes (%.1f MB), %d ranges",
-        total,
-        total / 1024 / 1024,
-        connections,
-    )
-    with dest.open("wb") as f:
-        f.truncate(total)
-
-    part = math.ceil(total / connections)
-    chunks = [
-        (i * part, min((i + 1) * part, total) - 1)
-        for i in range(connections)
-        if i * part < total
-    ]
-
-    written_lock = threading.Lock()
-    written_total = 0
-
-    def fetch(start: int, end: int) -> None:
-        nonlocal written_total
-        expected = end - start + 1
-        got = 0
-        with _http_client(httpx, 600.0) as client:
-            with client.stream(
-                "GET", url, headers={"Range": f"bytes={start}-{end}"}
-            ) as r:
-                # Parallel parts must be true Range (206) responses.
-                if r.status_code != 206:
-                    _check_response_status(r, url, httpx)
-                    raise RuntimeError(
-                        f"range fetch expected 206 got {r.status_code} "
-                        f"({_redact(url)})"
-                    )
-                with dest.open("r+b") as f:
-                    f.seek(start)
-                    for ch in r.iter_bytes(8 * 1024 * 1024):
-                        n = len(ch)
-                        got += n
-                        if got > expected:
-                            raise RuntimeError(
-                                f"range fetch overshot expected={expected} "
-                                f"got>={got} ({_redact(url)})"
-                            )
-                        with written_lock:
-                            written_total += n
-                            if written_total > limit:
-                                raise RuntimeError(
-                                    f"download exceeded max_bytes={limit} "
-                                    f"({_redact(url)})"
-                                )
-                        f.write(ch)
-        if got != expected:
-            raise RuntimeError(
-                f"range fetch undershot expected={expected} got={got} "
-                f"({_redact(url)})"
-            )
-
-    try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=len(chunks)) as ex:
-            futs = [ex.submit(fetch, s, e) for s, e in chunks]
-            for fu in concurrent.futures.as_completed(futs):
-                fu.result()
-        if dest.stat().st_size != total:
-            raise RuntimeError(
-                f"download size mismatch: expected={total} "
-                f"got={dest.stat().st_size} ({_redact(url)})"
-            )
-    except Exception as e:  # noqa: BLE001
-        dest.unlink(missing_ok=True)
-        raise RuntimeError(
-            f"download failed ({_redact(url)}): {safe_error_message(e)}"
-        ) from None
-
-    elapsed = time.monotonic() - t0
-    speed = (total / elapsed / 1024 / 1024) if elapsed else 0
-    log.info(
-        "download(done): %d bytes in %.1fs (%.1f MB/s, %d conns)",
-        total,
-        elapsed,
-        speed,
-        len(chunks),
-    )
-
-
-def _download_stream(url: str, dest: Path, *, max_bytes: int) -> None:
-    httpx = _httpx()
+    log.info("download(start): %s -> %s (max=%d)", _redact(url), dest, limit)
     t0 = time.monotonic()
     written = 0
     try:
@@ -345,17 +186,17 @@ def _download_stream(url: str, dest: Path, *, max_bytes: int) -> None:
             with client.stream("GET", url) as r:
                 _check_response_status(r, url, httpx)
                 cl = r.headers.get("Content-Length")
-                if cl is not None and int(cl) > max_bytes:
+                if cl is not None and int(cl) > limit:
                     raise RuntimeError(
-                        f"download too large: Content-Length={cl} > max_bytes={max_bytes} "
+                        f"download too large: Content-Length={cl} > max_bytes={limit} "
                         f"({_redact(url)})"
                     )
                 with dest.open("wb") as f:
                     for chunk in r.iter_bytes(65536):
                         written += len(chunk)
-                        if written > max_bytes:
+                        if written > limit:
                             raise RuntimeError(
-                                f"download exceeded max_bytes={max_bytes} "
+                                f"download exceeded max_bytes={limit} "
                                 f"({_redact(url)})"
                             )
                         f.write(chunk)
@@ -367,10 +208,11 @@ def _download_stream(url: str, dest: Path, *, max_bytes: int) -> None:
         raise RuntimeError(
             f"download failed ({_redact(url)}): {safe_error_message(e)}"
         ) from None
+
     elapsed = time.monotonic() - t0
     speed = (written / elapsed / 1024 / 1024) if elapsed else 0
     log.info(
-        "download(done,single): %d bytes in %.1fs (%.1f MB/s)",
+        "download(done): %d bytes in %.1fs (%.1f MB/s)",
         written,
         elapsed,
         speed,
@@ -383,7 +225,7 @@ def upload_file(
     content_type: str = "application/octet-stream",
     attempts: int = _UPLOAD_ATTEMPTS,
 ) -> None:
-    """PUT local file to `url`. Supports `file://` (gated + allowlisted) and HTTP(S)."""
+    """PUT local file to `url` (streamed from disk)."""
     local_path = Path(local_path)
     size = local_path.stat().st_size
 
@@ -402,7 +244,6 @@ def upload_file(
     last_safe: str | None = None
     for i in range(attempts):
         try:
-            # Stream from disk — detections.json can be 100–200 MiB for long matches.
             with local_path.open("rb") as body:
                 with _http_client(httpx, 300.0) as client:
                     r = client.put(
@@ -413,7 +254,6 @@ def upload_file(
                             "Content-Length": str(size),
                         },
                     )
-                    # 3xx is not success when redirects are disabled.
                     _reject_redirect(r.status_code, url)
                     if r.status_code >= 400:
                         raise httpx.HTTPStatusError(
@@ -441,7 +281,7 @@ def post_callback(
     url: str,
     token: str | None,
     payload: dict,
-    attempts: int = 5,
+    attempts: int = _CALLBACK_ATTEMPTS,
 ) -> int | None:
     """POST result to jobs/callback with Bearer token. Retries 5xx/network."""
     httpx = _httpx()
@@ -459,7 +299,6 @@ def post_callback(
                 "callback(retry %d/%d): HTTP %d", i + 1, attempts, resp.status_code
             )
         except RuntimeError as e:
-            # Redirect policy — do not retry 3xx.
             log.error("callback(permanent): %s", safe_error_message(e))
             return None
         except httpx.HTTPError as e:

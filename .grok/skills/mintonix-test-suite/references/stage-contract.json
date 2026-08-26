@@ -52,7 +52,7 @@
       "court.net_poles (exactly 2 points left→right net-pole tops)"
     ],
     "optional": [
-      "scoreboard_crop / score_sub_crop / row_split_y (score OCR deferred; not used by live normalize)",
+      "scoreboard_crop / score_sub_crop / row_split_y (detect OCRs into detections.json segments[])",
       "labels[] click anchors + display_name (analyze identity later; not detect ReID today)",
       "frame_width / frame_height / annotated_at_sec"
     ],
@@ -77,7 +77,7 @@
     "terminal_stage": "detect",
     "analyze_wired": false,
     "bwf_normalized_is_valid_cut": true,
-    "detect_content": "detections.json contains pose and shuttle for every frame of normalized.mp4",
+    "detect_content": "detections.json Engine envelope: fps/width/height required; len(segments)==len(preprocess-log.frame_shifts) when shifts>0 (empty shifts: one fallback island allowed); rallies[]; len(frames) within 2% of match duration_sec*fps (pose + shuttle); all-zero score_conf is a soft warning (OCR later)",
     "reid_from_annotation": false,
     "player_mask_presigned_by_jobs": false,
     "workers": "normalize and detect on vast.ai serverless; analyze not wired",

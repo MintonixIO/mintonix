@@ -2,8 +2,9 @@
 
 Focused suites (same package dir, auto-discovered by pytest/unittest):
   - test_io_util.py           I/O, safe_error_message, upload/download
-  - test_detect_pipeline.py   pose/shuttle/ReID/chunk/VideoDetector
+  - test_detect_pipeline.py   pose/shuttle/chunk/VideoDetector/TRT I/O helpers
   - test_server_contract.py   FastAPI health/startup/product imports
+  - test_segments.py          Engine segments / rallies / scoreboard / envelope
 
 Run from this directory:
   python -m pytest test_*.py -q
@@ -21,6 +22,7 @@ class TestSuiteLayout(unittest.TestCase):
     def test_split_modules_importable(self) -> None:
         import test_detect_pipeline  # noqa: F401
         import test_io_util  # noqa: F401
+        import test_segments  # noqa: F401
         import test_server_contract  # noqa: F401
 
 

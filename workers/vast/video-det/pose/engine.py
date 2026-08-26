@@ -125,8 +125,7 @@ class PoseEngine:
     """Synchronous batch pose engine for already-decoded BGR frames.
 
     Uses Ultralytics TRT engines, letterbox geometry, and conf policy.
-    GPU work is the single-buffer product ``GpuConsumer`` (stage → run → sync)
-    so the same GPU can run shuttle/ReID next without a multi-K research ring.
+    GPU work is a single CUDA-graph TRT runner; shuttle runs next on the same GPU.
     """
 
     def __init__(
@@ -137,10 +136,8 @@ class PoseEngine:
         batch_size: int | None = None,
     ) -> None:
         # Defer CUDA/TRT until construction so `import pose` works on CI without
-        # a driver (same contract as detect.reid).
-        import torch
-
-        from .trt_runtime import GpuConsumer, load_engine
+        # a driver.
+        from .trt_runtime import _TrtRunner, load_engine
 
         self.conf = conf
         self.engine = load_engine(Path(engine_path))
@@ -153,7 +150,7 @@ class PoseEngine:
                 f"batch={engine_batch}; rebuild the engine or pass batch_size=None"
             )
         self.batch_size = engine_batch
-        # NCHW: (B, 3, H, W) — spatial size must match letterbox / GpuConsumer.
+        # NCHW: (B, 3, H, W) — spatial size must match letterbox / runner.
         if len(in_shape) == 4:
             h, w = int(in_shape[2]), int(in_shape[3])
             if h != w:
@@ -163,8 +160,7 @@ class PoseEngine:
             self.imgsz = h
         else:
             self.imgsz = IMGSZ
-        self._consumer = GpuConsumer(self.engine, self.batch_size, imgsz=self.imgsz)
-        self._torch = torch
+        self._runner = _TrtRunner(self.engine, self.batch_size, imgsz=self.imgsz)
 
     def run_batch(self, frames_bgr: list[np.ndarray]) -> list[list[EngineDetection]]:
         """Run pose on exactly `batch_size` BGR frames.
@@ -183,11 +179,7 @@ class PoseEngine:
             rgb[i] = tile
             metas.append(meta)
 
-        c = self._consumer
-        c.stage_host(rgb)
-        c.run_gpu(0)
-        c.sync()
-        raw = c.out.detach().float().cpu().numpy()
+        raw = self._runner.infer(rgb)
         return decode_pose_batch(raw, metas, self.conf)
 
 

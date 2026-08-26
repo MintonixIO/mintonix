@@ -55,36 +55,59 @@ def _stop_gpu_logger(proc: subprocess.Popen | None) -> None:
             pass
 
 
-def _run_detector(video: Path, out_json: Path) -> dict:
+def _load_json(path: Path | None) -> dict | None:
+    if path is None or not path.is_file():
+        return None
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return data if isinstance(data, dict) else None
+
+
+def _run_detector(
+    video: Path,
+    out_json: Path,
+    *,
+    annotation: Path | None = None,
+    preprocess_log: Path | None = None,
+) -> dict:
     # Defer heavy imports until after GPU logger starts.
     from detect import DetectConfig, VideoDetector
+    from detect.output import (
+        build_segments_for_video,
+        probe_video,
+        write_detections_json,
+    )
 
     cfg = DetectConfig.from_env()
     det = VideoDetector.from_config(cfg)
     out_json.parent.mkdir(parents=True, exist_ok=True)
 
+    meta = probe_video(video)
+    segments = build_segments_for_video(
+        video_path=video,
+        annotation=_load_json(annotation),
+        preprocess_log=_load_json(preprocess_log),
+        frame_count_hint=int(meta.get("frame_count_hint") or 0),
+    )
+
     t0 = time.perf_counter()
-    frame_count = 0
-    first = True
-    with out_json.open("w", encoding="utf-8") as f:
-        f.write('{"job_id":"ds1-eval","frames":[')
-        for chunk_results, _done, _total in det.run(video, player_mask=None):
-            for fr in chunk_results:
-                if not first:
-                    f.write(",")
-                f.write(json.dumps(fr.to_dict(), separators=(",", ":")))
-                first = False
-                frame_count += 1
-        f.write("]}")
+    frame_count = write_detections_json(
+        out_json,
+        request_id="ds1-eval",
+        video_path=video,
+        frame_chunks=det.run(video),
+        segments=segments,
+        fps=float(meta.get("fps") or 0.0),
+        width=int(meta.get("width") or 0),
+        height=int(meta.get("height") or 0),
+    )
     wall = time.perf_counter() - t0
     return {
         "frame_count": frame_count,
         "wall_sec": wall,
-        "fps_e2e": frame_count / wall if wall > 0 else float("nan"),
+        "fps_e2e": frame_count / wall if wall > 0 else 0.0,
         "pose_batch": getattr(det, "pose_batch", None),
         "pose_engine": str(cfg.pose_engine),
-        "shuttle_ckpt": str(cfg.shuttle_ckpt),
-        "reid": cfg.reid_engine is not None,
+        "shuttle_engine": str(cfg.shuttle_engine),
     }
 
 
@@ -94,6 +117,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--pose-ref", type=Path, required=True)
     ap.add_argument("--shuttle-ref", type=Path, required=True)
     ap.add_argument("--out-dir", type=Path, default=Path("/tmp/ds1_eval"))
+    ap.add_argument("--annotation", type=Path, default=None)
+    ap.add_argument("--preprocess-log", type=Path, default=None)
     ap.add_argument("--skip-detect", action="store_true", help="only compare existing detections.json")
     ap.add_argument("--skip-compare", action="store_true")
     args = ap.parse_args(argv)
@@ -120,7 +145,12 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
             print(f"starting detect on {args.video}", flush=True)
             gpu_proc = _start_gpu_logger(gpu_log)
-            timing = _run_detector(args.video, det_path)
+            timing = _run_detector(
+                args.video,
+                det_path,
+                annotation=args.annotation,
+                preprocess_log=args.preprocess_log,
+            )
             timing_path.write_text(json.dumps(timing, indent=2) + "\n", encoding="utf-8")
             print(json.dumps(timing, indent=2), flush=True)
         else:
