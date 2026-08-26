@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ChevronRight } from "lucide-react";
 import { useTransition } from "react";
+import { FormBoardList } from "@/components/bwf/form-board-list";
 import { Avatar } from "@/components/ui/avatar";
 import { Input } from "@/components/ui/input";
 import { Tabs } from "@/components/ui/tabs";
@@ -72,8 +73,6 @@ export function PlayersView({
       router.replace(href, { scroll: false });
     });
   };
-
-  const maxForm = Math.max(...formBoard.map((r) => r.rankScore), 1);
 
   return (
     <section
@@ -256,69 +255,37 @@ export function PlayersView({
                 ? " · doubles pairs"
                 : " · singles"}
           </div>
-          {formBoard.length === 0 ? (
-            <div className="rounded-[14px] border border-dashed border-[var(--border)] px-6 py-14 text-center text-[13px] text-[var(--text-muted)]">
-              <p>No form ratings for these filters yet.</p>
-              <button
-                type="button"
-                onClick={() => navigate({ q: "", disc: "all", page: 1 })}
-                className="mt-5 inline-flex min-h-10 h-10 items-center rounded-[9px] border border-[var(--border)] bg-[var(--surface-2)] px-4 text-[13px] text-[var(--text-strong)] hover:border-[var(--border-strong)]"
-              >
-                Reset filters
-              </button>
-            </div>
-          ) : (
-            <div className="overflow-hidden rounded-[13px] border border-[var(--border)] bg-[var(--surface-1)] shadow-[var(--shadow-edge)]">
-              <div className="flex items-center gap-2.5 border-b border-[var(--border-subtle)] px-4 py-[13px]">
-                <span className="font-display text-[15px] font-semibold text-[var(--text-strong)]">
-                  {disc === "all" ? "All disciplines" : `${disc} form`}
-                </span>
-                <div className="flex-1" />
-                <span className="font-mono text-[11px] text-[var(--text-muted)]">
-                  Top {formBoard.length}
-                  {formBoardTotal > formBoard.length
-                    ? ` of ${formBoardTotal}`
-                    : ""}
-                </span>
-              </div>
-              {formBoard.map((r, i) => (
-                <Link
-                  key={r.id}
-                  href={r.href}
-                  className="flex w-full items-center gap-[13px] border-t border-[var(--border-subtle)] px-4 py-[11px] text-left hover:bg-[var(--surface-2)]"
+          <FormBoardList
+            rows={formBoard}
+            header={
+              formBoard.length === 0 ? undefined : (
+                <div className="flex items-center gap-2.5 px-4 py-[13px]">
+                  <span className="font-display text-[15px] font-semibold text-[var(--text-strong)]">
+                    {disc === "all" ? "All disciplines" : `${disc} form`}
+                  </span>
+                  <div className="flex-1" />
+                  <span className="font-mono text-[11px] text-[var(--text-muted)]">
+                    Top {formBoard.length}
+                    {formBoardTotal > formBoard.length
+                      ? ` of ${formBoardTotal}`
+                      : ""}
+                  </span>
+                </div>
+              )
+            }
+            empty={
+              <div className="rounded-[14px] border border-dashed border-[var(--border)] px-6 py-14 text-center text-[13px] text-[var(--text-muted)]">
+                <p>No form ratings for these filters yet.</p>
+                <button
+                  type="button"
+                  onClick={() => navigate({ q: "", disc: "all", page: 1 })}
+                  className="mt-5 inline-flex min-h-10 h-10 items-center rounded-[9px] border border-[var(--border)] bg-[var(--surface-2)] px-4 text-[13px] text-[var(--text-strong)] hover:border-[var(--border-strong)]"
                 >
-                  <span className="w-6 text-right font-mono text-xs tabular-nums text-[var(--text-faint)]">
-                    {i + 1}
-                  </span>
-                  <Avatar name={r.name} size={34} />
-                  <span className="min-w-0 flex-1 max-w-[40%]">
-                    <span className="block truncate font-display text-sm font-semibold text-[var(--text-strong)]">
-                      {r.name}
-                    </span>
-                    <span className="mt-0.5 block truncate font-mono text-[10.5px] text-[var(--text-muted)]">
-                      {r.disc}
-                      {r.kind === "pair" ? " · pair" : ""}
-                      {` · ${r.matches} rated`}
-                      {r.rd != null ? ` · RD ${Math.round(r.rd)}` : ""}
-                    </span>
-                  </span>
-                  <span className="min-w-[60px] flex-1">
-                    <span className="block h-1.5 overflow-hidden rounded-full bg-[var(--surface-3)]">
-                      <span
-                        className="block h-full rounded-full bg-[var(--accent)]"
-                        style={{
-                          width: `${(r.rankScore / maxForm) * 100}%`,
-                        }}
-                      />
-                    </span>
-                  </span>
-                  <span className="w-24 shrink-0 text-right font-mono text-sm tabular-nums text-[var(--text-strong)]">
-                    {Math.round(r.rankScore)}
-                  </span>
-                </Link>
-              ))}
-            </div>
-          )}
+                  Reset filters
+                </button>
+              </div>
+            }
+          />
         </>
       )}
     </section>

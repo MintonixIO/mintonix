@@ -1,8 +1,5 @@
 import type { Metadata } from "next";
-import { after } from "next/server";
 import { BwfShell } from "@/components/bwf/shell";
-import { warmCatalogSnapshot } from "@/lib/bwf/catalog";
-import { catalogUserError } from "@/lib/bwf/errors";
 
 export const metadata: Metadata = {
   title: "BWF match library",
@@ -17,11 +14,5 @@ export default async function Layout({
 }: {
   children: React.ReactNode;
 }) {
-  after(() =>
-    warmCatalogSnapshot().catch((err) => {
-      catalogUserError(err, "bwf/layout-warm");
-    }),
-  );
-
   return <BwfShell>{children}</BwfShell>;
 }

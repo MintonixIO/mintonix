@@ -1,26 +1,32 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { ArrowRight } from "lucide-react";
-import { useState } from "react";
-import { Avatar } from "@/components/ui/avatar";
+import { useTransition } from "react";
+import { FormBoardList } from "@/components/bwf/form-board-list";
 import { Tabs } from "@/components/ui/tabs";
 import { DISC_LABEL, DISCS } from "@/lib/bwf/types";
 import type { Disc, FormBoardRow, HomeStats } from "@/lib/bwf/types";
 import { cn } from "@/lib/utils";
 
+function homeHref(disc: Disc): string {
+  return disc === "MS" ? "/bwf" : `/bwf?disc=${disc}`;
+}
+
 export function HomeView({
   stats,
-  formByDisc,
+  disc,
+  formBoard,
+  formBoardTotal,
 }: {
   stats: HomeStats;
-  formByDisc: Record<Disc, { rows: FormBoardRow[]; total: number }>;
+  disc: Disc;
+  formBoard: FormBoardRow[];
+  formBoardTotal: number;
 }) {
-  const defaultDisc =
-    DISCS.find((d) => (formByDisc[d]?.rows.length ?? 0) > 0) ?? "MS";
-  const [disc, setDisc] = useState<Disc>(defaultDisc);
-  const board = formByDisc[disc] ?? { rows: [], total: 0 };
-  const maxForm = Math.max(...board.rows.map((r) => r.rankScore), 1);
+  const router = useRouter();
+  const [isPending, startTransition] = useTransition();
 
   const chips = [
     {
@@ -46,7 +52,10 @@ export function HomeView({
   ];
 
   return (
-    <section>
+    <section
+      className={cn(isPending && "opacity-90 transition-opacity")}
+      aria-busy={isPending}
+    >
       <div className="mb-5">
         <h1 className="font-display text-[28px] font-semibold tracking-[-0.025em] text-[var(--text-strong)]">
           BWF catalog
@@ -99,7 +108,12 @@ export function HomeView({
         <Tabs
           variant="pill"
           value={disc}
-          onChange={(v) => setDisc(v as Disc)}
+          onChange={(v) => {
+            const next = v as Disc;
+            startTransition(() => {
+              router.replace(homeHref(next), { scroll: false });
+            });
+          }}
           items={DISCS.map((d) => ({ value: d, label: d }))}
           aria-label="Form board discipline"
         />
@@ -118,61 +132,23 @@ export function HomeView({
         {disc === "MD" || disc === "WD" || disc === "XD"
           ? " · pairs"
           : " · singles"}
-        {board.total > 0
-          ? ` · top ${board.rows.length}${
-              board.total > board.rows.length ? ` of ${board.total}` : ""
+        {formBoardTotal > 0
+          ? ` · top ${formBoard.length}${
+              formBoardTotal > formBoard.length ? ` of ${formBoardTotal}` : ""
             }`
           : ""}
       </p>
 
-      {board.rows.length === 0 ? (
-        <div className="rounded-[14px] border border-dashed border-[var(--border)] px-6 py-12 text-center">
-          <p className="text-[13px] text-[var(--text-muted)]">
-            No form ratings for {DISC_LABEL[disc]} yet.
-          </p>
-        </div>
-      ) : (
-        <div className="overflow-hidden rounded-[13px] border border-[var(--border)] bg-[var(--surface-1)] shadow-[var(--shadow-edge)]">
-          {board.rows.map((r, i) => (
-            <Link
-              key={r.id}
-              href={r.href}
-              className={cn(
-                "flex w-full items-center gap-[13px] px-4 py-[11px] text-left hover:bg-[var(--surface-2)]",
-                i > 0 && "border-t border-[var(--border-subtle)]",
-              )}
-            >
-              <span className="w-6 text-right font-mono text-xs tabular-nums text-[var(--text-faint)]">
-                {i + 1}
-              </span>
-              <Avatar name={r.name} size={34} />
-              <span className="min-w-0 flex-1 max-w-[40%]">
-                <span className="block truncate font-display text-sm font-semibold text-[var(--text-strong)]">
-                  {r.name}
-                </span>
-                <span className="mt-0.5 block truncate font-mono text-[10.5px] text-[var(--text-muted)]">
-                  {r.kind === "pair" ? "pair" : "player"}
-                  {` · ${r.matches} rated`}
-                  {r.rd != null ? ` · RD ${Math.round(r.rd)}` : ""}
-                </span>
-              </span>
-              <span className="min-w-[60px] flex-1">
-                <span className="block h-1.5 overflow-hidden rounded-full bg-[var(--surface-3)]">
-                  <span
-                    className="block h-full rounded-full bg-[var(--accent)]"
-                    style={{
-                      width: `${(r.rankScore / maxForm) * 100}%`,
-                    }}
-                  />
-                </span>
-              </span>
-              <span className="w-24 shrink-0 text-right font-mono text-sm tabular-nums text-[var(--text-strong)]">
-                {Math.round(r.rankScore)}
-              </span>
-            </Link>
-          ))}
-        </div>
-      )}
+      <FormBoardList
+        rows={formBoard}
+        empty={
+          <div className="rounded-[14px] border border-dashed border-[var(--border)] px-6 py-12 text-center">
+            <p className="text-[13px] text-[var(--text-muted)]">
+              No form ratings for {DISC_LABEL[disc]} yet.
+            </p>
+          </div>
+        }
+      />
     </section>
   );
 }

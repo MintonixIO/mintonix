@@ -5,10 +5,8 @@ import {
   applyInferredCountries,
   buildCatalogStats,
   buildSearchHits,
-  buildStaticSearchIndex,
   classifyRivals,
   eventSearchHit,
-  filterMatches,
   formSortMatches,
   h2hFromMatches,
   isH2hMeeting,
@@ -18,17 +16,11 @@ import {
   resolvePlayerId,
   scoreKind,
   resultChip,
-  utcIsoWeekStart,
-  thisWeekMatches,
   toDirectoryPlayer,
-  topPlayersFromList,
   winRateFromRecord,
   pickPairRating,
   ratingsForPlayer,
-  groupMatchesByEvent,
   formOrderCaption,
-  splitPairWebId,
-  buildFormBoard,
   sameFormBand,
 } from "./query";
 
@@ -39,12 +31,15 @@ function match(
     team2Ids: string[];
   },
 ): CatalogMatch {
+  const event = partial.event ?? "2026 Test Open";
+  const disc = partial.disc ?? "MS";
+  const round = partial.round ?? "Final";
   return {
-    tournamentRaw: "",
-    event: "2026 Test Open",
+    tournamentRaw: `${event} · ${disc} · ${round}`,
+    event,
     year: 2026,
-    disc: "MS",
-    round: "Final",
+    disc,
+    round,
     matchDate: null,
     team1: partial.team1Ids.map((id) => id),
     team2: partial.team2Ids.map((id) => id),
@@ -144,62 +139,7 @@ describe("isH2hMeeting / h2hFromMatches", () => {
   });
 });
 
-describe("filterMatches / paginateMatches", () => {
-  const list = [
-    match({
-      id: "1",
-      disc: "MS",
-      event: "2026 Japan Open",
-      team1Ids: ["a"],
-      team2Ids: ["b"],
-      sourceUrl: "https://www.youtube.com/watch?v=abcdefghijk",
-      threeGames: true,
-      comeback: true,
-    }),
-    match({
-      id: "2",
-      disc: "WS",
-      event: "2026 India Open",
-      team1Ids: ["c"],
-      team2Ids: ["d"],
-      year: 2026,
-    }),
-  ];
-
-  it("filters by disc and video", () => {
-    expect(filterMatches(list, { disc: "MS" })).toHaveLength(1);
-    expect(filterMatches(list, { hasVideo: true })).toHaveLength(1);
-    expect(filterMatches(list, { threeGames: true })).toHaveLength(1);
-    expect(filterMatches(list, { q: "japan" })).toHaveLength(1);
-  });
-
-  it("filters year, round, comeback, player, non-youtube video", () => {
-    const more = [
-      ...list,
-      match({
-        id: "3",
-        disc: "MS",
-        year: 2025,
-        round: "Semifinal",
-        team1Ids: ["a"],
-        team2Ids: ["e"],
-        comeback: true,
-        sourceUrl: "https://evil.example/v/abcdefghijk",
-      }),
-    ];
-    expect(filterMatches(more, { year: 2025 })).toHaveLength(1);
-    expect(filterMatches(more, { round: "semifinal" })).toHaveLength(1);
-    expect(filterMatches(more, { comeback: true }).map((m) => m.id)).toEqual(
-      expect.arrayContaining(["1", "3"]),
-    );
-    // Non-allowlisted URL does not count as hasVideo
-    expect(
-      filterMatches(more, { hasVideo: true }).every((m) =>
-        m.sourceUrl?.includes("youtube"),
-      ),
-    ).toBe(true);
-  });
-
+describe("paginateMatches", () => {
   it("paginates and clamps page", () => {
     const many = Array.from({ length: 50 }, (_, i) =>
       match({
@@ -348,7 +288,7 @@ describe("aggregatePlayers", () => {
   });
 });
 
-describe("topPlayersFromList / buildSearchHits", () => {
+describe("buildSearchHits", () => {
   const players: CatalogPlayer[] = [
     {
       id: "a",
@@ -393,11 +333,6 @@ describe("topPlayersFromList / buildSearchHits", () => {
       imageUrl: null,
     },
   ];
-
-  it("requires min decided for top list", () => {
-    const top = topPlayersFromList(players, { minDecided: 3, limit: 5 });
-    expect(top.map((p) => p.id)).toEqual(["a"]);
-  });
 
   it("search empty and mix", () => {
     const matches = [
@@ -544,36 +479,10 @@ describe("topPlayersFromList / buildSearchHits", () => {
       }),
     ];
     const stats = buildCatalogStats(matches, players);
-    const staticHit = buildStaticSearchIndex(players, stats, {
-      playerLimit: 1,
-      eventLimit: 1,
-    })[0];
     const liveHit = buildSearchHits("alpha", players, matches, stats, 8).find(
       (h) => h.kind === "Player",
     )!;
-    expect(staticHit.sub).toBe(hit.sub);
     expect(liveHit.sub).toBe(hit.sub);
-  });
-
-  it("buildStaticSearchIndex returns player + event hits without matches", () => {
-    const matches = [
-      match({
-        id: "m1",
-        team1Ids: ["a"],
-        team2Ids: ["b"],
-        team1: ["Alpha"],
-        team2: ["Beta"],
-        event: "2026 Japan Open",
-      }),
-    ];
-    const stats = buildCatalogStats(matches, players);
-    const index = buildStaticSearchIndex(players, stats, {
-      playerLimit: 1,
-      eventLimit: 1,
-    });
-    expect(index).toHaveLength(2);
-    expect(index[0].kind).toBe("Player");
-    expect(index[1].kind).toBe("Tournament");
   });
 });
 
@@ -691,7 +600,7 @@ describe("homonym identity", () => {
   });
 });
 
-describe("scoreKind / thisWeek / classifyRivals", () => {
+describe("scoreKind / classifyRivals", () => {
   it("labels 2-0 and 2-1", () => {
     expect(
       scoreKind(
@@ -744,43 +653,6 @@ describe("scoreKind / thisWeek / classifyRivals", () => {
         }),
       ),
     ).toBe("ret.");
-  });
-
-  it("thisWeek is the ISO calendar week (Mon–Sun UTC), not a rolling 7 days", () => {
-    // Friday 14 Aug 2026 → week is Mon 10 – Sun 16 Aug UTC.
-    const now = Date.parse("2026-08-14T12:00:00Z");
-    expect(new Date(utcIsoWeekStart(now)).toISOString()).toBe(
-      "2026-08-10T00:00:00.000Z",
-    );
-    const list = [
-      match({
-        id: "prev-sun",
-        team1Ids: ["a"],
-        team2Ids: ["b"],
-        matchDate: "2026-08-09",
-      }),
-      match({
-        id: "this-mon",
-        team1Ids: ["a"],
-        team2Ids: ["b"],
-        matchDate: "2026-08-10",
-      }),
-      match({
-        id: "this-wed",
-        team1Ids: ["a"],
-        team2Ids: ["b"],
-        matchDate: "2026-08-12",
-      }),
-      match({
-        id: "old",
-        team1Ids: ["a"],
-        team2Ids: ["b"],
-        matchDate: "2026-01-01",
-      }),
-    ];
-    expect(
-      thisWeekMatches(list, { now, limit: 10 }).map((m) => m.id),
-    ).toEqual(["this-wed", "this-mon"]);
   });
 
   it("owns requires 4 meetings, 70%+, and same form band", () => {
@@ -885,51 +757,6 @@ describe("pair / disc ratings", () => {
     );
   });
 
-  it("splits pair web ids at the unique known-id boundary", () => {
-    const ids = new Set(["kim-won-ho--kor", "seo-seung-jae--kor"]);
-    expect(
-      splitPairWebId("kim-won-ho--kor--seo-seung-jae--kor", ids),
-    ).toEqual(["kim-won-ho--kor", "seo-seung-jae--kor"]);
-  });
-
-  it("splits pair web ids on name--cc members when the directory is empty", () => {
-    expect(
-      splitPairWebId("kim-won-ho--kor--seo-seung-jae--kor", new Set()),
-    ).toEqual(["kim-won-ho--kor", "seo-seung-jae--kor"]);
-  });
-
-  it("builds form boards sorted by rank score", () => {
-    const byKey = new Map([
-      [
-        "a|MS",
-        {
-          disc: "MS" as const,
-          kind: "player" as const,
-          mu: 1800,
-          rankScore: 1700,
-          matches: 40,
-          webId: "a",
-          name: "Alpha",
-        },
-      ],
-      [
-        "b|MS",
-        {
-          disc: "MS" as const,
-          kind: "player" as const,
-          mu: 1900,
-          rankScore: 1800,
-          matches: 30,
-          webId: "b",
-          name: "Beta",
-        },
-      ],
-    ]);
-    expect(buildFormBoard(byKey, new Set(["a", "b"])).map((r) => r.name)).toEqual(
-      ["Beta", "Alpha"],
-    );
-  });
-
   it("sameFormBand uses nullish rank scores, not truthiness", () => {
     const a = { disc: "MS" as const, kind: "player" as const, mu: 1500, rankScore: 0, matches: 10 };
     const b = { disc: "MS" as const, kind: "player" as const, mu: 1500, rankScore: 50, matches: 10 };
@@ -937,17 +764,10 @@ describe("pair / disc ratings", () => {
     expect(sameFormBand(a, { ...b, rankScore: undefined })).toBe(false);
   });
 
-  it("groups this-week events without dropping matches", () => {
+  it("formOrderCaption notes missing match dates", () => {
     const list = [
       match({ id: "1", team1Ids: ["a"], team2Ids: ["b"], event: "Japan Open" }),
-      match({ id: "2", team1Ids: ["c"], team2Ids: ["d"], event: "Japan Open" }),
-      match({ id: "3", team1Ids: ["e"], team2Ids: ["f"], event: "Korea Open" }),
     ];
-    const groups = groupMatchesByEvent(list);
-    expect(groups.map((g) => [g.event, g.matches.length])).toEqual([
-      ["Japan Open", 2],
-      ["Korea Open", 1],
-    ]);
     expect(formOrderCaption(list)).toBe(" (by ingest order; match dates missing)");
   });
 });

@@ -57,7 +57,7 @@ Last updated: 2026-08-01 (remaining issues batch)
 | F2.8 | YouTube allowlist UX | [x] | Detail already omits non-YT |
 | F2.9 | Player images null-safe | [x] | Avatar handles missing src |
 | F3.2 | Cache docs | [x] | README + catalog comments |
-| F3.3 | Year-scope plan | [x] | Documented YEAR-SCOPE in catalog |
+| F3.3 | Year-scope plan | [-] | Dropped; snapshot is process RAM, not year-scoped |
 | F3.5 | H2H meeting cap | [x] | Cap 50 |
 | F3.6 | Tournament filter scale | [x] | Input + datalist typeahead |
 | F-quality | Search a11y / mobile | [x] | aria-labels + wrap |

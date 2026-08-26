@@ -56,7 +56,8 @@ Tracked checklist: repo root [MARKETING_BWF_CHECKLIST.md](../../MARKETING_BWF_CH
 ## BWF catalog notes
 
 - Server-only catalog module (`lib/bwf/catalog.ts`) uses the service role and filters `owner_id IS NULL`.
-- Home, match list, and stats load via targeted queries / `bwf_catalog_stats` (not the full dump).
-- Search / players / H2H use a **process-local** snapshot with a 300s TTL (Next Data Cache is too small for multi-year dumps). Layout warms it after the response.
+- Home, match list, form boards, and stats load via targeted queries / `bwf_catalog_stats` (not the full dump). Home form board uses `?disc=` (default MS), one board per request.
+- Search, directory profiles, player profiles, and H2H use a **process-local** snapshot with a 300s TTL (Next Data Cache is 2MB). Snapshot loads only when those surfaces call `getCatalogSnapshot()`. Form-board mode (`/bwf/players?mode=boards`) uses `listFormBoard` only.
+- Match-list facets (event / round / year / disc) are built in TS with `parseTournament` from distinct raw `tournament` strings returned by `bwf_catalog_stats`.
 - Player directory pages are server-paginated; H2H uses a slim seed + `/api/bwf/players` typeahead.
 - Search APIs are rate-limited per IP (~60/min).

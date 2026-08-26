@@ -9,6 +9,7 @@ import {
   isComeback,
   mapDbMatch,
   parseTournament,
+  tournamentDiscSlot,
   playerIdBase,
   playerIdCountry,
   playerIdFromName,
@@ -119,6 +120,15 @@ describe("parseTournament", () => {
     expect(p.event).toBe("2026 Malaysia Open");
     expect(p.disc).toBe("WD");
     expect(p.round).toBe("Final");
+  });
+});
+
+describe("tournamentDiscSlot", () => {
+  it("reads only the middle · DISC · slot", () => {
+    expect(tournamentDiscSlot("2026 Japan Open · MS · Final")).toBe("MS");
+    expect(tournamentDiscSlot("2026 MS Open · WD · Final")).toBe("WD");
+    expect(tournamentDiscSlot("2026 MS Open")).toBeNull();
+    expect(tournamentDiscSlot("title · Final")).toBeNull();
   });
 });
 

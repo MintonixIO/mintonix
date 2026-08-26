@@ -4,14 +4,13 @@
  */
 import {
   formatTeam,
-  matchInvolvesPlayer,
   normalizePlayerKey,
   playerIdBase,
-  playerIdCountry,
   playerIdFromName,
   playerWon,
   roundRank,
 } from "./parse";
+import { filterMatchList } from "./match-query";
 import { playerImageUrl } from "./player-image";
 import { isAllowlistedYoutubeUrl } from "./youtube";
 import {
@@ -25,7 +24,6 @@ import type {
   CatalogStats,
   DirectoryPlayer,
   Disc,
-  FormBoardRow,
   FormRating,
   MatchFilters,
   MatchStatus,
@@ -100,46 +98,6 @@ export function formSortMatches(list: CatalogMatch[]): CatalogMatch[] {
   return list
     .slice()
     .sort((a, b) => matchChronologyMs(b) - matchChronologyMs(a));
-}
-
-export function filterMatches(
-  matches: CatalogMatch[],
-  filters: MatchFilters = {},
-): CatalogMatch[] {
-  const q = filters.q?.trim().toLowerCase() ?? "";
-  const disc = filters.disc && filters.disc !== "all" ? filters.disc : null;
-  const event = filters.event?.trim().toLowerCase() ?? "";
-  const round = filters.round?.trim().toLowerCase() ?? "";
-  const year =
-    filters.year && filters.year !== "all" ? Number(filters.year) : null;
-
-  let list = matches.filter((m) => {
-    if (disc && m.disc !== disc) return false;
-    if (year != null && !Number.isNaN(year) && m.year !== year) return false;
-    if (event && !m.event.toLowerCase().includes(event)) return false;
-    if (round && m.round.toLowerCase() !== round) return false;
-    if (filters.hasVideo && !isAllowlistedYoutubeUrl(m.sourceUrl)) return false;
-    if (filters.threeGames && !m.threeGames) return false;
-    if (filters.comeback && !m.comeback) return false;
-    if (filters.player && !matchInvolvesPlayer(m, filters.player)) return false;
-    if (q) {
-      const hay = [
-        ...m.team1,
-        ...m.team2,
-        m.event,
-        m.round,
-        m.disc ?? "",
-        m.tournamentRaw,
-      ]
-        .join(" ")
-        .toLowerCase();
-      if (!hay.includes(q)) return false;
-    }
-    return true;
-  });
-
-  list = sortMatches(list, filters.sort ?? "event");
-  return list;
 }
 
 export function paginateMatches(
@@ -434,7 +392,7 @@ type SearchPlayer = Pick<
   "id" | "name" | "matches" | "winRate" | "disc" | "country"
 >;
 
-/** Shared hit shape for live search + static shell index (same sub format). */
+/** Typeahead / search-hit row for a catalog player. */
 export function playerSearchHit(p: SearchPlayer): SearchHit {
   const cc = p.country ? p.country.toUpperCase() : "";
   const bits = [
@@ -506,7 +464,7 @@ export function buildSearchHits(
     .slice(0, Math.max(eventBudget, limit))
     .map(eventSearchHit);
 
-  const matchHits: SearchHit[] = filterMatches(matches, { q: query })
+  const matchHits: SearchHit[] = filterMatchList(matches, { q: query })
     .slice(0, Math.max(matchBudget, limit))
     .map(matchSearchHit);
 
@@ -528,88 +486,6 @@ export function buildSearchHits(
   return [...primary, ...remainder].slice(0, limit);
 }
 
-/**
- * Static shell search index (no query filter): top players + tournaments.
- * Shared by layout so hit construction stays consistent with search API shape.
- */
-export function buildStaticSearchIndex(
-  players: SearchPlayer[],
-  stats: CatalogStats,
-  opts?: { playerLimit?: number; eventLimit?: number },
-): SearchHit[] {
-  const playerLimit = opts?.playerLimit ?? 80;
-  const eventLimit = opts?.eventLimit ?? 40;
-
-  const playerHits = players.slice(0, playerLimit).map(playerSearchHit);
-  const eventHits = stats.events.slice(0, eventLimit).map(eventSearchHit);
-  return [...playerHits, ...eventHits];
-}
-
-/** Rank directory (or full) players for home leaderboards. */
-export function topPlayersFromList<
-  T extends Pick<
-    DirectoryPlayer,
-    "id" | "disc" | "discs" | "wins" | "losses" | "winRate"
-  >,
->(
-  players: T[],
-  opts?: { disc?: Disc | "all"; limit?: number; minDecided?: number },
-): T[] {
-  const disc = opts?.disc && opts.disc !== "all" ? opts.disc : null;
-  const limit = opts?.limit ?? 8;
-  const minDecided = opts?.minDecided ?? 3;
-  return players
-    .filter((p) => (disc ? p.disc === disc || p.discs.includes(disc) : true))
-    .filter((p) => p.wins + p.losses >= minDecided)
-    .sort((a, b) => b.winRate - a.winRate || b.wins - a.wins)
-    .slice(0, limit);
-}
-
-/** Monday 00:00 UTC of the ISO week that contains `nowMs`. */
-export function utcIsoWeekStart(nowMs: number): number {
-  const d = new Date(nowMs);
-  const dow = d.getUTCDay(); // 0 Sun … 6 Sat
-  const mondayOffset = dow === 0 ? -6 : 1 - dow;
-  return Date.UTC(
-    d.getUTCFullYear(),
-    d.getUTCMonth(),
-    d.getUTCDate() + mondayOffset,
-  );
-}
-
-/** Matches whose date (or ingest time) falls in the current ISO week (Mon–Sun UTC). */
-export function thisWeekMatches(
-  matches: CatalogMatch[],
-  opts?: { now?: number; limit?: number },
-): CatalogMatch[] {
-  const now = opts?.now ?? Date.now();
-  const weekStart = utcIsoWeekStart(now);
-  const weekEnd = weekStart + 7 * 24 * 60 * 60 * 1000;
-  const dated = matches.filter((m) => {
-    const t = matchChronologyMs(m);
-    return t >= weekStart && t < weekEnd;
-  });
-  const sorted = formSortMatches(dated);
-  return opts?.limit != null ? sorted.slice(0, opts.limit) : sorted;
-}
-
-/** Group matches by event, preserving first-seen order. */
-export function groupMatchesByEvent(
-  matches: CatalogMatch[],
-): { event: string; matches: CatalogMatch[] }[] {
-  const order: string[] = [];
-  const byEvent = new Map<string, CatalogMatch[]>();
-  for (const m of matches) {
-    const key = m.event || "Unknown event";
-    if (!byEvent.has(key)) {
-      order.push(key);
-      byEvent.set(key, []);
-    }
-    byEvent.get(key)!.push(m);
-  }
-  return order.map((event) => ({ event, matches: byEvent.get(event)! }));
-}
-
 /** Caption for the recent-form chip strip. */
 export function formOrderCaption(matches: CatalogMatch[]): string {
   if (matches.length === 0) return "";
@@ -617,81 +493,6 @@ export function formOrderCaption(matches: CatalogMatch[]): string {
   if (dated === matches.length) return " (by match date)";
   if (dated === 0) return " (by ingest order; match dates missing)";
   return " (match date when present, else ingest)";
-}
-
-export function formatRankScore(n: number | null | undefined): string | null {
-  if (n == null || Number.isNaN(n)) return null;
-  return String(Math.round(n));
-}
-
-/**
- * Pair web_id is `playerA--playerB`. Each player id may itself contain `--cc`.
- * Split at the unique boundary where both sides are known ids.
- */
-export function splitPairWebId(
-  webId: string,
-  knownIds: Set<string>,
-): [string, string] | null {
-  const parts = webId.split("--");
-  for (let i = 1; i < parts.length; i++) {
-    const a = parts.slice(0, i).join("--");
-    const b = parts.slice(i).join("--");
-    if (knownIds.has(a) && knownIds.has(b)) return [a, b];
-  }
-  // Directory-free fallback: each member is `name--cc`.
-  if (parts.length >= 4 && parts.length % 2 === 0) {
-    const mid = parts.length / 2;
-    const a = parts.slice(0, mid).join("--");
-    const b = parts.slice(mid).join("--");
-    if (playerIdCountry(a) && playerIdCountry(b)) return [a, b];
-  }
-  return null;
-}
-
-export function buildFormBoard(
-  ratingsByKey: Map<string, FormRating>,
-  knownIds: Set<string>,
-  opts?: { disc?: Disc | "all"; q?: string; limit?: number },
-): FormBoardRow[] {
-  const disc = opts?.disc && opts.disc !== "all" ? opts.disc : null;
-  const q = opts?.q?.trim().toLowerCase() ?? "";
-  const limit = opts?.limit ?? 80;
-  const rows: FormBoardRow[] = [];
-  for (const rating of ratingsByKey.values()) {
-    if (rating.kind !== "player" && rating.kind !== "pair") continue;
-    if (rating.rankScore == null) continue;
-    if (disc && rating.disc !== disc) continue;
-    const name = rating.name ?? rating.webId ?? "";
-    if (q && !name.toLowerCase().includes(q)) continue;
-    const webId = rating.webId ?? "";
-    let href = "/bwf/players";
-    if (rating.kind === "player" && webId) {
-      href = `/bwf/players/${webId}`;
-    } else if (rating.kind === "pair" && webId) {
-      const members = splitPairWebId(webId, knownIds);
-      href = members
-        ? `/bwf/h2h?a=${members[0]}&a2=${members[1]}`
-        : "/bwf/h2h";
-    }
-    rows.push({
-      id: `${webId}|${rating.disc}`,
-      name: name || webId || "Unknown",
-      country: null,
-      disc: rating.disc,
-      kind: rating.kind,
-      mu: rating.mu,
-      rd: rating.rd ?? null,
-      rankScore: rating.rankScore,
-      peakMu: rating.peakMu ?? null,
-      matches: rating.matches,
-      href,
-    });
-  }
-  rows.sort(
-    (a, b) =>
-      b.rankScore - a.rankScore || b.matches - a.matches || a.name.localeCompare(b.name),
-  );
-  return rows.slice(0, limit);
 }
 
 export function gamesWon(m: CatalogMatch): { w1: number; w2: number } {

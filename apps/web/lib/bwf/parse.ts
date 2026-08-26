@@ -177,6 +177,14 @@ export function parseTournament(raw: string | null | undefined): {
   return { event, year, disc, round };
 }
 
+/** Middle ` · DISC · ` token only (list disc uses `ilike % · DISC · %`). */
+export function tournamentDiscSlot(raw: string | null | undefined): Disc | null {
+  const parts = (raw || "").split(/\s*·\s*/).map((p) => p.trim());
+  if (parts.length < 3) return null;
+  const mid = parts[1]?.toUpperCase();
+  return mid && DISC_SET.has(mid) ? (mid as Disc) : null;
+}
+
 export function teamNames(
   p1: string | null | undefined,
   p2: string | null | undefined,

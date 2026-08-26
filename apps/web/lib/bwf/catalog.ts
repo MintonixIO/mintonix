@@ -5,10 +5,7 @@ import {
   hasServiceRoleKey,
 } from "@/lib/supabase/server";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import {
-  resolveMatchByIdOutcome,
-  type SnapshotAttempt,
-} from "./match-by-id";
+import { resolveMatchByIdOutcome } from "./match-by-id";
 import {
   mapDbMatch,
   matchInvolvesPlayer,
@@ -16,10 +13,9 @@ import {
 } from "./parse";
 import {
   catalogStatsFromSql,
-  isoDateUtc,
+  filterMatchList,
   planMatchList,
-  tournamentDiscIlike,
-  youtubeSourceOrFilter,
+  sanitizeFilterValue,
   type MatchListPlan,
   type SqlCatalogStats,
 } from "./match-query";
@@ -31,8 +27,6 @@ import {
   applyRating,
   buildCatalogStats,
   buildSearchHits,
-  buildStaticSearchIndex,
-  filterMatches,
   formSortMatches,
   h2hFromMatches,
   paginateMatches,
@@ -40,12 +34,13 @@ import {
   pickPlayerRating,
   pickPairRating,
   resolvePlayerId,
-  sortMatches,
-  thisWeekMatches,
   toDirectoryPlayer,
-  buildFormBoard,
-  utcIsoWeekStart,
 } from "./query";
+import {
+  buildFormBoard,
+  mapFormBoardRows,
+  type FormBoardSqlRow,
+} from "./form-board";
 import type {
   CatalogMatch,
   CatalogPlayer,
@@ -58,31 +53,22 @@ import type {
   MatchFilters,
   SearchHit,
 } from "./types";
-import { BWF_SEARCH_LIMIT, DISCS } from "./types";
+import { BWF_SEARCH_LIMIT, BWF_SEARCH_MAX_Q, DISCS } from "./types";
 
 const MATCH_SELECT =
   "id,tournament,match_date,team1_player1,team1_player2,team2_player1,team2_player2,team1_player1_country,team1_player2_country,team2_player1_country,team2_player2_country,g1_t1,g1_t2,g2_t1,g2_t2,g3_t1,g3_t2,result,winner_side,status,source_url,duration_sec,created_at";
 
-const MATCH_SELECT_NO_RESULT =
-  "id,tournament,match_date,team1_player1,team1_player2,team2_player1,team2_player2,team1_player1_country,team1_player2_country,team2_player1_country,team2_player2_country,g1_t1,g1_t2,g2_t1,g2_t2,g3_t1,g3_t2,status,source_url,duration_sec,created_at";
-
-const MATCH_SELECT_NO_COUNTRY =
-  "id,tournament,match_date,team1_player1,team1_player2,team2_player1,team2_player2,g1_t1,g1_t2,g2_t1,g2_t2,g3_t1,g3_t2,status,source_url,duration_sec,created_at";
-
 /**
  * Server-private catalog access via service role (never the public anon path).
  *
- * Fast path (home, match list, stats): targeted PostgREST queries +
+ * Fast path (home, match list, stats, form boards): targeted PostgREST queries +
  * `bwf_catalog_stats` RPC. Do not page the full `matches` table for those.
  *
- * Slow path (search, player directory, H2H, profiles): process-local
- * `CatalogSnapshot` (matches + slim directory + ratings). Multi-year payload
- * is ~tens of MB, so Next.js Data Cache (2MB) cannot hold it. TTL 300s with
- * single-flight rebuild + stale-while-revalidate. Layout warms this in
- * `after()` so first paint is not blocked.
+ * Slow path (search, directory profiles, player profiles, H2H): process-local
+ * `CatalogSnapshot`. Held in process RAM because Next Data Cache is 2MB.
+ * Snapshot loads only when those surfaces call `getCatalogSnapshot()`.
  *
  * Full player profiles (form/rivals) are built on demand in getPlayerById.
- * YEAR-SCOPE: Prefer year-scoped snapshot later if RSS becomes a problem.
  */
 export type CatalogSnapshot = {
   matches: CatalogMatch[];
@@ -92,7 +78,7 @@ export type CatalogSnapshot = {
   individualsByKey: Map<string, FormRating>;
 };
 
-/** Process-local snapshot TTL (seconds), aligned with former revalidate: 300. */
+/** Snapshot TTL (ms). */
 const SNAPSHOT_TTL_MS = 300_000;
 
 type SnapshotCacheEntry = {
@@ -101,7 +87,7 @@ type SnapshotCacheEntry = {
 };
 
 let snapshotCache: SnapshotCacheEntry | null = null;
-/** In-flight build so parallel layout+page callers share one Supabase page-in. */
+/** In-flight build so parallel snapshot callers share one Supabase page-in. */
 let snapshotInflight: Promise<CatalogSnapshot> | null = null;
 
 type StatsCacheEntry = { stats: CatalogStats; expiresAt: number };
@@ -148,98 +134,16 @@ function applyMatchListPlan(
   return q.range(plan.from, plan.to);
 }
 
-async function selectMatchRows(
-  build: (
-    select: string,
-  ) => PromiseLike<{
-    data: unknown;
-    error: { message: string } | null;
-    count?: number | null;
-  }>,
-): Promise<{ rows: DbMatchRow[]; error: string | null; count: number | null }> {
-  let select = MATCH_SELECT;
-  for (;;) {
-    const { data, error, count } = await build(select);
-    if (error) {
-      if (select === MATCH_SELECT && /result|winner_side/i.test(error.message)) {
-        select = MATCH_SELECT_NO_RESULT;
-        continue;
-      }
-      if (
-        (select === MATCH_SELECT || select === MATCH_SELECT_NO_RESULT) &&
-        /country/i.test(error.message)
-      ) {
-        select = MATCH_SELECT_NO_COUNTRY;
-        continue;
-      }
-      return { rows: [], error: error.message, count: null };
-    }
-    return {
-      rows: ((data as DbMatchRow[] | null) ?? []) as DbMatchRow[],
-      error: null,
-      count: count ?? null,
-    };
-  }
-}
-
-async function fetchCatalogStatsFallback(
-  client: SupabaseClient,
-): Promise<CatalogStats> {
-  type CountBuilder = PromiseLike<{
-    count: number | null;
-    error: { message: string } | null;
-  }> & {
-    or: (filters: string) => CountBuilder;
-    ilike: (column: string, value: string) => CountBuilder;
-  };
-  const headCount = async (
-    apply: (q: CountBuilder) => CountBuilder,
-  ): Promise<number> => {
-    const base = client
-      .from("matches")
-      .select("id", { count: "exact", head: true })
-      .is("owner_id", null) as unknown as CountBuilder;
-    const { count, error } = await apply(base);
-    if (error) return 0;
-    return count ?? 0;
-  };
-
-  const [matches, withVideo, playersRes, ...discCounts] = await Promise.all([
-    headCount((q) => q),
-    headCount((q) => q.or(youtubeSourceOrFilter())),
-    client
-      .from("player_ratings")
-      .select("web_id", { count: "exact", head: true })
-      .eq("kind", "player"),
-    ...DISCS.map((d) =>
-      headCount((q) => q.ilike("tournament", tournamentDiscIlike(d))),
-    ),
-  ]);
-
-  const by_disc = Object.fromEntries(
-    DISCS.map((d, i) => [d, discCounts[i] ?? 0]),
-  ) as Partial<Record<Disc, number>>;
-
-  return catalogStatsFromSql({
-    matches,
-    players: playersRes.error ? 0 : (playersRes.count ?? 0),
-    tournaments: 0,
-    with_video: withVideo,
-    by_disc,
-    events: [],
-    rounds: [],
-    years: [],
-  });
-}
-
 async function fetchCatalogStatsRemote(): Promise<CatalogStats> {
   requireServiceRole();
   const client = createServiceClient();
   const { data, error } = await client.rpc("bwf_catalog_stats");
-  if (!error && data && typeof data === "object") {
-    return catalogStatsFromSql(data as SqlCatalogStats);
+  if (error || !data || typeof data !== "object") {
+    throw new Error(
+      `BWF catalog stats failed: ${error?.message ?? "empty response"}`,
+    );
   }
-  return fetchCatalogStatsFallback(client);
+  return catalogStatsFromSql(data as SqlCatalogStats);
 }
 
 async function fetchPages(
@@ -248,34 +152,18 @@ async function fetchPages(
   const pageSize = 1000;
   let from = 0;
   const rows: DbMatchRow[] = [];
-  let select = MATCH_SELECT;
 
   for (;;) {
     // Order by unique `id` so range pagination cannot skip/duplicate rows when
     // many matches share the same created_at (bulk season upserts).
     const { data, error } = await supabase
       .from("matches")
-      .select(select)
+      .select(MATCH_SELECT)
       .is("owner_id", null)
       .order("id", { ascending: true })
       .range(from, from + pageSize - 1);
 
     if (error) {
-      if (select === MATCH_SELECT && /result|winner_side/i.test(error.message)) {
-        select = MATCH_SELECT_NO_RESULT;
-        from = 0;
-        rows.length = 0;
-        continue;
-      }
-      if (
-        (select === MATCH_SELECT || select === MATCH_SELECT_NO_RESULT) &&
-        /country/i.test(error.message)
-      ) {
-        select = MATCH_SELECT_NO_COUNTRY;
-        from = 0;
-        rows.length = 0;
-        continue;
-      }
       return { rows: [], error: error.message };
     }
     if (!data?.length) break;
@@ -329,8 +217,7 @@ async function fetchRatingTables(supabase: SupabaseClient): Promise<{
         .order("web_id", { ascending: true })
         .range(from, from + pageSize - 1);
       if (error) {
-        // Table missing (migration not applied) — catalog still works.
-        return;
+        throw new Error(`BWF ${table} load failed: ${error.message}`);
       }
       if (!data?.length) break;
       for (const row of data as T[]) sink(row);
@@ -419,12 +306,7 @@ async function buildCatalogSnapshot(): Promise<CatalogSnapshot> {
   return { matches, directoryPlayers, stats, ratingsByKey, individualsByKey };
 }
 
-/**
- * Full BWF snapshot for this server process (search / players / H2H).
- * Not `unstable_cache` — multi-year payload exceeds Next Data Cache 2MB limit
- * (~26MB observed), which forced a full rebuild every request.
- * Expired entries are served stale while a rebuild runs.
- */
+/** Process RAM snapshot — Next Data Cache is 2MB. */
 export async function getCatalogSnapshot(): Promise<CatalogSnapshot> {
   const now = Date.now();
   if (snapshotCache && snapshotCache.expiresAt > now) {
@@ -445,11 +327,6 @@ export async function getCatalogSnapshot(): Promise<CatalogSnapshot> {
   }
   if (snapshotCache) return snapshotCache.snapshot;
   return snapshotInflight;
-}
-
-/** Kick a snapshot rebuild without blocking the current response. */
-export function warmCatalogSnapshot(): Promise<CatalogSnapshot> {
-  return getCatalogSnapshot();
 }
 
 export async function getDirectoryPlayers(): Promise<DirectoryPlayer[]> {
@@ -479,10 +356,8 @@ export async function getCatalogStats(): Promise<CatalogStats> {
 }
 
 /**
- * Prefer a direct single-row fetch (cold detail pages) over loading the full
- * snapshot. Snapshot is recovery only when the direct fetch errors — a
- * confirmed miss returns null without loading the catalog.
- * Decision matrix lives in `resolveMatchByIdOutcome` (unit-tested).
+ * Direct single-row fetch. Confirmed miss is null; any query error throws.
+ * Never pages the catalog dump from a detail error.
  */
 export async function getMatchById(id: string): Promise<CatalogMatch | null> {
   if (process.env.CATALOG_FIXTURE === "1") {
@@ -496,57 +371,17 @@ export async function getMatchById(id: string): Promise<CatalogMatch | null> {
   }
 
   const client = createServiceClient();
-  let { data, error } = await client
+  const { data, error } = await client
     .from("matches")
     .select(MATCH_SELECT)
     .eq("id", id)
     .is("owner_id", null)
     .maybeSingle();
 
-  if (error && /result|winner_side/i.test(error.message)) {
-    const retry = await client
-      .from("matches")
-      .select(MATCH_SELECT_NO_RESULT)
-      .eq("id", id)
-      .is("owner_id", null)
-      .maybeSingle();
-    data = retry.data as typeof data;
-    error = retry.error;
-  }
-
-  if (error && /country/i.test(error.message)) {
-    const retry = await client
-      .from("matches")
-      .select(MATCH_SELECT_NO_COUNTRY)
-      .eq("id", id)
-      .is("owner_id", null)
-      .maybeSingle();
-    data = retry.data as typeof data;
-    error = retry.error;
-  }
-
-  // Cold detail path: return immediately on direct hit — never load snapshot.
-  if (data && !error) {
-    return mapDbMatch(data as DbMatchRow);
-  }
-
-  // Confirmed miss: true 404 — do not load the full catalog snapshot.
-  if (!error) {
-    return null;
-  }
-
-  let snapshot: SnapshotAttempt;
-  try {
-    const snap = await getCatalogSnapshot();
-    const hit = snap.matches.find((m) => m.id === id);
-    snapshot = hit
-      ? { status: "hit", match: hit }
-      : { status: "miss" };
-  } catch (e) {
-    snapshot = { status: "error", error: e };
-  }
-
-  return resolveMatchByIdOutcome(null, { message: error.message }, snapshot);
+  return resolveMatchByIdOutcome(
+    (data as DbMatchRow | null) ?? null,
+    error ? { message: error.message } : null,
+  );
 }
 
 export async function queryMatches(filters: MatchFilters = {}): Promise<{
@@ -559,7 +394,7 @@ export async function queryMatches(filters: MatchFilters = {}): Promise<{
   if (process.env.CATALOG_FIXTURE === "1") {
     const { matches } = await getCatalogSnapshot();
     return paginateMatches(
-      filterMatches(matches, filters),
+      filterMatchList(matches, filters),
       filters.page ?? 1,
       filters.pageSize ?? 24,
     );
@@ -567,27 +402,32 @@ export async function queryMatches(filters: MatchFilters = {}): Promise<{
   requireServiceRole();
   const plan = planMatchList(filters);
   const client = createServiceClient();
-  const fetched = await selectMatchRows((select) =>
-    applyMatchListPlan(
-      client
+  const selected = plan.overFetch
+    ? client.from("matches").select(MATCH_SELECT).is("owner_id", null)
+    : client
         .from("matches")
-        .select(select, { count: "exact" })
-        .is("owner_id", null) as unknown as MatchListBuilder,
-      plan,
-    ),
+        .select(MATCH_SELECT, { count: "exact" })
+        .is("owner_id", null);
+  const { data, error, count } = await applyMatchListPlan(
+    selected as unknown as MatchListBuilder,
+    plan,
   );
-  if (fetched.error) {
-    throw new Error(`BWF match list failed: ${fetched.error}`);
+  if (error) {
+    throw new Error(`BWF match list failed: ${error.message}`);
   }
-  const mapped = fetched.rows.map(mapDbMatch);
+  const mapped = (((data as DbMatchRow[] | null) ?? []) as DbMatchRow[]).map(
+    mapDbMatch,
+  );
   if (plan.overFetch && filters.player) {
+    // Total is the JS-involved set, not the name-ilike SQL count. Window is
+    // PLAYER_OVERFETCH_LIMIT so this path cannot page the dump.
     const involved = mapped.filter((m) =>
       matchInvolvesPlayer(m, filters.player as string),
     );
     return paginateMatches(involved, filters.page ?? 1, filters.pageSize ?? 24);
   }
   const pageSize = Math.min(Math.max(filters.pageSize ?? 24, 1), 100);
-  const total = fetched.count ?? mapped.length;
+  const total = count ?? mapped.length;
   const totalPages = Math.max(1, Math.ceil(total / pageSize) || 1);
   const page = Math.min(Math.max(filters.page ?? 1, 1), totalPages);
   return { matches: mapped, total, page, pageSize, totalPages };
@@ -690,13 +530,6 @@ export async function searchCatalog(
   return buildSearchHits(q, directoryPlayers, matches, stats, limit);
 }
 
-/** Shell static index (players + tournaments) from the snapshot. */
-export async function getStaticSearchIndex(): Promise<SearchHit[]> {
-  const { directoryPlayers, stats } = await getCatalogSnapshot();
-  return buildStaticSearchIndex(directoryPlayers, stats);
-}
-
-
 export async function listDirectoryPlayers(opts?: {
   q?: string;
   disc?: Disc | "all";
@@ -765,37 +598,6 @@ export async function searchDirectoryPlayers(
   }));
 }
 
-/** This week's matches for home (no ranking leaderboard). */
-export async function getThisWeekMatches(
-  limit?: number,
-): Promise<CatalogMatch[]> {
-  if (process.env.CATALOG_FIXTURE === "1") {
-    const { matches } = await getCatalogSnapshot();
-    return thisWeekMatches(matches, limit != null ? { limit } : undefined);
-  }
-  requireServiceRole();
-  const weekStart = utcIsoWeekStart(Date.now());
-  const start = isoDateUtc(weekStart);
-  const end = isoDateUtc(weekStart + 7 * 24 * 60 * 60 * 1000);
-  const client = createServiceClient();
-  const fetched = await selectMatchRows((select) =>
-    client
-      .from("matches")
-      .select(select)
-      .is("owner_id", null)
-      .or(
-        `and(match_date.gte.${start},match_date.lt.${end}),and(match_date.is.null,created_at.gte.${start}T00:00:00.000Z,created_at.lt.${end}T00:00:00.000Z)`,
-      )
-      .order("match_date", { ascending: false, nullsFirst: false })
-      .limit(limit != null ? Math.min(Math.max(limit, 1), 1000) : 1000),
-  );
-  if (fetched.error) {
-    throw new Error(`BWF this-week load failed: ${fetched.error}`);
-  }
-  const mapped = formSortMatches(fetched.rows.map(mapDbMatch));
-  return limit != null ? mapped.slice(0, limit) : mapped;
-}
-
 /** Form boards: Glicko rank_score per discipline (pairs for MD/WD/XD). */
 export async function listFormBoard(opts?: {
   q?: string;
@@ -805,13 +607,12 @@ export async function listFormBoard(opts?: {
   if (process.env.CATALOG_FIXTURE === "1") {
     const { ratingsByKey, directoryPlayers } = await getCatalogSnapshot();
     const knownIds = new Set(directoryPlayers.map((p) => p.id));
-    const rows = buildFormBoard(ratingsByKey, knownIds, opts);
-    return { rows, total: rows.length };
+    return buildFormBoard(ratingsByKey, knownIds, opts);
   }
   requireServiceRole();
   const limit = Math.min(Math.max(opts?.limit ?? 80, 1), 200);
   const disc = opts?.disc && opts.disc !== "all" ? opts.disc : null;
-  const q = (opts?.q ?? "").trim();
+  const q = sanitizeFilterValue(opts?.q ?? "").slice(0, BWF_SEARCH_MAX_Q);
   const client = createServiceClient();
   let query = client
     .from("player_ratings")
@@ -819,60 +620,28 @@ export async function listFormBoard(opts?: {
       "web_id,discipline,kind,mu,rd,rank_score,peak_mu,matches,display_name",
       { count: "exact" },
     )
-    .in("kind", ["player", "pair"]);
+    .in("kind", ["player", "pair"])
+    .in("discipline", [...DISCS])
+    .not("rank_score", "is", null);
   if (disc) query = query.eq("discipline", disc);
   if (q) {
-    query = query.ilike("display_name", `%${q.replace(/[%*,()\\]/g, "")}%`);
+    query = query.ilike("display_name", `%${q}%`);
   }
   const { data, error, count } = await query
     .order("rank_score", { ascending: false })
+    .order("matches", { ascending: false })
+    .order("display_name", { ascending: true })
     .limit(limit);
-  if (error || !Array.isArray(data)) {
-    return { rows: [], total: 0 };
+  if (error) {
+    throw new Error(`BWF form board failed: ${error.message}`);
   }
-  const ratingsByKey = new Map<string, FormRating>();
-  for (const row of data as RatingRow[]) {
-    if (row.kind !== "player" && row.kind !== "pair") continue;
-    if (row.rank_score == null) continue;
-    ratingsByKey.set(`${row.web_id}|${row.discipline}`, {
-      disc: row.discipline,
-      kind: row.kind,
-      mu: row.mu,
-      rd: row.rd,
-      rankScore: row.rank_score,
-      peakMu: row.peak_mu,
-      matches: row.matches,
-      webId: row.web_id,
-      name: row.display_name ?? undefined,
-    });
+  if (!Array.isArray(data)) {
+    throw new Error("BWF form board failed: empty response");
   }
-  // SQL already applied disc/q; do not filter again (would drop rows if
-  // `discipline` is missing on a mapped rating).
-  const rows = buildFormBoard(ratingsByKey, new Set(), { limit });
-  return { rows, total: count ?? rows.length };
-}
-
-/** Featured matches for home: late rounds first (not chronological “recent”). */
-export async function getFeaturedMatches(
-  limit = 6,
-): Promise<CatalogMatch[]> {
-  if (process.env.CATALOG_FIXTURE === "1") {
-    const { matches } = await getCatalogSnapshot();
-    return sortMatches(matches, "round").slice(0, limit);
+  const rows = mapFormBoardRows(data as FormBoardSqlRow[]);
+  const total = count ?? rows.length;
+  if (rows.length === 0 && total > 0) {
+    throw new Error("BWF form board failed: ratings rows did not map");
   }
-  requireServiceRole();
-  const take = Math.min(Math.max(limit, 1), 24);
-  const client = createServiceClient();
-  const fetched = await selectMatchRows((select) =>
-    client
-      .from("matches")
-      .select(select)
-      .is("owner_id", null)
-      .order("match_date", { ascending: false, nullsFirst: false })
-      .limit(80),
-  );
-  if (fetched.error) {
-    throw new Error(`BWF featured load failed: ${fetched.error}`);
-  }
-  return sortMatches(fetched.rows.map(mapDbMatch), "round").slice(0, take);
+  return { rows, total };
 }
