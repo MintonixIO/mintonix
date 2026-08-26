@@ -38,9 +38,13 @@ class TestWorkerConfigImport(unittest.TestCase):
         self.assertEqual(mod.request_parser({"input": inner}), inner)
         self.assertEqual(mod.request_parser(inner), inner)
 
-        bench = mod.benchmark_generator()
-        self.assertTrue(bench["input_url"].startswith("file://"))
-        self.assertTrue(bench["output_upload_url"].startswith("file://"))
+        ping = mod.ping_benchmark_generator()
+        self.assertEqual(ping, {"ping": True})
+        detect = next(h for h in mod.worker_config.handlers if h.route == "/detect/sync")
+        self.assertIsNone(detect.benchmark_config)
+        ping_h = next(h for h in mod.worker_config.handlers if h.route == "/benchmark/ping")
+        self.assertIsNotNone(ping_h.benchmark_config)
+        self.assertEqual(mod.MODEL_LOAD_LOG_MSG, ["VideoDetector loaded"])
 
 
 class TestServerHealthAndStartup(unittest.TestCase):
@@ -307,7 +311,8 @@ class TestImageBootContract(unittest.TestCase):
         entry = (root / "entrypoint.sh").read_text(encoding="utf-8")
         self.assertNotIn("start_server.sh", entry)
         self.assertIn("/opt/worker-env", entry)
-        self.assertIn("/health", entry)
+        self.assertIn("exec python -m worker", entry)
+        self.assertNotIn("waiting for http://127.0.0.1", entry)
         self.assertTrue((root / "entrypoint.sh").exists())
         self.assertFalse((root / "start_server.sh").exists())
 
@@ -917,6 +922,12 @@ class TestDetectSync202(unittest.TestCase):
         self.assertEqual(resp.status_code, 503)
         self.assertIn("models not loaded", resp.json()["error"])
         run_job.assert_not_called()
+
+    def test_benchmark_ping_200_without_detector(self) -> None:
+        with self._client(detector=False) as (server_mod, client):
+            resp = client.post("/benchmark/ping", json={"ping": True})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json(), {"ok": True})
 
 
 class TestSidecarFailClosed(unittest.TestCase):

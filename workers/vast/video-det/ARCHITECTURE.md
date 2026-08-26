@@ -28,7 +28,7 @@ normalize  →  detect (this worker)  →  analyze (not wired yet)
 | **Out** | `detections.json` (presigned PUT) |
 | **Route** | `POST /detect/sync` |
 | **Dispatcher** | `supabase/functions/jobs` → `STAGES.detect` |
-| **HTTP** | **202** `{ "request_id" }` once the job thread is running (connection held until GPU + callback). **422** bad envelope, **503** models not loaded (sync, no thread). Callback is the settle path. |
+| **HTTP** | **202** `{ "request_id" }` once the job thread is running (connection held until GPU + callback). **422** bad envelope, **503** models not loaded (sync, no thread). **200** `POST /benchmark/ping` for PyWorker (SDK counts only 200). Callback is the settle path. |
 
 Always feeds `normalized.mp4`. For BWF, preprocess already writes the cleaned
 court cut to that key. `player_id` in poses is always `null`
@@ -253,10 +253,10 @@ Matches the proven **normalize** pattern:
 
 | Piece | Role |
 |---|---|
-| `entrypoint.sh` | Start `server.py`, wait `/health` 200, TLS, `exec python -m worker` |
+| `entrypoint.sh` | Start `server.py`, TLS, `exec python -m worker` (do not block on TRT) |
 | `/opt/worker-env` | Prebuilt venv (no uv/pip at boot) |
 | `worker.py` | PyWorker: load reporting, proxy to model server |
-| `server.py` | FastAPI `/detect/sync` + `/health` (lifespan model load) |
+| `server.py` | FastAPI `/detect/sync` (202) + `/health` + `/benchmark/ping` (200) |
 | `io_util.py` | stream download / upload / callback (`file://` + HTTP) |
 | `detect/` | VideoDetector, shuttle, types, Engine output |
 | `trt_io.py` | Shared CUDA context + TRT binding dtype helpers |
@@ -270,7 +270,7 @@ Matches the proven **normalize** pattern:
 | PyWorker port | `3000` (`WORKER_PORT`, autoscaler-facing) |
 | Parallelism | One job per GPU (`allow_parallel_requests=False`) |
 | Handler cancel | Forced off — dispatcher disconnect must not kill load accounting |
-| Benchmark | `file:///app/sample.mp4` → `file:///tmp/benchmark_*.json` |
+| Benchmark | `POST /benchmark/ping` → HTTP 200 (not `/detect/sync` 202) |
 
 ---
 

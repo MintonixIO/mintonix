@@ -2,10 +2,10 @@
 # Container entrypoint (docker ENTRYPOINT launch mode on vast serverless).
 #
 # Prebuilt venv, start FastAPI in the background, optional TLS, then exec
-# PyWorker as PID 1. PyWorker already waits on /health and the
-# "Application startup complete." log before advertising load. Do not block
-# here on TRT deserialize — that left port 3000 closed and Vast recycled
-# the container ~15s after docker start. Do not install uv/pip at boot.
+# PyWorker as PID 1. Do not block here on /health (TRT deserialize) — that
+# left port 3000 closed and Vast recycled the container ~15s after docker
+# start. PyWorker waits for "VideoDetector loaded" then POST /benchmark/ping
+# (HTTP 200; /detect/sync is 202). Do not install uv/pip at boot.
 set -euo pipefail
 
 ENV_PATH="${ENV_PATH:-/opt/worker-env}"

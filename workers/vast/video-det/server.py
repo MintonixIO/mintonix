@@ -228,6 +228,12 @@ async def health() -> JSONResponse:
     return JSONResponse({"status": "ok", "models_loaded": True})
 
 
+@app.post("/benchmark/ping")
+async def benchmark_ping() -> JSONResponse:
+    """HTTP 200 for PyWorker capacity probe. /detect/sync is 202 and is not a benchmark."""
+    return JSONResponse({"ok": True})
+
+
 @app.post("/detect/sync")
 async def detect_sync(request: Request) -> Response:
     body = await request.json()
