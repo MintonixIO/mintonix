@@ -215,7 +215,7 @@ Deno.test("invokeVast /route/ HTTP error is not warming", async () => {
 });
 
 async function assertDoesNotHang(p: Promise<void>, label: string): Promise<void> {
-  let timer: number | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<void>((_, reject) => {
     timer = setTimeout(
       () => reject(new Error(`${label}: invokeVast drained held body`)),
