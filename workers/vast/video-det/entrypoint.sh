@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Container entrypoint (docker ENTRYPOINT launch mode on vast serverless).
 #
-# Same pattern as video-preprocess: prebuilt venv, start FastAPI, wait until
-# /health is 200 (TRT engines loaded), optional TLS, then exec PyWorker as PID 1.
-# Do not install uv/pip or clone pyworker at boot — that ate the Vast ready window.
+# Prebuilt venv, start FastAPI in the background, optional TLS, then exec
+# PyWorker as PID 1. PyWorker already waits on /health and the
+# "Application startup complete." log before advertising load. Do not block
+# here on TRT deserialize — that left port 3000 closed and Vast recycled
+# the container ~15s after docker start. Do not install uv/pip at boot.
 set -euo pipefail
 
 ENV_PATH="${ENV_PATH:-/opt/worker-env}"
@@ -26,27 +28,12 @@ echo "entrypoint: engines POSE_ENGINE=${POSE_ENGINE:-/app/models/yolo26x-pose.en
 echo "entrypoint: starting server.py -> $MODEL_LOG"
 "$PYTHON" -u /app/server.py >>"$MODEL_LOG" 2>&1 &
 BACKEND_PID=$!
-
-# TRT deserialize of baked engines can take tens of seconds after a fast pull.
-# 600 × 0.5s = 300s. curl -sf fails on 503 (models not loaded yet).
-echo "entrypoint: waiting for http://127.0.0.1:${MODEL_SERVER_PORT}/health"
-for _ in $(seq 1 600); do
-    if curl -sf "http://127.0.0.1:${MODEL_SERVER_PORT}/health" >/dev/null; then
-        break
-    fi
-    if ! kill -0 "$BACKEND_PID" 2>/dev/null; then
-        echo "entrypoint: ERROR backend exited before healthy" >&2
-        tail -n 80 "$MODEL_LOG" >&2 || true
-        exit 1
-    fi
-    sleep 0.5
-done
-if ! curl -sf "http://127.0.0.1:${MODEL_SERVER_PORT}/health" >/dev/null; then
-    echo "entrypoint: ERROR health timeout" >&2
+sleep 0.5
+if ! kill -0 "$BACKEND_PID" 2>/dev/null; then
+    echo "entrypoint: ERROR backend exited immediately" >&2
     tail -n 80 "$MODEL_LOG" >&2 || true
     exit 1
 fi
-echo "entrypoint: backend healthy"
 
 if [ -z "${CONTAINER_ID:-}" ]; then
     echo "entrypoint: ERROR CONTAINER_ID must be set" >&2
