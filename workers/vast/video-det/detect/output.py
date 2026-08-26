@@ -83,7 +83,14 @@ def build_segments_for_video(
     shifts = parse_preprocess_log(preprocess_log)
     islands = islands_from_frame_shifts(shifts)
     # Non-empty shift islands must not collapse to a single full-video fallback.
+    # If frame_shifts was present but every entry was skipped (missing
+    # new_start/new_end, end < start), fail closed instead of succeeding
+    # on a full-video island.
     if not islands:
+        if shifts:
+            raise RuntimeError(
+                "preprocess frame_shifts present but none parsed into islands"
+            )
         islands = fallback_island(frame_count_hint)
 
     geom = scoreboard_geometry(annotation)

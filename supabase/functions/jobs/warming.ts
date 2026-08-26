@@ -53,6 +53,21 @@ export function isWorkerStarted(status: number): boolean {
   return status === 202 || status === 200;
 }
 
+/**
+ * complete_job `p_retry` for /jobs/callback.
+ *
+ * Worker-reported failures are terminal. After HTTP 202 the GPU already
+ * ran; TRT / clamp / empty-segments fail the same way on requeue.
+ * Warming and 503 retries stay on the invoke path (`invokeFailurePolicy`).
+ */
+export function callbackRetry(
+  _ok: boolean,
+  _attempt: number,
+  _maxAttempts: number,
+): boolean {
+  return false;
+}
+
 export function invokeFailurePolicy(
   err: unknown,
   nowMs: number,

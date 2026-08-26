@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import subprocess
 import tempfile
 import threading
 import time
@@ -329,13 +330,35 @@ class TestImageBootContract(unittest.TestCase):
         )
         exec_at = boot.find("exec python -m worker")
         self.assertGreaterEqual(exec_at, 0)
-        sign_at = boot.find("sign_cert")
-        if sign_at >= 0:
-            self.assertLess(
-                exec_at,
-                sign_at,
-                "sign_cert must not run before exec python -m worker",
-            )
+        # Mentions of sign_cert in the USE_SSL=true error are fine; do not
+        # mint certs (curl/openssl) before bind — that delayed port 3000.
+        self.assertNotIn("api/v0/sign_cert", boot)
+        self.assertNotIn("openssl req", boot)
+        self.assertNotIn("openssl-san.cnf", boot)
+
+    def test_entrypoint_exits_when_use_ssl_true(self) -> None:
+        """USE_SSL=true must fail closed: certs are never minted (no pre-bind sign_cert)."""
+        entry = Path(__file__).resolve().parent / "entrypoint.sh"
+        result = subprocess.run(
+            ["bash", str(entry)],
+            env={
+                "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                "USE_SSL": "true",
+                "CONTAINER_ID": "0",
+            },
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        self.assertEqual(result.returncode, 1)
+        err = (result.stderr + result.stdout).lower()
+        self.assertIn("use_ssl", err)
+        self.assertTrue(
+            "sign_cert" in err or "tls" in err or "cert" in err,
+            f"expected TLS/cert warning, got: {result.stderr!r} {result.stdout!r}",
+        )
+        self.assertNotIn("exec python -m worker", result.stdout)
+        self.assertNotIn("exec python -m worker", result.stderr)
 
     def test_dockerfile_is_runtime_multistage(self) -> None:
         src = (Path(__file__).resolve().parent / "Dockerfile").read_text(

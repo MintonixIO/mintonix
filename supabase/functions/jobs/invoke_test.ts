@@ -13,6 +13,7 @@ import {
   WorkerHttpError,
   isWorkerStarted,
   invokeFailurePolicy,
+  callbackRetry,
 } from "./warming.ts";
 import { invokeVast, type InvokeFetch, type InvokeVastOpts } from "./invoke.ts";
 
@@ -91,6 +92,15 @@ Deno.test("invokeFailurePolicy: warming retries until expired; 503 retries; 4xx 
   );
   assertEquals(last503.retry, false);
   assertEquals(last503.warming, false);
+});
+
+Deno.test("callbackRetry: worker-reported failures are terminal", () => {
+  // After HTTP 202 the GPU ran; TRT/clamp/empty-segments must not requeue.
+  // Warming/503 retries stay on invokeFailurePolicy, not /jobs/callback.
+  assertEquals(callbackRetry(false, 1, 3), false);
+  assertEquals(callbackRetry(false, 2, 3), false);
+  assertEquals(callbackRetry(true, 1, 3), false);
+  assertEquals(callbackRetry(false, 3, 3), false);
 });
 
 function jsonResp(status: number, body: unknown): Response {

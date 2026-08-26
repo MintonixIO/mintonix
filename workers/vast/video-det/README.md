@@ -95,10 +95,15 @@ GPU / TensorRT engine build and full e2e remain environment-specific (see
   backend on localhost, PyWorker on the published port. Venv is baked at
   `/opt/worker-env`. Entrypoint starts `server.py` then **immediately**
   `exec python -m worker` (port 3000). It does **not** wait for `/health`
-  and does **not** run `sign_cert` / openssl. Default `USE_SSL=false`
-  (HTTP). PyWorker `on_load` is `VideoDetector loaded`; autoscaler probe is
-  `POST /benchmark/ping` → HTTP **200** (`/detect/sync` is 202 and is not
-  a benchmark).
+  and does **not** run `sign_cert` / openssl. Detect **requires**
+  `USE_SSL=false` (HTTP) plus WG `launch_args`
+  `--env '-e USE_SSL=false -e UNSECURED=1'`. TLS certs are **never
+  minted** in this image: `USE_SSL=true` without restoring **post-bind**
+  `sign_cert` will fail (entrypoint exits 1 rather than exec a broken TLS
+  worker). Do **not** re-add blocking `sign_cert` before bind — that
+  delayed port 3000 past Vast's ~15s window. PyWorker `on_load` is
+  `VideoDetector loaded`; autoscaler probe is `POST /benchmark/ping` →
+  HTTP **200** (`/detect/sync` is 202 and is not a benchmark).
 - Product engines must match the image’s TensorRT / CUDA stack
   (TRT 10.8.0.43 / CUDA 12.8: NGC `tensorrt:25.01-py3` builder,
   `cuda:12.8.0-runtime-ubuntu24.04` final stage). Do not ship the NGC devel
@@ -141,7 +146,9 @@ running.
 
 WG 41743 `launch_args` (proof): `--env '-e USE_SSL=false -e UNSECURED=1'`.
 Image default is already `USE_SSL=false`; keep the launch_args so a template
-env cannot flip TLS back on.
+env cannot flip TLS back on. Detect **requires** that pair. Enabling
+`USE_SSL=true` without a **post-bind** `sign_cert` path fails closed
+(entrypoint logs an error and exits 1).
 
 ### GHCR docker login (template 531046)
 

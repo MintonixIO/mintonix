@@ -109,6 +109,29 @@ class TestBuildSegmentsForVideo(unittest.TestCase):
         self.assertEqual(segs[0]["start_frame"], 0)
         self.assertEqual(segs[0]["end_frame"], 20)
 
+    def test_unparseable_frame_shifts_do_not_fallback(self) -> None:
+        """Non-empty frame_shifts that all fail to parse must not become a full-video island."""
+        log = {
+            "frame_shifts": [
+                {"old_start": 0, "old_end": 10},  # missing new_start/new_end
+                {"new_start": 20, "new_end": 10},  # end < start
+            ]
+        }
+        with (
+            patch("detect.output.read_frame", return_value=None),
+            patch("detect.output.fallback_island") as fb,
+        ):
+            fb.return_value = [(0, 20)]
+            with self.assertRaises(RuntimeError) as ctx:
+                build_segments_for_video(
+                    video_path=Path("/nonexistent.mp4"),
+                    annotation=None,
+                    preprocess_log=log,
+                    frame_count_hint=21,
+                )
+        fb.assert_not_called()
+        self.assertIn("frame_shifts", str(ctx.exception))
+
     def test_dummy_half_frame_crop_does_not_ocr_from_frame_size(self) -> None:
         """Leftover dummy crop without annotation frame_width still rejected."""
         frame = np.zeros((1080, 1920, 3), dtype=np.uint8)

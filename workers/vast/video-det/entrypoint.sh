@@ -16,6 +16,16 @@ WORKER_PORT="${WORKER_PORT:-3000}"
 USE_SSL="${USE_SSL:-false}"
 REPORT_ADDR="${REPORT_ADDR:-https://run.vast.ai}"
 
+# Detect is HTTP-only. sign_cert was removed so PyWorker can bind port 3000
+# inside Vast's ~15s window. Enabling TLS without restoring *post-bind*
+# sign_cert would exec a worker that expects certs that are never minted.
+if [ "$USE_SSL" = true ]; then
+    echo "entrypoint: ERROR USE_SSL=true but detect does not mint TLS certs (sign_cert is not run)." >&2
+    echo "entrypoint: detect requires USE_SSL=false and WG launch_args --env '-e USE_SSL=false -e UNSECURED=1'." >&2
+    echo "entrypoint: restoring TLS needs post-bind sign_cert, not a blocking pre-bind wait." >&2
+    exit 1
+fi
+
 PYTHON="${ENV_PATH}/bin/python"
 if [ ! -x "$PYTHON" ]; then
     echo "entrypoint: ERROR missing prebuilt venv: $PYTHON" >&2

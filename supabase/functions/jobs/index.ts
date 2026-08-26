@@ -56,7 +56,7 @@
 import { createClient } from "npm:@supabase/supabase-js@2.45.4";
 import { jwtVerify, SignJWT } from "npm:jose@5.9.6";
 import { invokeVast } from "./invoke.ts";
-import { invokeFailurePolicy } from "./warming.ts";
+import { callbackRetry, invokeFailurePolicy } from "./warming.ts";
 
 const MAX_ATTEMPTS = 3; // real GPU starts per stage; warming does not count
 const TOKEN_AUD = "jobs-callback";
@@ -613,12 +613,14 @@ async function handleCallback(request: Request): Promise<Response> {
   const ok = body.status === "success";
   const { match: matchPatch, next } = spec.settle(jobView, body, ok);
 
+  // Worker-reported failures are terminal (callbackRetry is always false).
+  // Warming/503 retries are invoke-path only — see invokeFailurePolicy.
   const { data: result, error: rpcError } = await service.rpc("complete_job", {
     p_job_id: job.id,
     p_status: ok ? "complete" : "failed",
     p_error: ok ? null : String(body.error ?? "unknown worker error"),
     p_match: matchPatch,
-    p_retry: !ok && job.attempt < MAX_ATTEMPTS,
+    p_retry: callbackRetry(ok, job.attempt, MAX_ATTEMPTS),
     p_next_stage: next?.stage ?? null,
     p_expected_attempt: job.attempt,
     p_expected_stage: job.stage,
