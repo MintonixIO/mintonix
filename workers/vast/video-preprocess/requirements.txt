@@ -1,6 +1,8 @@
 # Backend + pipeline. Installed into /opt/worker-env at image build.
 fastapi>=0.111.0
 uvicorn[standard]>=0.30.0
+# Starlette TestClient (image unittest) needs httpx2; runtime does not import it.
+httpx2
 requests==2.34.2
 yt-dlp
 # <2: pycuda and TRT python bindings are compiled against NumPy 1.x C ABI.
