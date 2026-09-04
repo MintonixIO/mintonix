@@ -69,8 +69,8 @@ def _local_source(body: dict) -> str | None:
     return p
 
 
-def run_preprocess_job(body: dict) -> dict:
-    """Returns delivery metadata. Uploads normalized.mp4 + thumb + preprocess-log."""
+def run_preprocess_job(body: dict, detector=None) -> dict:
+    """Download → encode → optional local detect. Uploads stage artifacts."""
     t0 = time.time()
     timings: dict[str, float] = {}
 
@@ -281,6 +281,39 @@ def run_preprocess_job(body: dict) -> dict:
         )
         mark("upload_preprocess_log_sec", t)
 
+        det_result: dict | None = None
+        want_detect = bool(local_out) or bool(body.get("detections_upload_url"))
+        if want_detect:
+            if detector is None:
+                raise RuntimeError("models not loaded")
+            det_url = body.get("detections_upload_url")
+            if not local_out:
+                if not isinstance(det_url, str) or not det_url:
+                    raise RuntimeError("detections_upload_url is required")
+                io_util.reject_file_url(det_url, "detections_upload_url")
+            t = time.time()
+            import detect_job
+            det_path = os.path.join(tmp, "detections.json")
+            det_result = detect_job.run_detect_on_local_video(
+                detector,
+                dst,
+                det_path,
+                request_id=body.get("request_id"),
+                annotation=annotation,
+                preprocess_log=preprocess_log,
+            )
+            emit(
+                det_path,
+                "detections.json",
+                (
+                    (lambda p: io_util.upload_file(
+                        p, det_url, content_type="application/json",
+                    ))
+                    if det_url else None
+                ),
+            )
+            mark("detect_sec", t)
+
         # Result timings include log upload; B2 log intentionally omits that
         # self-timing so the artifact is a single consistent write.
         timings["total_sec"] = round(time.time() - t0, 2)
@@ -306,6 +339,8 @@ def run_preprocess_job(body: dict) -> dict:
                 "file_size": log_size,
             },
         }
+        if det_result is not None:
+            result["frame_count"] = det_result["frame_count"]
         # Thin settle payload — full frame_shifts live only in preprocess-log.
         if bwf_summary is not None:
             result["bwf"] = {

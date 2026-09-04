@@ -1,35 +1,204 @@
-"""FastAPI model server: /health + /preprocess/sync."""
+"""Backend model server for video-preprocess (normalize + detect).
+
+PyWorker proxies here. Contract (unwraps {"input": {...}}):
+
+    POST /preprocess/sync  fused encode + optional detect
+    POST /detect/sync
+        {
+          "request_id": "...",                 # job_id
+          "input_url": "...",                  # presigned GET or file:// normalized.mp4
+          "output_upload_url": "...",          # presigned PUT or file:// for detections.json
+          "annotation_url": "...",             # presigned GET; required if present
+          "preprocess_log_url": "...",         # presigned GET; required if present
+          "annotation": { … },                 # optional inline (tests / local)
+          "preprocess_log": { … },             # optional inline (tests / local)
+          "callback_url": "...",               # jobs/callback
+          "callback_token": "..."              # Bearer token (HMAC JWT)
+        }
+      -> 202 { "request_id" } as soon as the job thread is running; the
+         connection is held until GPU + callback finish (PyWorker load).
+         Callback is the settle path; a later job failure does not change 202.
+      -> 422 / 503 { "request_id", "error" }  (sync; no job thread)
+
+    GET /health
+        -> 200 { "status": "ok", "models_loaded": true } when detector is ready
+        -> 503 { "status": "not_ready", "models_loaded": false } otherwise
+
+Callback (from the job thread, Authorization: Bearer <callback_token>):
+    { "request_id", "status": "success"|"failed", "frame_count"?, "error"? }
+
+No Realtime progress in MVP — re-add later if the UI needs it.
+
+Startup requires pose + shuttle TensorRT engines on disk unless
+ALLOW_MISSING_MODELS=1 (CI). There is no PyTorch /.pt fallback — missing or
+bad engines fail the job.
+"""
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import os
+import tempfile
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
+from pathlib import Path
 
-import uvicorn
 from fastapi import FastAPI, Request
-from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-import callback
-from io_util import sanitize_error
+from callback import callback_allowed as _callback_url_allowed, post_callback
+from detect import DetectConfig, VideoDetector
+from detect.output import (
+    build_segments_for_video,
+    probe_video,
+    write_detections_json,
+)
+from io_util import download, safe_error_message, upload_file
 from job import run_preprocess_job
+
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
 )
-log = logging.getLogger("video-preprocess")
+log = logging.getLogger("video-preprocess.server")
 
-app = FastAPI(title="video-preprocess")
+HOST = os.environ.get("MODEL_SERVER_HOST", "127.0.0.1")
+PORT = int(os.environ.get("MODEL_SERVER_PORT", "18000"))
+
+_detector: VideoDetector | None = None
+# One GPU job at a time (matches PyWorker allow_parallel_requests=False).
+_JOB_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="detect-job")
+
+
+def _allow_missing_models() -> bool:
+    return os.environ.get("ALLOW_MISSING_MODELS", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def _assert_trt_loaded() -> None:
+    """Fail startup if native nvinfer is not loadable (version 0.0.x)."""
+    import tensorrt as trt
+
+    ver = getattr(trt, "__version__", "") or ""
+    log.info("startup: tensorrt %s", ver)
+    if not ver or ver.startswith("0.0"):
+        raise RuntimeError(f"native TensorRT not loaded (version={ver!r})")
+
+
+async def _load_models() -> None:
+    """Load TRT engines at startup. Fail hard unless ALLOW_MISSING_MODELS=1."""
+    global _detector
+    cfg = DetectConfig.from_env()
+    allow_missing = _allow_missing_models()
+    _assert_trt_loaded()
+    if not cfg.pose_engine.is_file() or not cfg.shuttle_engine.is_file():
+        msg = (
+            f"startup: engines missing (pose={cfg.pose_engine} "
+            f"shuttle={cfg.shuttle_engine})"
+        )
+        if allow_missing:
+            log.warning("%s — ALLOW_MISSING_MODELS=1; /health not ready", msg)
+            return
+        log.error("%s — refusing to start (set ALLOW_MISSING_MODELS=1 for CI)", msg)
+        raise FileNotFoundError(msg)
+    try:
+        _detector = VideoDetector.from_config(cfg)
+    except Exception:
+        # Engine deserialize / CUDA init failure → job cannot run.
+        log.exception("startup: failed to load TRT engines")
+        raise
+    log.info(
+        "startup: VideoDetector loaded (batch=%d conf=%s)",
+        _detector.pose_batch,
+        cfg.conf,
+    )
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Modern FastAPI lifespan: load models on startup (fail-hard unless allowed)."""
+    await _load_models()
+    yield
+
+
+app = FastAPI(title="video-preprocess", lifespan=lifespan)
+
+
+class _HoldUntilDone(StreamingResponse):
+    """Chunked JSON 202; keep the ASGI handler alive until the job future ends.
+
+    Starlette's StreamingResponse (ASGI spec < 2.4, including uvicorn 2.3)
+    cancels the stream on http.disconnect. Re-iterating body_iterator after
+    send() fails aclose()s the generator and does not wait for the job.
+    Await the thread-pool future (shielded) so load stays non-zero until
+    run_and_report finishes.
+    """
+
+    def __init__(self, content, *, done, request_id=None, **kwargs):
+        super().__init__(content, **kwargs)
+        self._done = done
+        self._request_id = request_id
+
+    async def _await_job(self) -> None:
+        loop = asyncio.get_running_loop()
+        while True:
+            try:
+                await asyncio.shield(asyncio.wrap_future(self._done, loop=loop))
+                return
+            except asyncio.CancelledError:
+                task = asyncio.current_task()
+                if task is not None and hasattr(task, "uncancel"):
+                    task.uncancel()
+                if self._done.done():
+                    return
+            except Exception as e:  # noqa: BLE001
+                log.exception(
+                    "detect(failed): request_id=%s error=%s",
+                    self._request_id,
+                    safe_error_message(e),
+                )
+                return
+
+    async def __call__(self, scope, receive, send) -> None:  # noqa: ARG002
+        try:
+            await self.stream_response(send)
+        except Exception:  # noqa: BLE001
+            pass
+        except asyncio.CancelledError:
+            task = asyncio.current_task()
+            if task is not None and hasattr(task, "uncancel"):
+                task.uncancel()
+        await self._await_job()
+        if self.background is not None:
+            await self.background()
 
 
 @app.get("/health")
-async def health() -> dict:
-    return {"status": "ok"}
+async def health() -> JSONResponse:
+    if _detector is None:
+        return JSONResponse(
+            {"status": "not_ready", "models_loaded": False},
+            status_code=503,
+        )
+    return JSONResponse({"status": "ok", "models_loaded": True})
+
+
+@app.post("/benchmark/ping")
+async def benchmark_ping() -> JSONResponse:
+    """HTTP 200 for PyWorker capacity probe. GPU routes are 202 and are not a benchmark."""
+    return JSONResponse({"ok": True})
 
 
 @app.post("/preprocess/sync")
-async def preprocess_sync(request: Request) -> JSONResponse:
+async def preprocess_sync(request: Request) -> Response:
     body = await request.json()
     if "input_url" not in body and isinstance(body.get("input"), dict):
         body = body["input"]
@@ -37,8 +206,10 @@ async def preprocess_sync(request: Request) -> JSONResponse:
     rid = body.get("request_id")
     cb_url, cb_tok = body.get("callback_url"), body.get("callback_token")
     has_local = bool(body.get("local_output_dir") or body.get("local_source"))
+    want_detect = bool(body.get("detections_upload_url")) or bool(
+        body.get("local_output_dir")
+    )
 
-    # Local debug/benchmark is incompatible with production settlement.
     if cb_url and has_local:
         return JSONResponse(
             {
@@ -47,8 +218,6 @@ async def preprocess_sync(request: Request) -> JSONResponse:
             },
             status_code=422,
         )
-
-    # Production envelope vs local debug/benchmark (local_output_dir).
     if body.get("annotation") is None:
         missing = ["annotation"]
     elif body.get("local_output_dir"):
@@ -73,57 +242,306 @@ async def preprocess_sync(request: Request) -> JSONResponse:
             },
             status_code=422,
         )
-    if cb_url and not callback.callback_allowed(cb_url):
+    if cb_url and not _callback_url_allowed(cb_url):
         return JSONResponse(
             {"request_id": rid, "error": "callback_url not allowed"},
             status_code=422,
         )
+    if want_detect and _detector is None:
+        return JSONResponse(
+            {"request_id": rid, "error": "models not loaded"},
+            status_code=503,
+        )
 
-    def run() -> dict:
+    def run_and_report() -> dict:
         try:
-            result = run_preprocess_job(body)
+            result = run_preprocess_job(body, detector=_detector)
         except Exception as e:
+            err = safe_error_message(e)
             if cb_url:
-                try:
-                    callback.post_callback(cb_url, cb_tok, {
-                        "request_id": rid, "status": "failed",
-                        "error": sanitize_error(e),
-                    })
-                except Exception as cb_err:
-                    log.error(
-                        "job failed and failure callback also failed: %s",
-                        sanitize_error(cb_err),
-                    )
-                    raise RuntimeError(
-                        f"job failed: {sanitize_error(e)}; "
-                        f"callback failed: {sanitize_error(cb_err)}"
-                    ) from e
-            # Failure callback may have settled the job; re-raise so the HTTP
-            # response is still an error (Vast may retry; jobs uses attempt tokens).
-            raise
+                post_callback(
+                    cb_url,
+                    cb_tok,
+                    {"request_id": rid, "status": "failed", "error": err},
+                )
+            raise RuntimeError(err) from None
         if cb_url:
-            # Wire status must be success|failed for jobs/callback.
-            # Job result uses status "ok" — put wire status after **result.
-            # Callback failure fails the job (do not leave jobs stuck processing).
-            callback.post_callback(cb_url, cb_tok, {
-                **result, "request_id": rid, "status": "success",
-            })
+            post_callback(
+                cb_url,
+                cb_tok,
+                {**result, "request_id": rid, "status": "success"},
+            )
         return result
 
-    try:
-        result = await run_in_threadpool(run)
-        return JSONResponse({"request_id": rid, **result})
-    except Exception as e:  # noqa: BLE001
-        log.exception("preprocess failed")
+    running = threading.Event()
+
+    def _entry() -> dict:
+        running.set()
+        return run_and_report()
+
+    future = _JOB_EXECUTOR.submit(_entry)
+    await asyncio.to_thread(running.wait)
+    payload = json.dumps({"request_id": rid}).encode("utf-8")
+
+    async def _hold_until_done():
+        yield payload
+        try:
+            await asyncio.wrap_future(future)
+        except Exception:
+            pass
+
+    return _HoldUntilDone(
+        _hold_until_done(),
+        done=future,
+        request_id=rid,
+        status_code=202,
+        media_type="application/json",
+    )
+
+
+@app.post("/detect/sync")
+async def detect_sync(request: Request) -> Response:
+    body = await request.json()
+    if "input_url" not in body and isinstance(body.get("input"), dict):
+        body = body["input"]
+
+    request_id = body.get("request_id")
+    input_url = body.get("input_url")
+    output_upload_url = body.get("output_upload_url")
+    callback_url = body.get("callback_url")
+    callback_token = body.get("callback_token")
+
+    if not input_url or not output_upload_url:
         return JSONResponse(
-            {"request_id": rid, "error": sanitize_error(e)}, status_code=500,
+            {
+                "request_id": request_id,
+                "error": "input_url and output_upload_url are required",
+            },
+            status_code=422,
         )
+    if callback_url and not _callback_url_allowed(callback_url):
+        return JSONResponse(
+            {
+                "request_id": request_id,
+                "error": (
+                    "callback_url not allowed (must match CALLBACK_URL_PREFIX "
+                    "/ SUPABASE_URL and end with /functions/v1/jobs/callback)"
+                ),
+            },
+            status_code=422,
+        )
+    if _detector is None:
+        return JSONResponse(
+            {"request_id": request_id, "error": "models not loaded"},
+            status_code=503,
+        )
+
+    # Job work is blocking (download + GPU); run off the event loop. Callback
+    # POSTs inside the thread so a disconnected dispatcher still gets the result.
+    annotation = body.get("annotation") if isinstance(body.get("annotation"), dict) else None
+    preprocess_log = (
+        body.get("preprocess_log")
+        if isinstance(body.get("preprocess_log"), dict)
+        else None
+    )
+    annotation_url = body.get("annotation_url")
+    preprocess_log_url = body.get("preprocess_log_url")
+
+    def run_and_report() -> dict:
+        try:
+            result = _run_job(
+                request_id=request_id,
+                input_url=input_url,
+                output_upload_url=output_upload_url,
+                annotation=annotation,
+                preprocess_log=preprocess_log,
+                annotation_url=annotation_url,
+                preprocess_log_url=preprocess_log_url,
+            )
+        except Exception as e:
+            err = safe_error_message(e)
+            if callback_url:
+                post_callback(
+                    callback_url,
+                    callback_token,
+                    {
+                        "request_id": request_id,
+                        "status": "failed",
+                        "error": err,
+                    },
+                )
+            # Re-raise with redacted message so outer handler cannot leak secrets.
+            raise RuntimeError(err) from None
+        if callback_url:
+            post_callback(
+                callback_url,
+                callback_token,
+                {
+                    "request_id": request_id,
+                    "status": "success",
+                    **result,
+                },
+            )
+        return result
+
+    # 202 is visible as soon as the worker is running; the ASGI handler does
+    # not return until run_and_report finishes so PyWorker in-flight load
+    # stays non-zero (Vast must not see load=0 mid-job).
+    running = threading.Event()
+
+    def _entry() -> dict:
+        running.set()
+        return run_and_report()
+
+    future = _JOB_EXECUTOR.submit(_entry)
+    await asyncio.to_thread(running.wait)
+    payload = json.dumps({"request_id": request_id}).encode("utf-8")
+
+    async def _hold_until_done():
+        yield payload
+        try:
+            await asyncio.wrap_future(future)
+        except Exception:
+            # Job failure is logged in _await_job; finish the stream so the
+            # 202 JSON body is complete. CancelledError is BaseException.
+            pass
+
+    return _HoldUntilDone(
+        _hold_until_done(),
+        done=future,
+        request_id=request_id,
+        status_code=202,
+        media_type="application/json",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Job body
+# ---------------------------------------------------------------------------
+
+def _download_json(url: str | None, *, label: str) -> dict | None:
+    """GET a small JSON sidecar. Missing URL → None. Present URL: fail closed."""
+    if not url or not isinstance(url, str):
+        return None
+    fd, name = tempfile.mkstemp(suffix=".json")
+    os.close(fd)
+    tmp = Path(name)
+    try:
+        download(url, tmp, max_bytes=32 * 1024 * 1024)
+        data = json.loads(tmp.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("expected JSON object")
+        return data
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(
+            f"{label} download failed: {safe_error_message(e)}"
+        ) from None
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _run_job(
+    *,
+    request_id: str | None,
+    input_url: str,
+    output_upload_url: str,
+    annotation: dict | None = None,
+    preprocess_log: dict | None = None,
+    annotation_url: str | None = None,
+    preprocess_log_url: str | None = None,
+) -> dict:
+    assert _detector is not None
+    t0 = time.monotonic()
+
+    video_fd, video_name = tempfile.mkstemp(suffix=".mp4")
+    os.close(video_fd)
+    video_tmp = Path(video_name)
+    json_fd, json_name = tempfile.mkstemp(suffix=".json")
+    os.close(json_fd)
+    json_tmp = Path(json_name)
+
+    try:
+        download(input_url, video_tmp)
+
+        if annotation is None:
+            annotation = _download_json(annotation_url, label="annotation.json")
+        if preprocess_log is None:
+            preprocess_log = _download_json(
+                preprocess_log_url, label="preprocess-log.json"
+            )
+        # jobs always sends both URLs; a present URL must yield an object.
+        if isinstance(annotation_url, str) and annotation_url and annotation is None:
+            raise RuntimeError("annotation.json download failed: missing object")
+        if (
+            isinstance(preprocess_log_url, str)
+            and preprocess_log_url
+            and preprocess_log is None
+        ):
+            raise RuntimeError(
+                "preprocess-log.json download failed: missing object"
+            )
+
+        meta = probe_video(video_tmp)
+        segments = build_segments_for_video(
+            video_path=video_tmp,
+            annotation=annotation,
+            preprocess_log=preprocess_log,
+            frame_count_hint=int(meta.get("frame_count_hint") or 0),
+        )
+
+        frame_count = _stream_detections_json(
+            json_tmp,
+            request_id=request_id,
+            video_path=video_tmp,
+            segments=segments,
+            fps=float(meta.get("fps") or 0.0),
+            width=int(meta.get("width") or 0),
+            height=int(meta.get("height") or 0),
+        )
+        if frame_count == 0:
+            raise RuntimeError("no frames decoded from video")
+        upload_file(json_tmp, output_upload_url, content_type="application/json")
+
+        elapsed = time.monotonic() - t0
+        log.info(
+            "detect(done): request_id=%s frames=%d segments=%d elapsed=%.1fs",
+            request_id,
+            frame_count,
+            len(segments),
+            elapsed,
+        )
+        return {"frame_count": frame_count, "elapsed_sec": round(elapsed, 3)}
+    finally:
+        video_tmp.unlink(missing_ok=True)
+        json_tmp.unlink(missing_ok=True)
+
+
+def _stream_detections_json(
+    dest: Path,
+    *,
+    request_id: str | None,
+    video_path: Path,
+    segments: list | None = None,
+    fps: float = 0.0,
+    width: int = 0,
+    height: int = 0,
+) -> int:
+    """Write Engine detections.json (meta + segments + streamed frames)."""
+    assert _detector is not None
+    return write_detections_json(
+        dest,
+        request_id=request_id,
+        video_path=video_path,
+        frame_chunks=_detector.run(video_path),
+        segments=segments or [],
+        fps=fps,
+        width=width,
+        height=height,
+    )
 
 
 if __name__ == "__main__":
-    uvicorn.run(
-        app,
-        host=os.environ.get("MODEL_SERVER_HOST", "127.0.0.1"),
-        port=int(os.environ.get("MODEL_SERVER_PORT", "18000")),
-        log_level="info",
-    )
+    import uvicorn  # runtime only — keep import server CPU-safe for CI/tests
+
+    log.info("startup: listening on %s:%s", HOST, PORT)
+    uvicorn.run(app, host=HOST, port=PORT, log_level="info")

@@ -1,4 +1,8 @@
-"""Download and upload. Presigned HTTPS only — no storage credentials, no file://."""
+"""Download and upload. No storage credentials.
+
+HTTPS presigns in production (redirects are errors). ``file://`` only when
+``ALLOW_FILE_URLS=1`` (local/benchmark), allowlisted roots.
+"""
 
 from __future__ import annotations
 
@@ -6,17 +10,26 @@ import concurrent.futures
 import logging
 import math
 import os
+import re
 import shutil
+import tempfile
 import time
+from pathlib import Path
 from urllib.parse import urlparse
 
-import requests
-
 log = logging.getLogger("video-preprocess.io")
+
+
+def _requests():
+    import requests
+    return requests
 
 UPLOAD_ATTEMPTS = int(os.environ.get("UPLOAD_ATTEMPTS", "5"))
 UL_CONNECTIONS = int(os.environ.get("UL_CONNECTIONS", "4"))
 MULTIPART_PART_SIZE = int(os.environ.get("MULTIPART_PART_SIZE", str(64 * 1024 * 1024)))
+MAX_DOWNLOAD_BYTES = int(os.environ.get("MAX_DOWNLOAD_BYTES", str(2 * 1024**3)))
+
+_URL_RE = re.compile(r"https?://[^\s'\"<>]+", re.IGNORECASE)
 
 
 def _redact(url: str) -> str:
@@ -28,13 +41,14 @@ def _redact(url: str) -> str:
 
 
 def sanitize_error(err: object) -> str:
-    import re
-    text = re.sub(
-        r"https?://[^\s\"'<>]+",
+    text = _URL_RE.sub(
         lambda m: _redact(m.group(0).rstrip(".,);]\"'")),
         str(err),
     )
     return text[:500]
+
+
+safe_error_message = sanitize_error
 
 
 def retriable_http(code: int) -> bool:
@@ -62,35 +76,151 @@ def resolve_path_mode(input_url: str) -> str:
 
 
 def reject_file_url(url: str, what: str) -> None:
+    """Reject file:// on production fields (multipart destinations, etc.)."""
     if isinstance(url, str) and url.startswith("file:"):
         raise RuntimeError(f"{what}: file:// is not supported")
 
 
-def download(url: str, dest: str) -> None:
-    reject_file_url(url, "download")
-    log.info("download: %s", _redact(url))
+def _allow_file_urls() -> bool:
+    return os.environ.get("ALLOW_FILE_URLS", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def _dedupe_roots(roots: list[Path]) -> list[Path]:
+    out: list[Path] = []
+    seen: set[Path] = set()
+    for r in roots:
+        if r not in seen:
+            out.append(r)
+            seen.add(r)
+    return out
+
+
+def _file_url_read_roots() -> list[Path]:
+    return _dedupe_roots(
+        [
+            Path("/app").resolve(),
+            Path("/tmp").resolve(),
+            Path("/data").resolve(),
+            Path("/out").resolve(),
+            Path(tempfile.gettempdir()).resolve(),
+        ]
+    )
+
+
+def _file_url_write_roots() -> list[Path]:
+    return _dedupe_roots(
+        [
+            Path("/tmp").resolve(),
+            Path("/out").resolve(),
+            Path(tempfile.gettempdir()).resolve(),
+        ]
+    )
+
+
+def _resolve_file_url(url: str, *, for_write: bool = False) -> Path:
+    if not _allow_file_urls():
+        raise RuntimeError(
+            "file:// URLs are disabled (set ALLOW_FILE_URLS=1 for local/benchmark)"
+        )
+    raw = url[len("file://") :]
+    path = Path(raw).expanduser().resolve()
+    roots = _file_url_write_roots() if for_write else _file_url_read_roots()
+    for root in roots:
+        try:
+            path.relative_to(root)
+            return path
+        except ValueError:
+            continue
+    kind = "write" if for_write else "read"
+    raise RuntimeError(f"file:// {kind} path outside allowlist {roots}: {path}")
+
+
+def _reject_redirect(status_code: int, url: str) -> None:
+    if 300 <= status_code < 400:
+        raise RuntimeError(
+            f"HTTP {status_code} redirect not allowed ({_redact(url)})"
+        )
+
+
+def download(
+    url: str,
+    dest: str | Path,
+    *,
+    max_bytes: int | None = None,
+) -> None:
+    """Download ``url`` to ``dest`` (HTTPS stream or gated file:// copy)."""
+    dest_path = Path(dest)
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    limit = MAX_DOWNLOAD_BYTES if max_bytes is None else max_bytes
+
+    if url.startswith("file://"):
+        src = _resolve_file_url(url)
+        size = src.stat().st_size
+        if size > limit:
+            raise RuntimeError(
+                f"local file exceeds max_bytes ({size} > {limit}): {src}"
+            )
+        log.info("download(local): %s -> %s (%d bytes)", src, dest_path, size)
+        shutil.copy(src, dest_path)
+        return
+
+    if not (url.startswith("http://") or url.startswith("https://")):
+        raise ValueError(f"unsupported URL scheme: {_redact(url)}")
+
+    log.info("download: %s (max=%d)", _redact(url), limit)
     last_err: Exception | None = None
     for i in range(UPLOAD_ATTEMPTS):
+        written = 0
         try:
-            with requests.get(url, stream=True, timeout=600) as r:
+            with _requests().get(
+                url, stream=True, timeout=600, allow_redirects=False,
+            ) as r:
+                _reject_redirect(r.status_code, url)
                 if not (200 <= r.status_code < 300):
                     if not retriable_http(r.status_code):
-                        raise RuntimeError(f"download HTTP {r.status_code} {_redact(url)}")
+                        raise RuntimeError(
+                            f"download HTTP {r.status_code} {_redact(url)}"
+                        )
                     last_err = RuntimeError(f"download HTTP {r.status_code}")
                 else:
-                    with open(dest, "wb") as f:
-                        for chunk in r.iter_content(8 * 1024 * 1024):
-                            if chunk:
-                                f.write(chunk)
-                    log.info("download(done): %d bytes", os.path.getsize(dest))
+                    cl = r.headers.get("Content-Length")
+                    if cl is not None and int(cl) > limit:
+                        raise RuntimeError(
+                            f"download too large: Content-Length={cl} > "
+                            f"max_bytes={limit} ({_redact(url)})"
+                        )
+                    with dest_path.open("wb") as f:
+                        for chunk in r.iter_content(65536):
+                            if not chunk:
+                                continue
+                            written += len(chunk)
+                            if written > limit:
+                                raise RuntimeError(
+                                    f"download exceeded max_bytes={limit} "
+                                    f"({_redact(url)})"
+                                )
+                            f.write(chunk)
+                    log.info("download(done): %d bytes", written)
                     return
-        except requests.RequestException as e:
+        except RuntimeError as e:
+            dest_path.unlink(missing_ok=True)
+            if "max_bytes" in str(e) or "too large" in str(e) or "redirect" in str(e):
+                raise
+            last_err = e
+        except _requests().RequestException as e:
+            dest_path.unlink(missing_ok=True)
             last_err = e
         log.warning(
-            "download(retry %d/%d): %s", i + 1, UPLOAD_ATTEMPTS, sanitize_error(last_err),
+            "download(retry %d/%d): %s",
+            i + 1, UPLOAD_ATTEMPTS, sanitize_error(last_err),
         )
         if i + 1 < UPLOAD_ATTEMPTS:
             time.sleep(min(2 ** i, 30))
+    dest_path.unlink(missing_ok=True)
     raise RuntimeError(f"download failed: {sanitize_error(last_err)}")
 
 
@@ -131,30 +261,66 @@ def download_youtube(url: str, dest_dir: str) -> str:
     return path
 
 
-def upload(local_path: str, url: str) -> None:
+def upload(local_path: str | Path, url: str) -> None:
     """PUT with retries on 5xx/408/429/network. Other 4xx are terminal."""
-    reject_file_url(url, "upload")
-    size = os.path.getsize(local_path)
-    log.info("upload: %s (%d bytes) -> %s", local_path, size, _redact(url))
+    upload_file(local_path, url)
+
+
+def upload_file(
+    local_path: str | Path,
+    url: str,
+    content_type: str = "application/octet-stream",
+    attempts: int = UPLOAD_ATTEMPTS,
+) -> None:
+    """PUT local file to ``url`` (HTTPS or gated file://)."""
+    path = Path(local_path)
+    size = path.stat().st_size
+
+    if url.startswith("file://"):
+        dst = _resolve_file_url(url, for_write=True)
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        log.info("upload(local): %s -> %s (%d bytes)", path, dst, size)
+        shutil.copy(path, dst)
+        return
+
+    if not (url.startswith("http://") or url.startswith("https://")):
+        raise ValueError(f"unsupported URL scheme: {_redact(url)}")
+
+    log.info("upload: %s (%d bytes) -> %s", path, size, _redact(url))
     last_err: Exception | None = None
-    for i in range(UPLOAD_ATTEMPTS):
+    for i in range(attempts):
         try:
-            with open(local_path, "rb") as f:
-                r = requests.put(url, data=f, timeout=1200)
+            with path.open("rb") as f:
+                r = _requests().put(
+                    url,
+                    data=f,
+                    headers={
+                        "Content-Type": content_type,
+                        "Content-Length": str(size),
+                    },
+                    timeout=1200,
+                    allow_redirects=False,
+                )
+            _reject_redirect(r.status_code, url)
             if 200 <= r.status_code < 300:
-                log.info("upload(done)")
+                log.info("upload(done): %d bytes", size)
                 return
             if not retriable_http(r.status_code):
                 raise RuntimeError(f"upload HTTP {r.status_code} {_redact(url)}")
             last_err = RuntimeError(f"upload HTTP {r.status_code}")
-        except requests.RequestException as e:
+        except RuntimeError:
+            raise
+        except _requests().RequestException as e:
             last_err = e
         log.warning(
-            "upload(retry %d/%d): %s", i + 1, UPLOAD_ATTEMPTS, sanitize_error(last_err),
+            "upload(retry %d/%d): %s", i + 1, attempts, sanitize_error(last_err),
         )
-        if i + 1 < UPLOAD_ATTEMPTS:
+        if i + 1 < attempts:
             time.sleep(min(2 ** i, 30))
-    raise RuntimeError(f"upload failed: {sanitize_error(last_err)}")
+    raise RuntimeError(
+        f"upload failed after {attempts} attempts ({_redact(url)}): "
+        f"{sanitize_error(last_err)}"
+    )
 
 
 def validate_multipart(spec: object) -> dict:
@@ -201,7 +367,10 @@ def upload_multipart(local_path: str, spec: dict) -> None:
                 with open(local_path, "rb") as f:
                     f.seek(start)
                     data = f.read(length)
-                r = requests.put(part_urls[n - 1], data=data, timeout=600)
+                r = _requests().put(
+                    part_urls[n - 1], data=data, timeout=600, allow_redirects=False,
+                )
+                _reject_redirect(r.status_code, part_urls[n - 1])
                 if 200 <= r.status_code < 300:
                     etag = r.headers.get("ETag")
                     if not etag:
@@ -210,7 +379,7 @@ def upload_multipart(local_path: str, spec: dict) -> None:
                 if not retriable_http(r.status_code):
                     raise RuntimeError(f"multipart part {n}: HTTP {r.status_code}")
                 last_err = RuntimeError(f"HTTP {r.status_code}")
-            except requests.RequestException as e:
+            except _requests().RequestException as e:
                 last_err = e
             log.warning(
                 "upload(multipart part %d retry %d/%d): %s",
@@ -234,10 +403,12 @@ def upload_multipart(local_path: str, spec: dict) -> None:
         last_err = None
         for attempt in range(UPLOAD_ATTEMPTS):
             try:
-                r = requests.post(
+                r = _requests().post(
                     complete_url, data=body,
                     headers={"Content-Type": "application/xml"}, timeout=300,
+                    allow_redirects=False,
                 )
+                _reject_redirect(r.status_code, complete_url)
                 if 200 <= r.status_code < 300:
                     if "<Error>" in (r.text or ""):
                         raise RuntimeError(f"multipart complete error: {r.text[:200]}")
@@ -246,7 +417,7 @@ def upload_multipart(local_path: str, spec: dict) -> None:
                 if not retriable_http(r.status_code):
                     raise RuntimeError(f"multipart complete HTTP {r.status_code}")
                 last_err = RuntimeError(f"HTTP {r.status_code}")
-            except requests.RequestException as e:
+            except _requests().RequestException as e:
                 last_err = e
             log.warning(
                 "upload(multipart complete retry %d/%d): %s",
@@ -257,7 +428,7 @@ def upload_multipart(local_path: str, spec: dict) -> None:
         raise RuntimeError(f"multipart complete failed: {sanitize_error(last_err)}")
     except Exception:
         try:
-            requests.delete(abort_url, timeout=60)
+            _requests().delete(abort_url, timeout=60)
         except Exception:
             pass
         raise

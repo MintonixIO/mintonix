@@ -57,7 +57,7 @@ Same naming as match-data / GitHub Environments:
 export SUPABASE_URL=https://xxxx.supabase.co   # or SUPABASE_PROJECT_REF=xxxx
 export SUPABASE_SERVICE_KEY=...                # service role; edge PIPELINE_SERVICE_TOKEN = same value
 
-cd workers/vast/video-det
+cd workers/vast/video-preprocess
 bash tools/fetch_models.sh
 ```
 
@@ -104,7 +104,7 @@ bash tools/upload_models_to_b2.sh /path/to/engine/dir
 | `SUPABASE_PROJECT_REF` | variable | Derives `https://<ref>.supabase.co` for ops |
 | `SUPABASE_SERVICE_KEY` | secret | Auth for `ops/model-urls` (`x-pipeline-token`) |
 
-`video-det` CI selects **dev** on PR and **prod** on master (via
+`video-preprocess` CI selects **dev** on PR and **prod** on master (via
 `vast-worker.yml` `environment`), matching match-data / supabase workflows.
 
 Edge secrets already needed for mint: `CDN_JWT_PRIVATE_KEY`, `CDN_BASE_URL`

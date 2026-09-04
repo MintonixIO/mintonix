@@ -30,14 +30,29 @@ class TestCallbackAllowlist(unittest.TestCase):
                 )
             )
             self.assertFalse(callback.callback_allowed("https://evil.example/cb"))
+            self.assertFalse(
+                callback.callback_allowed("https://proj.supabase.co/functions/v1/other")
+            )
 
 
 class TestPostCallback(unittest.TestCase):
+    def _req(self, post):
+        req = mock.Mock()
+        req.post = post
+        req.RequestException = type("RequestException", (Exception,), {})
+        return mock.patch("callback._requests", return_value=req)
+
     def test_raises_after_retries(self):
+        class Down(Exception):
+            pass
+
+        post = mock.Mock(side_effect=Down("down"))
+        req = mock.Mock()
+        req.post = post
+        req.RequestException = Down
         with mock.patch("callback.time.sleep"), mock.patch(
-            "callback.requests.post",
-        ) as post:
-            post.side_effect = callback.requests.RequestException("down")
+            "callback._requests", return_value=req,
+        ):
             with self.assertRaises(RuntimeError):
                 callback.post_callback("https://cb.example/x", "tok", {"status": "ok"})
             self.assertEqual(post.call_count, 3)
@@ -46,7 +61,8 @@ class TestPostCallback(unittest.TestCase):
         resp = mock.Mock()
         resp.status_code = 401
         resp.text = "unauthorized"
-        with mock.patch("callback.requests.post", return_value=resp) as post:
+        post = mock.Mock(return_value=resp)
+        with self._req(post):
             with self.assertRaises(RuntimeError):
                 callback.post_callback("https://cb.example/x", "tok", {"status": "ok"})
             self.assertEqual(post.call_count, 1)
@@ -58,10 +74,8 @@ class TestPostCallback(unittest.TestCase):
         good = mock.Mock()
         good.status_code = 200
         good.text = "ok"
-        with mock.patch("callback.time.sleep"), mock.patch(
-            "callback.requests.post",
-            side_effect=[bad, good],
-        ) as post:
+        post = mock.Mock(side_effect=[bad, good])
+        with mock.patch("callback.time.sleep"), self._req(post):
             callback.post_callback("https://cb.example/x", "tok", {"status": "ok"})
             self.assertEqual(post.call_count, 2)
 
@@ -69,9 +83,8 @@ class TestPostCallback(unittest.TestCase):
         resp = mock.Mock()
         resp.status_code = 408
         resp.text = "timeout"
-        with mock.patch("callback.time.sleep"), mock.patch(
-            "callback.requests.post", return_value=resp,
-        ) as post:
+        post = mock.Mock(return_value=resp)
+        with mock.patch("callback.time.sleep"), self._req(post):
             with self.assertRaises(RuntimeError):
                 callback.post_callback("https://cb.example/x", "tok", {"status": "ok"})
             self.assertEqual(post.call_count, 3)
@@ -80,7 +93,8 @@ class TestPostCallback(unittest.TestCase):
         resp = mock.Mock()
         resp.status_code = 204
         resp.text = ""
-        with mock.patch("callback.requests.post", return_value=resp):
+        post = mock.Mock(return_value=resp)
+        with self._req(post):
             callback.post_callback("https://cb.example/x", None, {"status": "ok"})
 
 

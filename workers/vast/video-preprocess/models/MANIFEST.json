@@ -1,6 +1,6 @@
 {
   "version": "2026-08-25-trt-10.8.0.43-sm120",
-  "description": "Product detect TRT engines baked into the video-det image. No PyTorch checkpoints. Object keys are s3://mintonix-{dev,prod}/models/<file>. Engines are TRT/GPU-stack specific — rebuild and re-upload when the Dockerfile base or target GPU arch changes.",
+  "description": "Product detect TRT engines baked into the video-preprocess image. No PyTorch checkpoints. Object keys are s3://mintonix-{dev,prod}/models/<file>. Engines are TRT/GPU-stack specific — rebuild and re-upload when the Dockerfile base or target GPU arch changes.",
   "b2_prefix": "models",
   "trt_version": "10.8.0.43",
   "cuda_tag": "nvidia/cuda:12.8.0-runtime-ubuntu24.04",

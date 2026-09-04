@@ -88,8 +88,10 @@ class TestFileIO(unittest.TestCase):
 
         write_roots = {str(p) for p in io_util._file_url_write_roots()}
         self.assertNotIn(str(Path("/app").resolve()), write_roots)
+        self.assertIn(str(Path("/out").resolve()), write_roots)
         read_roots = {str(p) for p in io_util._file_url_read_roots()}
         self.assertIn(str(Path("/app").resolve()), read_roots)
+        self.assertIn(str(Path("/out").resolve()), read_roots)
 
         with tempfile.TemporaryDirectory() as td:
             src = Path(td) / "src.bin"
@@ -109,41 +111,30 @@ class TestFileIO(unittest.TestCase):
             self.assertIn("max_bytes", str(ctx.exception))
 
 
+class _StreamGet:
+    def __init__(self, status=200, headers=None, chunks=None):
+        self.status_code = status
+        self.headers = headers or {}
+        self._chunks = chunks or []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def iter_content(self, n):
+        yield from self._chunks
+
+
 class TestHttpIO(unittest.TestCase):
     def test_stream_download_respects_max_bytes(self) -> None:
-        try:
-            import httpx
-        except ImportError:
-            self.skipTest("httpx not installed")
-
-        class StreamResp:
-            status_code = 200
-            request = httpx.Request("GET", "https://cdn.example/v.mp4?sig=SECRET")
-            headers = {}
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *a):
-                return False
-
-            def iter_bytes(self, n):
-                yield b"x" * 20
-                yield b"y" * 20
-
-        class FakeClient:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *a):
-                return False
-
-            def stream(self, method, url):
-                return StreamResp()
-
         with tempfile.TemporaryDirectory() as td:
             dest = Path(td) / "out.bin"
-            with patch("io_util._http_client", return_value=FakeClient()):
+            req = MagicMock()
+            req.get.return_value = _StreamGet(chunks=[b"x" * 20, b"y" * 20])
+            req.RequestException = type("RequestException", (Exception,), {})
+            with patch("io_util._requests", return_value=req):
                 with self.assertRaises(RuntimeError) as ctx:
                     download(
                         "https://cdn.example/v.mp4?sig=SECRET",
@@ -155,71 +146,27 @@ class TestHttpIO(unittest.TestCase):
             self.assertFalse(dest.exists())
 
     def test_stream_download_content_length_precheck(self) -> None:
-        try:
-            import httpx
-        except ImportError:
-            self.skipTest("httpx not installed")
-
-        class StreamResp:
-            status_code = 200
-            request = httpx.Request("GET", "https://cdn.example/v.mp4")
-            headers = {"Content-Length": "1000"}
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *a):
-                return False
-
-            def iter_bytes(self, n):
-                yield b"x"
-
-        class FakeClient:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *a):
-                return False
-
-            def stream(self, method, url):
-                return StreamResp()
-
         with tempfile.TemporaryDirectory() as td:
             dest = Path(td) / "out.bin"
-            with patch("io_util._http_client", return_value=FakeClient()):
+            req = MagicMock()
+            req.get.return_value = _StreamGet(headers={"Content-Length": "1000"})
+            req.RequestException = type("RequestException", (Exception,), {})
+            with patch("io_util._requests", return_value=req):
                 with self.assertRaises(RuntimeError) as ctx:
                     download("https://cdn.example/v.mp4", dest, max_bytes=100)
             self.assertIn("too large", str(ctx.exception).lower())
             self.assertFalse(dest.exists())
 
     def test_http_upload_rejects_3xx(self) -> None:
-        try:
-            import httpx
-        except ImportError:
-            self.skipTest("httpx not installed")
-
         with tempfile.TemporaryDirectory() as td:
             src = Path(td) / "out.json"
             src.write_bytes(b"{}")
-
-            class FakeResp:
-                status_code = 302
-                request = httpx.Request("PUT", "https://cdn.example/o?sig=SECRET")
-
-            class FakeClient:
-                def __init__(self, *a, **k) -> None:
-                    pass
-
-                def __enter__(self):
-                    return self
-
-                def __exit__(self, *a):
-                    return False
-
-                def put(self, url, content=None, headers=None):
-                    return FakeResp()
-
-            with patch("io_util._http_client", return_value=FakeClient()):
+            resp = MagicMock()
+            resp.status_code = 302
+            req = MagicMock()
+            req.put.return_value = resp
+            req.RequestException = type("RequestException", (Exception,), {})
+            with patch("io_util._requests", return_value=req):
                 with self.assertRaises(RuntimeError) as ctx:
                     upload_file(src, "https://cdn.example/o?sig=SECRET", attempts=3)
             self.assertIn("redirect", str(ctx.exception).lower())
@@ -245,11 +192,6 @@ class TestHttpIO(unittest.TestCase):
             self.assertEqual(body["frames"][2]["frame"], 2)
 
     def test_http_upload_streams_and_retries(self) -> None:
-        try:
-            import httpx
-        except ImportError:
-            self.skipTest("httpx not installed")
-
         with tempfile.TemporaryDirectory() as td:
             src = Path(td) / "out.json"
             payload = b'{"frames":[]}'
@@ -258,33 +200,19 @@ class TestHttpIO(unittest.TestCase):
             put_calls: list[dict] = []
             statuses = [500, 200]
 
-            class FakeResp:
-                def __init__(self, code: int) -> None:
-                    self.status_code = code
-                    self.request = httpx.Request("PUT", "https://cdn.example/o?sig=SECRET")
+            def fake_put(url, data=None, headers=None, timeout=None, allow_redirects=None):
+                body = data.read() if hasattr(data, "read") else data
+                put_calls.append(
+                    {"url": url, "headers": dict(headers or {}), "body": body}
+                )
+                resp = MagicMock()
+                resp.status_code = statuses.pop(0)
+                return resp
 
-            class FakeClient:
-                def __init__(self, *a, **k) -> None:
-                    pass
-
-                def __enter__(self):
-                    return self
-
-                def __exit__(self, *a):
-                    return False
-
-                def put(self, url, content=None, headers=None):
-                    data = content.read() if hasattr(content, "read") else content
-                    put_calls.append(
-                        {
-                            "url": url,
-                            "headers": dict(headers or {}),
-                            "body": data,
-                        }
-                    )
-                    return FakeResp(statuses.pop(0))
-
-            with patch("io_util._http_client", side_effect=lambda mod, t: FakeClient()):
+            req = MagicMock()
+            req.put.side_effect = fake_put
+            req.RequestException = type("RequestException", (Exception,), {})
+            with patch("io_util._requests", return_value=req):
                 with patch("io_util.time.sleep", return_value=None):
                     upload_file(
                         src,
@@ -300,71 +228,36 @@ class TestHttpIO(unittest.TestCase):
             self.assertEqual(put_calls[1]["body"], payload)
 
     def test_http_upload_no_retry_on_4xx(self) -> None:
-        try:
-            import httpx
-        except ImportError:
-            self.skipTest("httpx not installed")
-
         with tempfile.TemporaryDirectory() as td:
             src = Path(td) / "out.json"
             src.write_bytes(b"{}")
+            n = {"k": 0}
 
-            class FakeResp:
-                def __init__(self) -> None:
-                    self.status_code = 403
-                    self.request = httpx.Request(
-                        "PUT", "https://cdn.example/o?sig=SECRET"
-                    )
+            def fake_put(*a, **k):
+                n["k"] += 1
+                resp = MagicMock()
+                resp.status_code = 403
+                return resp
 
-            class FakeClient:
-                def __init__(self, *a, **k) -> None:
-                    self.n = 0
-
-                def __enter__(self):
-                    return self
-
-                def __exit__(self, *a):
-                    return False
-
-                def put(self, url, content=None, headers=None):
-                    self.n += 1
-                    return FakeResp()
-
-            client = FakeClient()
-            with patch("io_util._http_client", return_value=client):
+            req = MagicMock()
+            req.put.side_effect = fake_put
+            req.RequestException = type("RequestException", (Exception,), {})
+            with patch("io_util._requests", return_value=req):
                 with self.assertRaises(RuntimeError) as ctx:
                     upload_file(src, "https://cdn.example/o?sig=SECRET", attempts=5)
-            self.assertEqual(client.n, 1)
+            self.assertEqual(n["k"], 1)
             self.assertNotIn("SECRET", str(ctx.exception))
 
     def test_http_upload_exhausted_retries(self) -> None:
-        try:
-            import httpx
-        except ImportError:
-            self.skipTest("httpx not installed")
-
         with tempfile.TemporaryDirectory() as td:
             src = Path(td) / "out.json"
             src.write_bytes(b"{}")
-
-            class FakeResp:
-                status_code = 503
-                request = httpx.Request("PUT", "https://cdn.example/o?sig=SECRET")
-
-            class FakeClient:
-                def __init__(self, *a, **k) -> None:
-                    pass
-
-                def __enter__(self):
-                    return self
-
-                def __exit__(self, *a):
-                    return False
-
-                def put(self, url, content=None, headers=None):
-                    return FakeResp()
-
-            with patch("io_util._http_client", side_effect=lambda mod, t: FakeClient()):
+            resp = MagicMock()
+            resp.status_code = 503
+            req = MagicMock()
+            req.put.return_value = resp
+            req.RequestException = type("RequestException", (Exception,), {})
+            with patch("io_util._requests", return_value=req):
                 with patch("io_util.time.sleep", return_value=None):
                     with self.assertRaises(RuntimeError) as ctx:
                         upload_file(

@@ -1,9 +1,15 @@
 # Backend + pipeline. Installed into /opt/worker-env at image build.
-fastapi==0.141.1
-uvicorn==0.52.1
+fastapi>=0.111.0
+uvicorn[standard]>=0.30.0
 requests==2.34.2
-vastai==1.5.1
 yt-dlp
-# BWF detect (court NCC only)
-opencv-python-headless
-numpy
+# <2: pycuda and TRT python bindings are compiled against NumPy 1.x C ABI.
+numpy>=1.26.0,<2
+opencv-python-headless>=4.10.0
+# Ubuntu 24.04 / Python 3.12 has no stdlib distutils. vastai-sdk imports
+# distutils.util.strtobool; setuptools 82 removed the shim.
+setuptools>=69,<82
+# Device buffers for TRT I/O (product path has no PyTorch).
+pycuda>=2024.1
+# PyWorker (Worker / BenchmarkConfig).
+vastai-sdk

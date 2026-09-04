@@ -49,8 +49,7 @@
         "scripts/test_stage_outputs.py",
         "supabase/functions/ops/**",
         "supabase/functions/jobs/**",
-        "workers/vast/video-preprocess/server.py",
-        "workers/vast/video-det/server.py"
+        "workers/vast/video-preprocess/server.py"
       ]
     },
     {
@@ -64,17 +63,7 @@
         }
       ]
     },
-    {
-      "file": ".github/workflows/video-det.yml",
-      "name": "Video Detection Worker",
-      "jobs": [
-        {
-          "id": "image",
-          "check_names": ["image / build-test-push", "image / promote"],
-          "does": "Build/test/push detect GPU image (free_disk_space for TensorRT base)"
-        }
-      ]
-    },
+
     {
       "file": ".github/workflows/cloudflare-cdn.yml",
       "name": "Cloudflare CDN Worker",
