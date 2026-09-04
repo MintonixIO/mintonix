@@ -6,7 +6,6 @@ import asyncio
 import json
 import os
 import subprocess
-import tempfile
 import threading
 import time
 import unittest
@@ -14,7 +13,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from detect.types import FrameResult, ShuttleCandidate
+
 
 
 class TestWorkerConfigImport(unittest.TestCase):
@@ -43,9 +42,17 @@ class TestWorkerConfigImport(unittest.TestCase):
         self.assertEqual(ping, {"ping": True})
         detect = next(h for h in mod.worker_config.handlers if h.route == "/detect/sync")
         self.assertIsNone(detect.benchmark_config)
+        self.assertFalse(detect.allow_parallel_requests)
+        preprocess = next(
+            h for h in mod.worker_config.handlers if h.route == "/preprocess/sync"
+        )
+        self.assertIsNone(preprocess.benchmark_config)
+        self.assertFalse(preprocess.allow_parallel_requests)
         ping_h = next(h for h in mod.worker_config.handlers if h.route == "/benchmark/ping")
         self.assertIsNotNone(ping_h.benchmark_config)
         self.assertEqual(mod.MODEL_LOAD_LOG_MSG, ["VideoDetector loaded"])
+        src = path.read_text(encoding="utf-8")
+        self.assertIn('MODEL_LOAD_LOG_MSG = ["VideoDetector loaded"]', src)
 
 
 class TestServerHealthAndStartup(unittest.TestCase):
@@ -102,16 +109,17 @@ class TestServerHealthAndStartup(unittest.TestCase):
         os.environ.setdefault("POSE_ENGINE", "/nonexistent/pose.engine")
         os.environ.setdefault("SHUTTLE_ENGINE", "/nonexistent/shuttle.engine")
         try:
-            with TestClient(server_mod.app, raise_server_exceptions=False) as client:
-                server_mod._detector = None
-                r = client.post(
-                    "/detect/sync",
-                    json={
-                        "request_id": "j1",
-                        "input_url": "https://example/in",
-                        "output_upload_url": "https://example/out",
-                    },
-                )
+            with patch.object(server_mod, "_assert_trt_loaded"):
+                with TestClient(server_mod.app, raise_server_exceptions=False) as client:
+                    server_mod._detector = None
+                    r = client.post(
+                        "/detect/sync",
+                        json={
+                            "request_id": "j1",
+                            "input_url": "https://example/in",
+                            "output_upload_url": "https://example/out",
+                        },
+                    )
             self.assertEqual(r.status_code, 503)
             self.assertIn("models not loaded", r.json()["error"])
         finally:
@@ -157,49 +165,12 @@ class TestServerHealthAndStartup(unittest.TestCase):
 
         asyncio.run(_run())
 
-    def test_stream_detections_json(self) -> None:
-        server_mod = self._import_server()
-
-        frames = [
-            FrameResult(frame=i, poses=[], shuttle=[ShuttleCandidate(0.1, 0.2, 0.3)])
-            for i in range(2)
-        ]
-
-        class FakeDet:
-            def run(self, video_path):
-                yield frames
-
-        server_mod._detector = FakeDet()  # type: ignore[assignment]
-        with tempfile.TemporaryDirectory() as td:
-            dest = Path(td) / "d.json"
-            n = server_mod._stream_detections_json(
-                dest,
-                request_id="job-1",
-                video_path=Path(td) / "v.mp4",
-                segments=[
-                    {
-                        "start_frame": 0,
-                        "end_frame": 1,
-                        "score": {"t1": 5, "t2": 3},
-                        "score_conf": 0.9,
-                    }
-                ],
-                fps=30.0,
-                width=1920,
-                height=1080,
-            )
-            self.assertEqual(n, 2)
-            body = json.loads(dest.read_text())
-            self.assertEqual(body["job_id"], "job-1")
-            self.assertEqual(body["fps"], 30.0)
-            self.assertEqual(body["width"], 1920)
-            self.assertEqual(body["height"], 1080)
-            self.assertEqual(len(body["frames"]), 2)
-            self.assertEqual(len(body["segments"]), 1)
-            self.assertEqual(body["segments"][0]["score"], {"t1": 5, "t2": 3})
-            self.assertEqual(len(body["rallies"]), 1)
-            self.assertEqual(body["rallies"][0]["score"], {"t1": 5, "t2": 3})
-        server_mod._detector = None
+    def test_print_videodetector_loaded_prefix(self) -> None:
+        src = (Path(__file__).resolve().parent / "server.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('print("VideoDetector loaded", flush=True)', src)
+        self.assertEqual(src.count("log.exception"), 1)
 
     def test_uses_lifespan_not_on_event(self) -> None:
         path = Path(__file__).resolve().parent / "server.py"
@@ -222,9 +193,10 @@ class TestServerHealthAndStartup(unittest.TestCase):
         try:
             self.assertTrue(callable(server_mod.lifespan))
             self.assertIsNotNone(server_mod.app.router.lifespan_context)
-            with TestClient(server_mod.app, raise_server_exceptions=False) as client:
-                r = client.get("/health")
-                self.assertIn(r.status_code, (200, 503))
+            with patch.object(server_mod, "_assert_trt_loaded"):
+                with TestClient(server_mod.app, raise_server_exceptions=False) as client:
+                    r = client.get("/health")
+                    self.assertIn(r.status_code, (200, 503))
         finally:
             if prev_allow is None:
                 os.environ.pop("ALLOW_MISSING_MODELS", None)
@@ -381,6 +353,10 @@ class TestImageBootContract(unittest.TestCase):
             f"EXPECTED_TRT_VERSION={manifest['trt_version']}",
             src,
         )
+        self.assertIn("ALLOW_FILE_URLS=0", src)
+        self.assertIn("USE_SSL=false", src)
+        self.assertIn("UNSECURED=1", src)
+        self.assertNotIn("BENCHMARK_INPUT_URL=", src)
 
     def test_worker_env_pins_setuptools_for_distutils(self) -> None:
         root = Path(__file__).resolve().parent
@@ -551,16 +527,17 @@ class TestImageBootContract(unittest.TestCase):
             server_mod._assert_trt_loaded()
 
 
-def _asgi_http_scope(payload: dict) -> tuple[dict, bytes]:
+def _asgi_http_scope(payload: dict, path: str = "/detect/sync") -> tuple[dict, bytes]:
     body = json.dumps(payload).encode("utf-8")
+    raw = path.encode("ascii")
     scope = {
         "type": "http",
         "asgi": {"version": "3.0", "spec_version": "2.3"},
         "http_version": "1.1",
         "method": "POST",
         "scheme": "http",
-        "path": "/detect/sync",
-        "raw_path": b"/detect/sync",
+        "path": path,
+        "raw_path": raw,
         "query_string": b"",
         "headers": [
             (b"host", b"testserver"),
@@ -576,13 +553,15 @@ def _asgi_http_scope(payload: dict) -> tuple[dict, bytes]:
     return scope, body
 
 
-def _asgi_post_detect_sync(app, payload: dict, *, on_start, on_body) -> None:
+def _asgi_post_detect_sync(
+    app, payload: dict, *, on_start, on_body, path: str = "/detect/sync"
+) -> None:
     """Drive POST /detect/sync at the ASGI layer so 202 can be observed mid-job.
 
     Starlette TestClient buffers the full response (it waits for the ASGI
     handler to return), so it cannot see headers while the connection is held.
     """
-    scope, body = _asgi_http_scope(payload)
+    scope, body = _asgi_http_scope(payload, path=path)
 
     async def _run() -> None:
         sent_request = False
@@ -698,6 +677,11 @@ class TestDetectSync202(unittest.TestCase):
                     server_mod._detector = MagicMock() if detector else None
                     yield server_mod, client
         finally:
+            if server_mod._JOB_BUSY.locked():
+                try:
+                    server_mod._JOB_BUSY.release()
+                except RuntimeError:
+                    pass
             for key, prev in (
                 ("ALLOW_MISSING_MODELS", prev_allow),
                 ("POSE_ENGINE", prev_pose),
@@ -714,7 +698,7 @@ class TestDetectSync202(unittest.TestCase):
         started = threading.Event()
         finished = threading.Event()
 
-        def slow_job(**kwargs):
+        def slow_job(body, detector=None):
             started.set()
             time.sleep(0.4)
             finished.set()
@@ -743,7 +727,7 @@ class TestDetectSync202(unittest.TestCase):
 
         def runner() -> None:
             try:
-                with patch.object(server_mod, "_run_job", new=slow_job):
+                with patch.object(server_mod.detect_job, "run_detect_job", new=slow_job):
                     _asgi_post_detect_sync(
                         server_mod.app,
                         self._VALID,
@@ -778,13 +762,18 @@ class TestDetectSync202(unittest.TestCase):
             self.assertEqual(errors, [])
         finally:
             server_mod._detector = prev
+            if server_mod._JOB_BUSY.locked():
+                try:
+                    server_mod._JOB_BUSY.release()
+                except RuntimeError:
+                    pass
 
     def test_detect_sync_holds_after_disconnect_until_job_finishes(self) -> None:
         started = threading.Event()
         finished = threading.Event()
         callbacks: list[dict] = []
 
-        def slow_job(**kwargs):
+        def slow_job(body, detector=None):
             started.set()
             time.sleep(0.4)
             finished.set()
@@ -834,7 +823,7 @@ class TestDetectSync202(unittest.TestCase):
 
         try:
             with (
-                patch.object(server_mod, "_run_job", new=slow_job),
+                patch.object(server_mod.detect_job, "run_detect_job", new=slow_job),
                 patch.object(server_mod, "post_callback", new=capture_cb),
             ):
                 thread = threading.Thread(
@@ -865,23 +854,28 @@ class TestDetectSync202(unittest.TestCase):
             else:
                 os.environ["ALLOW_UNSAFE_CALLBACK"] = prev_unsafe
             server_mod._detector = prev
+            if server_mod._JOB_BUSY.locked():
+                try:
+                    server_mod._JOB_BUSY.release()
+                except RuntimeError:
+                    pass
 
     def test_detect_sync_success_http_body_is_request_id_only(self) -> None:
-        def quick_job(**kwargs):
+        def quick_job(body, detector=None):
             return {"frame_count": 9, "elapsed_sec": 0.01}
 
         with self._client() as (server_mod, client):
-            with patch.object(server_mod, "_run_job", new=quick_job):
+            with patch.object(server_mod.detect_job, "run_detect_job", new=quick_job):
                 resp = client.post("/detect/sync", json=self._VALID)
         self.assertEqual(resp.status_code, 202)
         self.assertEqual(resp.json(), {"request_id": "job-202"})
 
     def test_detect_sync_accepts_wrapped_input_envelope(self) -> None:
-        def quick_job(**kwargs):
+        def quick_job(body, detector=None):
             return {"frame_count": 1, "elapsed_sec": 0.0}
 
         with self._client() as (server_mod, client):
-            with patch.object(server_mod, "_run_job", new=quick_job):
+            with patch.object(server_mod.detect_job, "run_detect_job", new=quick_job):
                 resp = client.post(
                     "/detect/sync", json={"input": dict(self._VALID)}
                 )
@@ -889,7 +883,7 @@ class TestDetectSync202(unittest.TestCase):
         self.assertEqual(resp.json(), {"request_id": "job-202"})
 
     def test_detect_sync_job_failure_stays_202_and_callbacks(self) -> None:
-        def boom(**kwargs):
+        def boom(body, detector=None):
             raise RuntimeError("gpu exploded")
 
         callbacks: list[dict] = []
@@ -906,7 +900,7 @@ class TestDetectSync202(unittest.TestCase):
         }
         with self._client() as (server_mod, client):
             with (
-                patch.object(server_mod, "_run_job", new=boom),
+                patch.object(server_mod.detect_job, "run_detect_job", new=boom),
                 patch.object(server_mod, "post_callback", new=capture_cb),
             ):
                 resp = client.post("/detect/sync", json=envelope)
@@ -919,7 +913,7 @@ class TestDetectSync202(unittest.TestCase):
 
     def test_detect_sync_422_missing_urls_is_sync_and_skips_job(self) -> None:
         with self._client() as (server_mod, client):
-            with patch.object(server_mod, "_run_job") as run_job:
+            with patch.object(server_mod.detect_job, "run_detect_job") as run_job:
                 t0 = time.monotonic()
                 resp = client.post(
                     "/detect/sync", json={"request_id": "job-202"}
@@ -944,7 +938,7 @@ class TestDetectSync202(unittest.TestCase):
         }
         try:
             with self._client() as (server_mod, client):
-                with patch.object(server_mod, "_run_job") as run_job:
+                with patch.object(server_mod.detect_job, "run_detect_job") as run_job:
                     resp = client.post("/detect/sync", json=envelope)
         finally:
             for key, prev in (
@@ -961,7 +955,7 @@ class TestDetectSync202(unittest.TestCase):
 
     def test_detect_sync_503_models_missing_skips_job(self) -> None:
         with self._client(detector=False) as (server_mod, client):
-            with patch.object(server_mod, "_run_job") as run_job:
+            with patch.object(server_mod.detect_job, "run_detect_job") as run_job:
                 resp = client.post("/detect/sync", json=self._VALID)
         self.assertEqual(resp.status_code, 503)
         self.assertIn("models not loaded", resp.json()["error"])
@@ -973,9 +967,52 @@ class TestDetectSync202(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json(), {"ok": True})
 
+    def test_detect_sync_503_when_executor_busy(self) -> None:
+        with self._client() as (server_mod, client):
+            self.assertTrue(server_mod._JOB_BUSY.acquire(blocking=False))
+            try:
+                with patch.object(server_mod.detect_job, "run_detect_job") as run_job:
+                    t0 = time.monotonic()
+                    resp = client.post("/detect/sync", json=self._VALID)
+                    elapsed = time.monotonic() - t0
+            finally:
+                if server_mod._JOB_BUSY.locked():
+                    server_mod._JOB_BUSY.release()
+        self.assertEqual(resp.status_code, 429)
+        self.assertIn("gpu busy", resp.json()["error"])
+        self.assertLess(elapsed, 0.3)
+        run_job.assert_not_called()
 
-class TestSidecarFailClosed(unittest.TestCase):
-    """annotation_url / preprocess_log_url are required when present."""
+    def test_no_legacy_run_job_on_server(self) -> None:
+        server_mod = self._import_server()
+        self.assertFalse(hasattr(server_mod, "_run_job"))
+        self.assertFalse(hasattr(server_mod, "_download_json"))
+        self.assertFalse(hasattr(server_mod, "_stream_detections_json"))
+
+
+_PREPROCESS_VALID = {
+    "request_id": "job-pp",
+    "input_url": "https://example/in",
+    "output_upload": {
+        "part_urls": ["https://example/p1"],
+        "complete_url": "https://example/complete",
+        "abort_url": "https://example/abort",
+        "part_size": 64 * 1024 * 1024,
+    },
+    "thumbnail_upload_url": "https://example/thumb",
+    "preprocess_log_upload_url": "https://example/log",
+    "detections_upload_url": "https://example/det",
+    "annotation": {
+        "court": {
+            "corners": [[0, 0], [1, 0], [1, 1], [0, 1]],
+            "net_poles": [[0.4, 0.4], [0.6, 0.4]],
+        },
+    },
+}
+
+
+class TestPreprocessSync(unittest.TestCase):
+    """POST /preprocess/sync fused contract."""
 
     def _import_server(self):
         try:
@@ -985,125 +1022,285 @@ class TestSidecarFailClosed(unittest.TestCase):
         except ImportError as e:
             self.skipTest(f"server deps missing: {e}")
 
-    def test_download_json_raises_when_url_fails(self) -> None:
+    @contextmanager
+    def _client(self, *, detector: bool = True):
         server_mod = self._import_server()
-        with patch.object(
-            server_mod, "download", side_effect=RuntimeError("connection refused")
-        ):
-            with self.assertRaises(RuntimeError) as ctx:
-                server_mod._download_json(
-                    "https://example.invalid/preprocess-log.json",
-                    label="preprocess-log.json",
-                )
-        self.assertIn("preprocess-log.json", str(ctx.exception))
-        self.assertIn("download failed", str(ctx.exception))
+        try:
+            from fastapi.testclient import TestClient
+        except ImportError as e:
+            self.skipTest(f"fastapi missing: {e}")
 
-    def test_download_json_raises_when_body_is_not_object(self) -> None:
-        server_mod = self._import_server()
+        prev_allow = os.environ.get("ALLOW_MISSING_MODELS")
+        prev_pose = os.environ.get("POSE_ENGINE")
+        prev_shuttle = os.environ.get("SHUTTLE_ENGINE")
+        prev_unsafe = os.environ.get("ALLOW_UNSAFE_CALLBACK")
+        os.environ["ALLOW_MISSING_MODELS"] = "1"
+        os.environ.setdefault("POSE_ENGINE", "/nonexistent/pose.engine")
+        os.environ.setdefault("SHUTTLE_ENGINE", "/nonexistent/shuttle.engine")
 
-        def write_array(url, dest, **kwargs):
-            Path(dest).write_text("[]", encoding="utf-8")
+        async def _skip_load() -> None:
+            return None
 
-        with patch.object(server_mod, "download", new=write_array):
-            with self.assertRaises(RuntimeError) as ctx:
-                server_mod._download_json(
-                    "https://example/annotation.json", label="annotation.json"
-                )
-        self.assertIn("annotation.json", str(ctx.exception))
-        self.assertIn("download failed", str(ctx.exception))
+        try:
+            with patch.object(server_mod, "_load_models", new=_skip_load):
+                with TestClient(
+                    server_mod.app, raise_server_exceptions=False
+                ) as client:
+                    server_mod._detector = MagicMock() if detector else None
+                    yield server_mod, client
+        finally:
+            for key, prev in (
+                ("ALLOW_MISSING_MODELS", prev_allow),
+                ("POSE_ENGINE", prev_pose),
+                ("SHUTTLE_ENGINE", prev_shuttle),
+                ("ALLOW_UNSAFE_CALLBACK", prev_unsafe),
+            ):
+                if prev is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = prev
+            if server_mod._JOB_BUSY.locked():
+                try:
+                    server_mod._JOB_BUSY.release()
+                except RuntimeError:
+                    pass
+            server_mod._detector = None
 
-    def test_download_json_none_when_url_missing(self) -> None:
-        server_mod = self._import_server()
-        self.assertIsNone(server_mod._download_json(None, label="annotation.json"))
-        self.assertIsNone(server_mod._download_json("", label="preprocess-log.json"))
+    def test_preprocess_sync_returns_202_before_job_finishes(self) -> None:
+        started = threading.Event()
+        finished = threading.Event()
 
-    def test_run_job_raises_before_gpu_when_preprocess_log_url_unresolved(self) -> None:
+        def slow_job(body, detector=None):
+            started.set()
+            time.sleep(0.4)
+            finished.set()
+            return {"status": "ok", "frame_count": 3}
+
         server_mod = self._import_server()
         prev = server_mod._detector
         server_mod._detector = MagicMock()
-        try:
-            with (
-                patch.object(
-                    server_mod,
-                    "download",
-                    side_effect=lambda url, dest, **k: Path(dest).write_bytes(b"x"),
-                ),
-                patch.object(server_mod, "_download_json", return_value=None),
-                patch.object(
-                    server_mod,
-                    "probe_video",
-                    return_value={
-                        "fps": 30.0,
-                        "width": 64,
-                        "height": 64,
-                        "frame_count_hint": 10,
-                    },
-                ),
-                patch.object(
-                    server_mod, "_stream_detections_json", return_value=5
-                ) as gpu,
-                patch.object(server_mod, "upload_file"),
-            ):
-                with self.assertRaises(RuntimeError) as ctx:
-                    server_mod._run_job(
-                        request_id="j1",
-                        input_url="https://example/in.mp4",
-                        output_upload_url="https://example/out.json",
-                        annotation=None,
-                        preprocess_log=None,
-                        annotation_url=None,
-                        preprocess_log_url=(
-                            "https://example.invalid/preprocess-log.json"
-                        ),
-                    )
-                gpu.assert_not_called()
-            self.assertIn("preprocess-log.json", str(ctx.exception))
-            self.assertIn("download failed", str(ctx.exception))
-        finally:
-            server_mod._detector = prev
+        header_seen = threading.Event()
+        body_seen = threading.Event()
+        status_codes: list[int] = []
+        header_elapsed: list[float] = []
+        body_chunks: list[bytes] = []
+        t0 = time.monotonic()
 
-    def test_run_job_raises_before_gpu_when_annotation_url_unresolved(self) -> None:
-        server_mod = self._import_server()
-        prev = server_mod._detector
-        server_mod._detector = MagicMock()
-        try:
-            with (
-                patch.object(
-                    server_mod,
-                    "download",
-                    side_effect=lambda url, dest, **k: Path(dest).write_bytes(b"x"),
-                ),
-                patch.object(server_mod, "_download_json", return_value=None),
-                patch.object(
-                    server_mod,
-                    "probe_video",
-                    return_value={
-                        "fps": 30.0,
-                        "width": 64,
-                        "height": 64,
-                        "frame_count_hint": 10,
-                    },
-                ),
-                patch.object(
-                    server_mod, "_stream_detections_json", return_value=5
-                ) as gpu,
-                patch.object(server_mod, "upload_file"),
-            ):
-                with self.assertRaises(RuntimeError) as ctx:
-                    server_mod._run_job(
-                        request_id="j1",
-                        input_url="https://example/in.mp4",
-                        output_upload_url="https://example/out.json",
-                        annotation=None,
-                        preprocess_log={"frame_shifts": []},
-                        annotation_url="https://example/annotation.json",
-                        preprocess_log_url=None,
+        def on_start(message) -> None:
+            status_codes.append(int(message["status"]))
+            header_elapsed.append(time.monotonic() - t0)
+            header_seen.set()
+
+        def on_body(chunk: bytes) -> None:
+            body_chunks.append(chunk)
+            body_seen.set()
+
+        errors: list[BaseException] = []
+        handler_finished = threading.Event()
+
+        def runner() -> None:
+            try:
+                with patch.object(server_mod, "run_preprocess_job", new=slow_job):
+                    _asgi_post_detect_sync(
+                        server_mod.app,
+                        _PREPROCESS_VALID,
+                        on_start=on_start,
+                        on_body=on_body,
+                        path="/preprocess/sync",
                     )
-                gpu.assert_not_called()
-            self.assertIn("annotation.json", str(ctx.exception))
-            self.assertIn("download failed", str(ctx.exception))
+            except BaseException as e:  # noqa: BLE001
+                errors.append(e)
+            finally:
+                handler_finished.set()
+
+        try:
+            thread = threading.Thread(target=runner, name="asgi-preprocess-sync")
+            thread.start()
+            self.assertTrue(header_seen.wait(2.0), "202 headers never sent")
+            self.assertEqual(status_codes[0], 202)
+            self.assertLess(header_elapsed[0], 0.3)
+            self.assertTrue(body_seen.wait(1.0), "202 body never sent")
+            self.assertEqual(
+                json.loads(b"".join(body_chunks).decode("utf-8")),
+                {"request_id": "job-pp"},
+            )
+            self.assertTrue(started.wait(1.0))
+            self.assertFalse(finished.is_set())
+            self.assertFalse(handler_finished.is_set())
+            self.assertTrue(finished.wait(2.0))
+            thread.join(timeout=2.0)
+            self.assertFalse(thread.is_alive())
+            self.assertTrue(handler_finished.is_set())
+            self.assertEqual(errors, [])
         finally:
             server_mod._detector = prev
+            if server_mod._JOB_BUSY.locked():
+                try:
+                    server_mod._JOB_BUSY.release()
+                except RuntimeError:
+                    pass
+
+    def test_preprocess_sync_422_missing_detections_upload_url_with_callback(self) -> None:
+        os.environ["ALLOW_UNSAFE_CALLBACK"] = "1"
+        envelope = {
+            k: v for k, v in _PREPROCESS_VALID.items() if k != "detections_upload_url"
+        }
+        envelope["callback_url"] = "https://example/functions/v1/jobs/callback"
+        envelope["callback_token"] = "tok"
+        with self._client() as (server_mod, client):
+            with patch.object(server_mod, "run_preprocess_job") as run_job:
+                t0 = time.monotonic()
+                resp = client.post("/preprocess/sync", json=envelope)
+                elapsed = time.monotonic() - t0
+        self.assertEqual(resp.status_code, 422)
+        self.assertIn("detections_upload_url", resp.json()["error"])
+        self.assertLess(elapsed, 0.3)
+        run_job.assert_not_called()
+
+    def test_preprocess_sync_503_models_not_loaded(self) -> None:
+        with self._client(detector=False) as (server_mod, client):
+            with patch.object(server_mod, "run_preprocess_job") as run_job:
+                resp = client.post("/preprocess/sync", json=_PREPROCESS_VALID)
+        self.assertEqual(resp.status_code, 503)
+        self.assertIn("models not loaded", resp.json()["error"])
+        run_job.assert_not_called()
+
+    def test_preprocess_sync_503_when_executor_busy(self) -> None:
+        with self._client() as (server_mod, client):
+            self.assertTrue(server_mod._JOB_BUSY.acquire(blocking=False))
+            try:
+                with patch.object(server_mod, "run_preprocess_job") as run_job:
+                    t0 = time.monotonic()
+                    resp = client.post("/preprocess/sync", json=_PREPROCESS_VALID)
+                    elapsed = time.monotonic() - t0
+            finally:
+                if server_mod._JOB_BUSY.locked():
+                    server_mod._JOB_BUSY.release()
+        self.assertEqual(resp.status_code, 429)
+        self.assertIn("gpu busy", resp.json()["error"])
+        self.assertLess(elapsed, 0.3)
+        run_job.assert_not_called()
+
+    def test_preprocess_sync_success_callbacks(self) -> None:
+        def quick_job(body, detector=None):
+            return {"frame_count": 7, "width": 1920, "status": "ok"}
+
+        callbacks: list[dict] = []
+
+        def capture_cb(url, token, payload, **kwargs):
+            callbacks.append(payload)
+            return 200
+
+        os.environ["ALLOW_UNSAFE_CALLBACK"] = "1"
+        envelope = {
+            **_PREPROCESS_VALID,
+            "callback_url": "https://example/functions/v1/jobs/callback",
+            "callback_token": "tok",
+        }
+        with self._client() as (server_mod, client):
+            with (
+                patch.object(server_mod, "run_preprocess_job", new=quick_job),
+                patch.object(server_mod, "post_callback", new=capture_cb),
+            ):
+                resp = client.post("/preprocess/sync", json=envelope)
+        self.assertEqual(resp.status_code, 202)
+        self.assertEqual(len(callbacks), 1)
+        self.assertEqual(callbacks[0]["status"], "success")
+        self.assertEqual(callbacks[0]["request_id"], "job-pp")
+        self.assertEqual(callbacks[0]["frame_count"], 7)
+
+    def test_preprocess_sync_422_local_with_callback(self) -> None:
+        os.environ["ALLOW_UNSAFE_CALLBACK"] = "1"
+        envelope = {
+            **_PREPROCESS_VALID,
+            "local_source": "/tmp/x.mp4",
+            "local_output_dir": "/tmp/out",
+            "callback_url": "https://example/functions/v1/jobs/callback",
+        }
+        with self._client() as (server_mod, client):
+            with patch.object(server_mod, "run_preprocess_job") as run_job:
+                resp = client.post("/preprocess/sync", json=envelope)
+        self.assertEqual(resp.status_code, 422)
+        self.assertIn("callback_url", resp.json()["error"])
+        run_job.assert_not_called()
+
+    def test_preprocess_sync_422_callback_not_allowed(self) -> None:
+        os.environ.pop("ALLOW_UNSAFE_CALLBACK", None)
+        os.environ.pop("CALLBACK_URL_PREFIX", None)
+        os.environ.pop("SUPABASE_URL", None)
+        envelope = {
+            **_PREPROCESS_VALID,
+            "callback_url": "https://evil.example/functions/v1/jobs/callback",
+            "callback_token": "tok",
+        }
+        with self._client() as (server_mod, client):
+            with patch.object(server_mod, "run_preprocess_job") as run_job:
+                resp = client.post("/preprocess/sync", json=envelope)
+        self.assertEqual(resp.status_code, 422)
+        self.assertIn("callback_url not allowed", resp.json()["error"])
+        run_job.assert_not_called()
+
+    def test_preprocess_sync_422_missing_annotation(self) -> None:
+        envelope = {k: v for k, v in _PREPROCESS_VALID.items() if k != "annotation"}
+        with self._client() as (server_mod, client):
+            with patch.object(server_mod, "run_preprocess_job") as run_job:
+                resp = client.post("/preprocess/sync", json=envelope)
+        self.assertEqual(resp.status_code, 422)
+        self.assertIn("annotation", resp.json()["error"])
+        run_job.assert_not_called()
+
+    def test_preprocess_sync_422_missing_detections_without_callback(self) -> None:
+        envelope = {
+            k: v for k, v in _PREPROCESS_VALID.items() if k != "detections_upload_url"
+        }
+        with self._client() as (server_mod, client):
+            with patch.object(server_mod, "run_preprocess_job") as run_job:
+                resp = client.post("/preprocess/sync", json=envelope)
+        self.assertEqual(resp.status_code, 422)
+        self.assertIn("detections_upload_url", resp.json()["error"])
+        run_job.assert_not_called()
+
+    def test_preprocess_detect_fail_callbacks_failed(self) -> None:
+        from job import JobFailed
+
+        def boom(body, detector=None):
+            raise JobFailed(
+                "gpu exploded",
+                extra={
+                    "duration": 12.5,
+                    "width": 1920,
+                    "height": 1080,
+                    "fps": 30,
+                },
+            )
+
+        callbacks: list[dict] = []
+
+        def capture_cb(url, token, payload, **kwargs):
+            callbacks.append(payload)
+            return 200
+
+        os.environ["ALLOW_UNSAFE_CALLBACK"] = "1"
+        envelope = {
+            **_PREPROCESS_VALID,
+            "callback_url": "https://example/functions/v1/jobs/callback",
+            "callback_token": "tok",
+        }
+        with self._client() as (server_mod, client):
+            with (
+                patch.object(server_mod, "run_preprocess_job", new=boom),
+                patch.object(server_mod, "post_callback", new=capture_cb),
+            ):
+                resp = client.post("/preprocess/sync", json=envelope)
+        self.assertEqual(resp.status_code, 202)
+        self.assertEqual(len(callbacks), 1)
+        self.assertEqual(callbacks[0]["request_id"], "job-pp")
+        self.assertEqual(callbacks[0]["status"], "failed")
+        self.assertIn("gpu exploded", callbacks[0]["error"])
+        self.assertEqual(callbacks[0]["duration"], 12.5)
+        self.assertEqual(callbacks[0]["width"], 1920)
+        self.assertEqual(callbacks[0]["height"], 1080)
+        self.assertEqual(callbacks[0]["fps"], 30)
 
 
 if __name__ == "__main__":

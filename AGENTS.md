@@ -2,7 +2,7 @@
 
 This file is the **default instruction set** for coding agents and humans
 working in this monorepo. System design and trust model live in
-[ARCHITECTURE.md](./ARCHITECTURE.md) and [SUPABASE.md](./SUPABASE.md). This
+[ARCHITECTURE.md](./ARCHITECTURE.md) and [supabase/README.md](./supabase/README.md). This
 document owns **how we organize code** and **how agents should edit**.
 
 **Read order for agents**
@@ -10,7 +10,7 @@ document owns **how we organize code** and **how agents should edit**.
 1. § Agent rules (short) — follow these on every change
 2. § File organization guide — when deciding where code goes or whether to split
 3. Package notes that match your task (`apps/web`, `supabase`, `workers`)
-4. Domain docs only as needed (`ARCHITECTURE.md`, `SUPABASE.md`, module READMEs)
+4. Domain docs only as needed (`ARCHITECTURE.md`, `supabase/README.md`, module READMEs)
 
 ---
 
@@ -52,7 +52,7 @@ with judgment. When unsure, choose the option that is easier to delete later.
 4. **Must not** reorganize unrelated files in the same change as a feature or
    fix. No drive-by refactors.
 5. **Must not** invent new match-ID algorithms or B2 key shapes; use the
-   contracts in SUPABASE.md.
+   contracts in supabase/README.md.
 6. **Must not** wire fake product affordances that look production-ready
    without labeling them demo/preview when the backend is not real (auth,
    billing, save, delete).
@@ -182,7 +182,7 @@ supabase/functions/<name>/    # one deployable function per folder
 
 - Prefer **procedural** handlers in a small number of files per function.  
 - Shared constants used by one function stay in that function’s folder.  
-- SQL RPC contracts are documented in SUPABASE.md; don’t invent parallel
+- SQL RPC contracts are documented in supabase/README.md; don’t invent parallel
   write paths from the client.
 
 ### Workers layout
@@ -282,7 +282,7 @@ workers/github/match-data BWF metadata scrape → Supabase
 workers/vast/             GPU normalize + detect stages
 scripts/                  Ops helpers
 ARCHITECTURE.md           System design + trust model
-SUPABASE.md               Schema, RPCs, catalog ACL
+supabase/README.md        Schema, RPCs, catalog ACL
 AGENTS.md                 This file — code organization + agent rules
 README.md                 Product overview + module issue trackers
 ```
@@ -314,7 +314,7 @@ Local pointer file: [`apps/web/AGENTS.md`](./apps/web/AGENTS.md) redirects here.
 ### `workers`
 
 - CDN worker is the **only** B2 key holder.  
-- Match-data IDs: `sha256(match_key)` per SUPABASE.md — golden tests are
+- Match-data IDs: `sha256(match_key)` per supabase/README.md — golden tests are
   welcome; silent key format changes are not.  
 - New GPU stages should copy the trust envelope (presign in, callback out),
   not gain credentials.
@@ -346,10 +346,10 @@ Are you splitting because the file is long?
 | Doc | Contents |
 |-----|----------|
 | [ARCHITECTURE.md](./ARCHITECTURE.md) | Trust model, pipeline, storage, high-level rationale |
-| [SUPABASE.md](./SUPABASE.md) | Tables, RPCs, RLS, IDs, catalog access |
+| [supabase/README.md](./supabase/README.md) | Tables, RPCs, RLS, IDs, catalog access |
 | [README.md](./README.md) | Product summary + per-module issue trackers |
 | Module READMEs under `workers/**` | Deploy and stage-specific detail |
 
 When this guide and ARCHITECTURE.md disagree on **folder taste**, this file
 wins. When they disagree on **security or data contracts**, ARCHITECTURE.md /
-SUPABASE.md win.
+supabase/README.md win.

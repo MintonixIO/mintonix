@@ -8,8 +8,7 @@
       "default_supabase_url": "https://xaxyuytvgcdbdnndhgwj.supabase.co",
       "default_cdn_presign": "https://mintonix-cdn-dev.peterouyang14.workers.dev/presign",
       "expected_vast_endpoint_names": [
-        "Normalization-DEV",
-        "Detection-DEV"
+        "Normalization-DEV"
       ],
       "github_environment": "dev",
       "default_e2e_allowed": true
@@ -49,12 +48,12 @@
     "VAST_PREPROCESS_ENDPOINT_NAME"
   ],
   "project_secrets_recommended_names": [
-    "VAST_DETECT_ENDPOINT_NAME",
     "VAST_TLS_CA"
   ],
   "project_secrets_legacy_aliases": {
-    "VAST_NORMALIZE_ENDPOINT_NAME": "Legacy alias for VAST_PREPROCESS_ENDPOINT_NAME — warn if only legacy is set",
-    "VAST_ENDPOINT_NAME": "Deprecated alias for VAST_PREPROCESS_ENDPOINT_NAME — warn if only legacy is set"
+    "VAST_DETECT_ENDPOINT_NAME": "Removed — fused worker uses VAST_PREPROCESS_ENDPOINT_NAME only",
+    "VAST_NORMALIZE_ENDPOINT_NAME": "Removed — use VAST_PREPROCESS_ENDPOINT_NAME",
+    "VAST_ENDPOINT_NAME": "Removed — use VAST_PREPROCESS_ENDPOINT_NAME"
   },
   "edge_functions_expected": [
     "jobs",
@@ -92,6 +91,11 @@
       "probe": "supabase secrets list --project-ref — required names present (digests only)"
     },
     {
+      "id": "vast_preprocess_endpoint_required",
+      "blocking": true,
+      "probe": "VAST_PREPROCESS_ENDPOINT_NAME must be set. Legacy VAST_DETECT_ENDPOINT_NAME / VAST_NORMALIZE_ENDPOINT_NAME / VAST_ENDPOINT_NAME alone is not_ready (invoke no longer resolves aliases)."
+    },
+    {
       "id": "migrations_no_orphan_remote",
       "blocking": true,
       "probe": "supabase migration list — no remote versions missing from local migrations for maintained branch",
@@ -100,13 +104,11 @@
   ],
   "warning_checks": [
     "user_upload_local_keys",
-    "vast_detect_endpoint_set",
     "vast_endpoints_listable",
     "vast_endpoint_names_match_expected_dev",
     "edge_functions_listed",
     "bwf_catalog_nonempty",
-    "recent_ci_success_for_env",
-    "legacy_VAST_ENDPOINT_NAME_only"
+    "recent_ci_success_for_env"
   ],
   "optional_deep": [
     "dispatch_empty_queue_with_valid_token",

@@ -111,20 +111,20 @@ sequenceDiagram
   Cron->>Cron: dispatch_next_job RPC → claim job
   Note over Cron: prefix = bwf/<match_id>/ or users/<uid>/<match_id>/
   Cron->>W: /presign GET + MULTIPART + PUT
-  W-->>Cron: input_url, output_upload (parts), thumbnail + preprocess-log PUTs
+  W-->>Cron: input_url, output_upload (parts), thumbnail + log + detections PUTs
   Note over Cron: mint HMAC job token<br/>{job_id,match_id,stage,attempt} aud=jobs-callback
-  Cron->>V: POST /preprocess/sync envelope
+  Cron->>V: POST /preprocess/sync envelope (fused encode+detect)
   V->>B: GET input_url (or yt-dlp) → NVDEC/nvenc
   V->>B: multipart part PUTs → Complete normalized.mp4
-  V->>B: PUT thumbnail.jpg + preprocess-log.json
+  V->>B: PUT thumbnail.jpg + preprocess-log.json + detections.json
   V->>K: POST result Bearer callback_token
-  Note over K: verify token + complete_job RPC
+  Note over K: verify token + complete_job p_complete_stage=detect
   K-->>V: 200 ack
 ```
 
-> **Current state:** `jobs` edge function routes normalize → detect; analyze is
-> a follow-up. Large objects use CDN `op=MULTIPART`. Callback settles via
-> `complete_job`.
+> **Current state:** one GPU hop. Fused `/preprocess/sync` writes four artifacts
+> and `complete_job p_complete_stage=detect` (no detect requeue). `/detect/sync`
+> is ops retry. Analyze is unwired. Large objects use CDN `op=MULTIPART`.
 
 The transcode target: **≤1920×1080, ≤30 fps, H.264/yuv420p, AAC**.
 

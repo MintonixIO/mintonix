@@ -19,7 +19,7 @@ from typing import Any, Mapping
 import cv2
 import numpy as np
 
-log = logging.getLogger("video-det.scoreboard")
+log = logging.getLogger("video-preprocess.scoreboard")
 
 # Generated templates for digits 0–9 (OpenCV Hershey font).
 _DIGIT_TEMPLATES: dict[str, np.ndarray] | None = None

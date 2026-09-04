@@ -141,7 +141,7 @@ class TestBuildSegmentsForVideo(unittest.TestCase):
         log = {"frame_shifts": [{"new_start": 0, "new_end": 10}]}
         with (
             patch("detect.output.read_frame", return_value=frame),
-            self.assertLogs("video-det.scoreboard", level="WARNING"),
+            self.assertLogs("video-preprocess.scoreboard", level="WARNING"),
         ):
             segs = build_segments_for_video(
                 video_path=Path("/nonexistent.mp4"),
@@ -261,7 +261,7 @@ class TestScoreboardGeometry(unittest.TestCase):
                 "row_split_y": 270,
             },
         }
-        with self.assertLogs("video-det.scoreboard", level="WARNING"):
+        with self.assertLogs("video-preprocess.scoreboard", level="WARNING"):
             self.assertIsNone(scoreboard_geometry(ann))
 
     def test_clicked_scoreboard_crop_is_kept(self) -> None:
@@ -278,7 +278,7 @@ class TestScoreboardGeometry(unittest.TestCase):
         ann = {
             "court": {"scoreboard_crop": {"x": 0, "y": 0, "w": 960, "h": 540}},
         }
-        with self.assertLogs("video-det.scoreboard", level="WARNING"):
+        with self.assertLogs("video-preprocess.scoreboard", level="WARNING"):
             self.assertIsNone(scoreboard_geometry(ann, frame_wh=(1920, 1080)))
         g = scoreboard_geometry(ann)
         assert g is not None

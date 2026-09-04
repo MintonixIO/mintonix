@@ -15,7 +15,12 @@ import {
   invokeFailurePolicy,
   callbackRetry,
 } from "./warming.ts";
-import { invokeVast, type InvokeFetch, type InvokeVastOpts } from "./invoke.ts";
+import {
+  invokeVast,
+  resolveVastEndpointName,
+  type InvokeFetch,
+  type InvokeVastOpts,
+} from "./invoke.ts";
 
 const START_ISO = "2026-08-25T00:00:00.000Z";
 const START_MS = Date.parse(START_ISO);
@@ -45,9 +50,10 @@ Deno.test("warmingSinceIso keeps existing warming ISO and otherwise uses now", (
   assertEquals(warmingSinceIso("invoke: fail", "2026-08-25T00:05:00.000Z"), "2026-08-25T00:05:00.000Z");
 });
 
-Deno.test("isWorkerStarted accepts 202 and 200 only", () => {
+Deno.test("isWorkerStarted accepts 202 only", () => {
   assertEquals(isWorkerStarted(202), true);
-  assertEquals(isWorkerStarted(200), true);
+  assertEquals(isWorkerStarted(200), false);
+  assertEquals(isWorkerStarted(429), false);
   assertEquals(isWorkerStarted(503), false);
   assertEquals(isWorkerStarted(422), false);
   assertEquals(isWorkerStarted(500), false);
@@ -92,6 +98,15 @@ Deno.test("invokeFailurePolicy: warming retries until expired; 503 retries; 4xx 
   );
   assertEquals(last503.retry, false);
   assertEquals(last503.warming, false);
+
+  const busy = invokeFailurePolicy(
+    new WorkerHttpError("/preprocess/sync", 429, "gpu busy"),
+    START_MS,
+    3,
+    3,
+  );
+  assertEquals(busy.retry, true);
+  assertEquals(busy.warming, true);
 });
 
 Deno.test("callbackRetry: worker-reported failures are terminal", () => {
@@ -128,7 +143,7 @@ function invokeOpts(overrides: Partial<InvokeVastOpts> & {
     env: {
       get(key: string) {
         const m: Record<string, string> = {
-          VAST_DETECT_ENDPOINT_NAME: "VIDEO-DETECTION-DEV",
+          VAST_PREPROCESS_ENDPOINT_NAME: "VIDEO-PREPROCESS-DEV",
           VAST_API_KEY: "account-key",
           VAST_AUTOSCALER_URL: "https://run.vast.ai",
         };
@@ -141,6 +156,41 @@ function invokeOpts(overrides: Partial<InvokeVastOpts> & {
   };
 }
 
+Deno.test("resolveVastEndpointName uses only VAST_PREPROCESS_ENDPOINT_NAME", () => {
+  const env = {
+    get(key: string) {
+      const m: Record<string, string> = {
+        VAST_PREPROCESS_ENDPOINT_NAME: "PREPROCESS",
+        VAST_DETECT_ENDPOINT_NAME: "DETECT",
+        VAST_NORMALIZE_ENDPOINT_NAME: "NORMALIZE",
+        VAST_ENDPOINT_NAME: "LEGACY",
+      };
+      return m[key];
+    },
+  };
+  assertEquals(resolveVastEndpointName(env), {
+    name: "PREPROCESS",
+    usedEnv: "VAST_PREPROCESS_ENDPOINT_NAME",
+  });
+});
+
+Deno.test("resolveVastEndpointName ignores detect/legacy when preprocess is unset", () => {
+  const env = {
+    get(key: string) {
+      const m: Record<string, string> = {
+        VAST_DETECT_ENDPOINT_NAME: "DETECT",
+        VAST_NORMALIZE_ENDPOINT_NAME: "NORMALIZE",
+        VAST_ENDPOINT_NAME: "LEGACY",
+      };
+      return m[key];
+    },
+  };
+  assertEquals(resolveVastEndpointName(env), {
+    name: undefined,
+    usedEnv: "VAST_PREPROCESS_ENDPOINT_NAME",
+  });
+});
+
 Deno.test("invokeVast throws WarmingError after ROUTE_TICK_MS with no worker url", async () => {
   const c = fakeClock();
   let routeCalls = 0;
@@ -150,7 +200,6 @@ Deno.test("invokeVast throws WarmingError after ROUTE_TICK_MS with no worker url
         "/detect/sync",
         { request_id: "j" },
         "j",
-        "VAST_DETECT_ENDPOINT_NAME",
         invokeOpts({
           now: c.now,
           sleep: c.sleep,
@@ -179,7 +228,6 @@ Deno.test("invokeVast WarmingError keeps prior warming ISO", async () => {
         "/detect/sync",
         {},
         "j",
-        "VAST_DETECT_ENDPOINT_NAME",
         invokeOpts({
           priorError: "warming:2026-08-25T00:00:00.000Z",
           now: c.now,
@@ -201,7 +249,6 @@ Deno.test("invokeVast /route/ HTTP error is not warming", async () => {
         "/detect/sync",
         {},
         "j",
-        "VAST_DETECT_ENDPOINT_NAME",
         invokeOpts({
           now: c.now,
           sleep: c.sleep,
@@ -238,7 +285,6 @@ Deno.test("invokeVast treats 202 as started and does not drain the held body", a
       "/detect/sync",
       { request_id: "j" },
       "j",
-      "VAST_DETECT_ENDPOINT_NAME",
       invokeOpts({
         now: c.now,
         sleep: c.sleep,
@@ -258,39 +304,87 @@ Deno.test("invokeVast treats 202 as started and does not drain the held body", a
   assertEquals(workerPosts, 1);
 });
 
-Deno.test("invokeVast treats 200 as started (preprocess / old image) without draining", async () => {
-  const stream = new ReadableStream<Uint8Array>({ start() {} });
+Deno.test("invokeVast 200 is not started", async () => {
   const c = fakeClock();
+  const err = await assertRejects(
+    () =>
+      invokeVast(
+        "/preprocess/sync",
+        {},
+        "j",
+        invokeOpts({
+          now: c.now,
+          sleep: c.sleep,
+          fetch: async (input: Parameters<InvokeFetch>[0]) => {
+            if (String(input).includes("/route/")) {
+              return jsonResp(200, { url: "https://worker.example" });
+            }
+            return new Response("ok", { status: 200 });
+          },
+        }),
+      ),
+    WorkerHttpError,
+  );
+  assertEquals(err.status, 200);
+  assertEquals(err.retry, false);
+});
+
+Deno.test("invokeVast /route/ uses VAST_PREPROCESS_ENDPOINT_NAME", async () => {
+  const c = fakeClock();
+  let routeBody: Record<string, unknown> | undefined;
+  const stream = new ReadableStream<Uint8Array>({ start() {} });
   await assertDoesNotHang(
     invokeVast(
       "/preprocess/sync",
-      {},
+      { request_id: "j" },
       "j",
-      "VAST_PREPROCESS_ENDPOINT_NAME",
       invokeOpts({
         now: c.now,
         sleep: c.sleep,
-        env: {
-          get(key: string) {
-            const m: Record<string, string> = {
-              VAST_PREPROCESS_ENDPOINT_NAME: "VIDEO-PREPROCESS-DEV",
-              VAST_API_KEY: "account-key",
-              VAST_AUTOSCALER_URL: "https://run.vast.ai",
-            };
-            return m[key];
-          },
-        },
-        fetch: async (input: Parameters<InvokeFetch>[0]) => {
+        fetch: async (input: Parameters<InvokeFetch>[0], init?: RequestInit) => {
           const url = String(input);
           if (url.includes("/route/")) {
+            routeBody = JSON.parse(String(init?.body ?? "{}"));
             return jsonResp(200, { url: "https://worker.example" });
           }
-          assert(url.endsWith("/preprocess/sync"));
-          return new Response(stream, { status: 200 });
+          return new Response(stream, { status: 202 });
         },
       }),
     ),
-    "200",
+    "route-endpoint",
+  );
+  assertEquals(routeBody?.endpoint, "VIDEO-PREPROCESS-DEV");
+});
+
+Deno.test("invokeVast fails closed when only legacy endpoint env is set", async () => {
+  const c = fakeClock();
+  await assertRejects(
+    () =>
+      invokeVast(
+        "/preprocess/sync",
+        {},
+        "j",
+        invokeOpts({
+          now: c.now,
+          sleep: c.sleep,
+          env: {
+            get(key: string) {
+              const m: Record<string, string> = {
+                VAST_DETECT_ENDPOINT_NAME: "DETECT",
+                VAST_NORMALIZE_ENDPOINT_NAME: "NORMALIZE",
+                VAST_ENDPOINT_NAME: "LEGACY",
+                VAST_API_KEY: "account-key",
+              };
+              return m[key];
+            },
+          },
+          fetch: async () => {
+            throw new Error("must not fetch");
+          },
+        }),
+      ),
+    Error,
+    "VAST_PREPROCESS_ENDPOINT_NAME / VAST_API_KEY not configured",
   );
 });
 
@@ -302,7 +396,6 @@ Deno.test("invokeVast 503 is retryable WorkerHttpError, not warming", async () =
         "/detect/sync",
         {},
         "j",
-        "VAST_DETECT_ENDPOINT_NAME",
         invokeOpts({
           now: c.now,
           sleep: c.sleep,
@@ -328,7 +421,6 @@ Deno.test("invokeVast 422 is terminal WorkerHttpError", async () => {
         "/detect/sync",
         {},
         "j",
-        "VAST_DETECT_ENDPOINT_NAME",
         invokeOpts({
           now: c.now,
           sleep: c.sleep,

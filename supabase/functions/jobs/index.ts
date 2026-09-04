@@ -28,21 +28,21 @@
  *   owner_id IS NULL  →  bwf/<match_id>/
  *   owner_id set      →  users/<owner_id>/<match_id>/
  *
- * Stages wired: normalize → detect. analyze lands when its worker contract
- * is pinned. Normalize always loads annotation.json (corners + net poles).
- * Path mode is URL-driven on the worker: YouTube → BWF court cut; B2/CDN →
- * full encode. Both write normalized.mp4, thumbnail.jpg, preprocess-log.json.
+ * Stages wired: normalize (fused encode+detect) → detect retry. analyze
+ * lands when its worker contract is pinned. One vast endpoint
+ * (VAST_PREPROCESS_ENDPOINT_NAME). Normalize success completes at detect
+ * (p_complete_stage) with no pgmq requeue. /detect/sync is ops retry only.
+ * Normalize always loads annotation.json (corners + net poles). Path mode
+ * is URL-driven on the worker: YouTube → BWF court cut; B2/CDN → full
+ * encode. Fused job writes normalized.mp4, thumbnail.jpg,
+ * preprocess-log.json, detections.json.
  *
  * Secrets:
  *   PIPELINE_SERVICE_TOKEN  auth for /dispatch (shared with matches-ingest)
  *   JOB_TOKEN_SECRET        HMAC secret for the callback token
  *   CDN_PRESIGN_URL         CDN Worker control plane (e.g. https://…/presign)
  *   PRESIGN_SERVICE_TOKEN   auth for /presign (shared with cdn-access)
- *   VAST_PREPROCESS_ENDPOINT_NAME  vast serverless endpoint for preprocess
- *   VAST_NORMALIZE_ENDPOINT_NAME   deprecated alias for preprocess endpoint
- *   VAST_DETECT_ENDPOINT_NAME      vast serverless endpoint for detect
- *                                  (falls back to preprocess endpoint if unset)
- *   VAST_ENDPOINT_NAME      deprecated alias for preprocess endpoint
+ *   VAST_PREPROCESS_ENDPOINT_NAME  sole vast serverless GPU endpoint
  *   VAST_API_KEY            vast ACCOUNT API key
  *   VAST_AUTOSCALER_URL     optional, default https://run.vast.ai
  *   VAST_TLS_CA             optional PEM: vast's self-signed worker CA
@@ -56,6 +56,13 @@
 import { createClient } from "npm:@supabase/supabase-js@2.45.4";
 import { jwtVerify, SignJWT } from "npm:jose@5.9.6";
 import { invokeVast } from "./invoke.ts";
+import {
+  callbackCompleteJobParams,
+  normalizeOutputKeys,
+  settleDetect,
+  settleNormalize,
+  type Settlement,
+} from "./stages.ts";
 import { callbackRetry, invokeFailurePolicy } from "./warming.ts";
 
 const MAX_ATTEMPTS = 3; // real GPU starts per stage; warming does not count
@@ -139,7 +146,7 @@ async function presign(key: string, op: "GET" | "PUT"): Promise<string> {
 /**
  * Create a B2 multipart upload session and return presigned part/complete/abort
  * URLs for large pipeline outputs (normalized.mp4). Small objects
- * (thumbnail, CSV, JSON) stay on single PUT via presign(..., "PUT").
+ * (thumbnail, JSON) stay on single PUT via presign(..., "PUT").
  */
 async function presignMultipart(key: string): Promise<MultipartUploadSpec> {
   const expiresIn = Number(Deno.env.get("PRESIGN_EXPIRY_SECONDS") ?? "14400");
@@ -230,11 +237,6 @@ type CallbackBody = Record<string, unknown> & {
   error?: string;
 };
 
-interface Settlement {
-  match: Record<string, unknown>;
-  next: { stage: string } | null;
-}
-
 /**
  * Load raw annotation.json for every normalize job.
  * Worker validates court.corners[4] + court.net_poles[2].
@@ -253,24 +255,22 @@ async function loadAnnotation(job: DispatchedJob): Promise<unknown> {
 }
 
 /**
- * Stage routing table. normalize → detect; analyze slots in when ready.
- *
- * Worker route is /preprocess/sync (video-preprocess image).
- * Artifacts: normalized.mp4 (multipart), thumbnail.jpg, preprocess-log.json.
+ * Stage routing table. Happy path is fused /preprocess/sync (encode + detect
+ * in one vast job). /detect/sync stays for ops retry. Both hit the same
+ * VAST_PREPROCESS_ENDPOINT_NAME. Artifacts: normalized.mp4 (multipart),
+ * thumbnail.jpg, preprocess-log.json, detections.json.
  */
 const STAGES: Record<string, {
   route: string;
-  /** Env var for this stage's vast endpoint name (see resolveVastEndpointName). */
-  endpointEnv?: string;
   buildEnvelope(job: DispatchedJob, token: string): Promise<Record<string, unknown>>;
   settle(job: DispatchedJob, body: CallbackBody, ok: boolean): Settlement;
 }> = {
   normalize: {
     route: "/preprocess/sync",
-    endpointEnv: "VAST_PREPROCESS_ENDPOINT_NAME",
 
     async buildEnvelope(job, token) {
       const prefix = job.b2_prefix;
+      const keys = normalizeOutputKeys(prefix);
       const env: Record<string, unknown> = {
         request_id: job.job_id,
         callback_url: `${Deno.env.get("SUPABASE_URL")}/functions/v1/jobs/callback`,
@@ -279,9 +279,10 @@ const STAGES: Record<string, {
 
       // Independent presigns in parallel to shrink dispatch latency while
       // the job is already claimed as processing.
-      const outputP = presignMultipart(`${prefix}normalized.mp4`);
-      const thumbP = presign(`${prefix}thumbnail.jpg`, "PUT");
-      const logP = presign(`${prefix}preprocess-log.json`, "PUT");
+      const outputP = presignMultipart(keys.video);
+      const thumbP = presign(keys.thumbnail, "PUT");
+      const logP = presign(keys.log, "PUT");
+      const detP = presign(keys.detections, "PUT");
       const annP = loadAnnotation(job);
 
       // User-owned: original already in B2 as original.mp4 (matches-ingest).
@@ -298,32 +299,16 @@ const STAGES: Record<string, {
       env.output_upload = await outputP;
       env.thumbnail_upload_url = await thumbP;
       env.preprocess_log_upload_url = await logP;
+      env.detections_upload_url = await detP;
       env.annotation = await annP;
       return env;
     },
 
-    settle(_job, body, ok) {
-      // Advance to detect on success. Match stays processing until detect (or
-      // later analyze) finishes; probe fields land from the preprocess result.
-      const next = ok ? { stage: "detect" } : null;
-      const match = ok
-        ? {
-          status: "processing",
-          duration_sec: body.duration,
-          width: body.width,
-          height: body.height,
-          fps: body.fps,
-        }
-        : {};
-      return { match, next };
-    },
+    settle: settleNormalize,
   },
 
   detect: {
     route: "/detect/sync",
-    // Separate GPU image/endpoint from preprocess; falls back to the preprocess
-    // endpoint name in resolveVastEndpointName if unset (single-endpoint local wiring).
-    endpointEnv: "VAST_DETECT_ENDPOINT_NAME",
 
     async buildEnvelope(job, token) {
       const prefix = job.b2_prefix;
@@ -349,12 +334,7 @@ const STAGES: Record<string, {
       };
     },
 
-    settle(_job, _body, ok) {
-      // analyze not wired yet — detect is terminal for MVP.
-      const next = null;
-      const match = ok ? { status: "ready" } : {};
-      return { match, next };
-    },
+    settle: settleDetect,
   },
 };
 
@@ -460,7 +440,6 @@ async function handleDispatch(request: Request): Promise<Response> {
         spec.route,
         envelope,
         job.job_id,
-        spec.endpointEnv,
         { priorError: job.error },
       ).catch(async (e) => {
         console.error(JSON.stringify({
@@ -611,17 +590,21 @@ async function handleCallback(request: Request): Promise<Response> {
   const spec = STAGES[job.stage];
   if (!spec) return json(500, { error: `no settlement for stage '${job.stage}'` });
   const ok = body.status === "success";
-  const { match: matchPatch, next } = spec.settle(jobView, body, ok);
+  const settlement = spec.settle(jobView, body, ok);
+  const rpc = callbackCompleteJobParams(
+    settlement,
+    ok,
+    ok ? null : String(body.error ?? "unknown worker error"),
+  );
 
-  // Worker-reported failures are terminal (callbackRetry is always false).
-  // Warming/503 retries are invoke-path only — see invokeFailurePolicy.
   const { data: result, error: rpcError } = await service.rpc("complete_job", {
     p_job_id: job.id,
-    p_status: ok ? "complete" : "failed",
-    p_error: ok ? null : String(body.error ?? "unknown worker error"),
-    p_match: matchPatch,
+    p_status: rpc.p_status,
+    p_error: rpc.p_error,
+    p_match: rpc.p_match,
     p_retry: callbackRetry(ok, job.attempt, MAX_ATTEMPTS),
-    p_next_stage: next?.stage ?? null,
+    p_next_stage: rpc.p_next_stage,
+    p_complete_stage: rpc.p_complete_stage,
     p_expected_attempt: job.attempt,
     p_expected_stage: job.stage,
   });

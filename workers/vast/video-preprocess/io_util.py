@@ -1,7 +1,7 @@
 """Download and upload. No storage credentials.
 
 HTTPS presigns in production (redirects are errors). ``file://`` only when
-``ALLOW_FILE_URLS=1`` (local/benchmark), allowlisted roots.
+``ALLOW_FILE_URLS=1`` (local debug), allowlisted roots.
 """
 
 from __future__ import annotations

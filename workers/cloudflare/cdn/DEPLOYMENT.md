@@ -4,8 +4,7 @@ Cloudflare (CDN Worker) and Supabase (DB + `cdn-access`) are deployed **manually
 there is no CI for them. This is deliberate: this branch is meant to merge into
 `master` and be wired into the larger app without any deploy automation firing.
 
-The two remaining workflows are unrelated to the CDN/Supabase deploy and are
-narrowly path-scoped, so a merge that doesn't touch their paths won't trigger them:
+Path-scoped workflows still run when their trees change:
 
 | Workflow | Trigger (paths) | Does |
 |---|---|---|
@@ -26,9 +25,10 @@ wrangler deploy --env prod    # mintonix-cdn    (prod bucket)
 
 ```bash
 supabase db push --project-ref <ref>
-supabase functions deploy cdn-access        --project-ref <ref>
-supabase functions deploy normalize-video   --project-ref <ref>
-supabase functions deploy normalize-callback --project-ref <ref> --no-verify-jwt
+supabase functions deploy jobs --project-ref <ref>
+supabase functions deploy matches-ingest --project-ref <ref>
+supabase functions deploy ops --project-ref <ref>
+supabase functions deploy cdn-access --project-ref <ref>
 # DEV ref: xaxyuytvgcdbdnndhgwj   PROD ref: grkaepnplgotsxdudlfn
 ```
 
@@ -83,9 +83,9 @@ supabase secrets set --project-ref <dev-ref> \
 ```
 
 The compute pathway (`jobs` dispatch/callback) additionally needs
-`JOB_TOKEN_SECRET`, `VAST_PREPROCESS_ENDPOINT_NAME` (legacy `VAST_NORMALIZE_ENDPOINT_NAME`),
-`VAST_DETECT_ENDPOINT_NAME`, `VAST_API_KEY` — see
-`supabase/functions/jobs/index.ts` and `supabase/README.md`.
+`JOB_TOKEN_SECRET`, `VAST_PREPROCESS_ENDPOINT_NAME`, `VAST_API_KEY` — see
+`supabase/functions/jobs/index.ts` and `supabase/README.md`. One GPU
+endpoint (fused encode+detect).
 
 (`SUPABASE_URL` / `SUPABASE_ANON_KEY` are injected by the platform.)
 

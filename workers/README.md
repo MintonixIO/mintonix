@@ -9,13 +9,13 @@ Cross-cutting trust model and job contract live in root
 |--------|------|------|--------|
 | **CDN** | [cloudflare/cdn](cloudflare/cdn/README.md) | Sole B2 credential holder; delivery + `/presign` | ✅ |
 | **match-data** | [github/match-data](github/match-data/README.md) | BWF scrape → `matches` catalog upsert | ✅ |
-| **video-preprocess** | [vast/video-preprocess](vast/video-preprocess/README.md) | Stages `normalize` + `detect` (one image) | 🚧 fused |
+| **video-preprocess** | [vast/video-preprocess](vast/video-preprocess/README.md) | Fused `normalize`+`detect` (one image, one endpoint) | ✅ |
 | **analysis** | `vast/analysis` | Stage `analyze` | 📐 not present |
 
 ```
 match-data ──▶ matches rows (no GPU)
 cdn ◀──▶ clients + edge functions (bytes + presign)
-jobs/dispatch ──▶ video-preprocess (encode + detect) ──▶ (analyze)
+jobs/dispatch ──▶ video-preprocess (encode + detect, one callback) ──▶ (analyze)
 ```
 
 Each subdirectory has its own README (and extra deep docs where needed). Prefer

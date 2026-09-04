@@ -188,7 +188,7 @@ RUN LD_LIBRARY_PATH="/opt/cuda-stubs:/usr/local/cuda/lib64/stubs:/usr/local/cuda
 # Product path only (see .dockerignore).
 COPY . .
 
-# Tiny local sample for autoscaler BenchmarkConfig (file:///app/sample.mp4).
+# Tiny local sample for optional file:// debug (ALLOW_FILE_URLS=1).
 # Written with OpenCV so we do not need ffmpeg in the image.
 RUN /opt/worker-env/bin/python - <<'PY'
 import cv2
@@ -250,10 +250,11 @@ print(
 )
 PY
 
-# ALLOW_FILE_URLS=1 enables local benchmark file:// I/O only.
-# Reads: /app (sample.mp4), /tmp, tempfile.gettempdir().
-# Writes: /tmp + tempfile only — never /app (see io_util._file_url_write_roots).
-# Production job traffic must use https presigned URLs, not file://.
+# ALLOW_FILE_URLS=0 in the image. Local/debug docker run must pass
+# -e ALLOW_FILE_URLS=1 for file://. Reads: /app, /tmp, /data, /out.
+# Writes: /tmp, /out, tempfile — never /app (io_util._file_url_write_roots).
+# Production job traffic uses https presigned URLs.
+# Vast WG: USE_SSL=false UNSECURED=1; CALLBACK_URL_PREFIX or SUPABASE_URL.
 #
 # Models are baked under /app/models (B2 → CI → image). Runtime still may
 # override paths via env. server.py fails startup if weights are missing
@@ -263,8 +264,9 @@ ENV PATH="/opt/worker-env/bin:${PATH}" \
     MODEL_SERVER_PORT=18000 \
     MODEL_LOG=/var/log/portal/video-preprocess.log \
     WORKER_PORT=3000 \
-    BENCHMARK_INPUT_URL=file:///app/sample.mp4 \
-    ALLOW_FILE_URLS=1 \
+    USE_SSL=false \
+    UNSECURED=1 \
+    ALLOW_FILE_URLS=0 \
     POSE_ENGINE=/app/models/yolo26x-pose.engine \
     SHUTTLE_ENGINE=/app/models/tracknetv5_fp16_b48.engine \
     SHUTTLE_TRT_BATCH=48 \

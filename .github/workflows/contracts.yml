@@ -16,7 +16,6 @@ on:
       - "supabase/functions/ops/**"
       - "supabase/functions/jobs/**"
       - "workers/vast/video-preprocess/server.py"
-      - "workers/vast/video-det/server.py"
       - ".github/workflows/contracts.yml"
   pull_request:
     paths:
@@ -29,7 +28,6 @@ on:
       - "supabase/functions/ops/**"
       - "supabase/functions/jobs/**"
       - "workers/vast/video-preprocess/server.py"
-      - "workers/vast/video-det/server.py"
       - ".github/workflows/contracts.yml"
 
 jobs:

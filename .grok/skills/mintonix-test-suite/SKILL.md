@@ -3,11 +3,12 @@ name: mintonix-test-suite
 description: >
   Run and interpret Mintonix pipeline E2E tests against dual-truth behavior
   (Postgres job/match state + B2 artifacts under the match prefix). Two lanes
-  share one chain: normalize → detect (analyze unwired). Workers run on vast.ai
-  serverless. Annotation always requires court.corners[4] + court.net_poles[2].
-  Normalize outputs: normalized.mp4, thumbnail.jpg, preprocess-log.json
-  (frame_shifts live only in the log — not frame_ranges.csv). BWF normalized.mp4
-  is the court valid-frames cut; user is full re-encode with audio kept.
+  share one fused GPU hop: encode+detect in video-preprocess (analyze unwired).
+  `/detect/sync` is ops retry. Annotation always requires court.corners[4] +
+  court.net_poles[2].
+  Fused outputs: normalized.mp4, thumbnail.jpg, preprocess-log.json,
+  detections.json (frame_shifts live only in the log — not frame_ranges.csv).
+  BWF normalized.mp4 is the court valid-frames cut; user is full re-encode.
   Green E2E does not require analysis.json or ReID. Primary harness:
   scripts/annotate_and_ingest.py (DEV). Use when the user runs
   /mintonix-test-suite, or asks to E2E test, run the test suite, verify the
@@ -33,7 +34,8 @@ Never invent stage basenames — use the contract below and the SSOT mirrors.
 | Annotation | Service-presign PUT `annotation.json` (clients cannot write `bwf/`) | User JWT cdn-access PUT `annotation.json` |
 | Pipeline start | **Enqueue only** (no catalog create/rewrite) | Confirm creates **match + job + pgmq** together |
 
-Same stages for both: **`normalize` → `detect`** (→ `analyze` designed, **not wired**).
+Same stages for both: **fused `normalize`+`detect`** in one vast job
+(→ `analyze` designed, **not wired**). Stage names stay `normalize` / `detect`.
 
 ### Annotation (`annotation.json`) — hard gate for every normalize job
 
@@ -71,14 +73,14 @@ SlimSAM masks in the annotator UI are for naming only; they are **not** stored a
 
 **Enqueue is intentional only.** Catalog scrape never starts GPU work.
 
-Who enqueues: `matches-ingest`, `manage.py` re-queue / ops, ops set-stage with `enqueue=true`, **`complete_job` stage advance** (normalize success → requeue detect).
+Who enqueues: `matches-ingest`, `manage.py` re-queue / ops, ops set-stage with `enqueue=true`. Fused normalize success uses **`complete_job` `p_complete_stage=detect`** (no pgmq). Ops retry enqueues `stage=detect` → `/detect/sync`.
 
 ```
 intentional enqueue → jobs row (stage=normalize, queued) + pgmq
        ↓
 pg_cron ~1m → POST /jobs/dispatch → claim job → presign → vast
        ↓
-worker → jobs/callback → complete_job (advance or terminal)
+worker → jobs/callback → complete_job (fused: complete at detect; retry: in place)
 ```
 
 `jobs` is one live run per match; **stage advances in place**.
@@ -101,19 +103,20 @@ worker → jobs/callback → complete_job (advance or terminal)
 
 Path mode is derived from `input_url` (YouTube → BWF; else → user). Annotation is **always required** for both.
 
-After normalize **success** callback: job **`stage=detect`, `status=queued`**, match **`processing`** (probe fields filled). Match is **not** `ready` yet.
+After fused `/preprocess/sync` **success** callback: job **`stage=detect`, `status=complete`**, match **`ready`** (probe fields filled). `/detect/sync` is ops retry only.
 
-### Detect (MVP terminal)
+### Detect (MVP terminal; fused into preprocess)
 
 | | Today |
 |--|--------|
-| Input | `normalized.mp4` + `annotation.json` + `preprocess-log.json` (jobs presigns all three) |
+| Happy path | Same `/preprocess/sync` job writes `detections.json` after `normalized.mp4` |
+| Retry input | `normalized.mp4` + `annotation.json` + `preprocess-log.json` (`STAGES.detect`) |
 | Output | **one** `detections.json` |
 | Content | **Engine envelope:** `fps`/`width`/`height`, `segments[]` (islands + scoreboard OCR), `rallies[]` (same-score islands, at most one island between), `frames[]` (pose + shuttle) |
 | ReID | Optional `player_mask_url` on worker; **jobs does not presign it**. Not driven by `annotation.json` labels. |
 | Analyze / Engine | Unwired — do not expect `analysis.json` / `3d_reconstruction.json` |
 
-After detect **success**: `jobs.status=complete`, `jobs.stage=detect`, `matches.status=ready`.
+After fused **or** detect-retry **success**: `jobs.status=complete`, `jobs.stage=detect`, `matches.status=ready`.
 
 ### Dual truth
 
@@ -130,13 +133,14 @@ Green means **both**:
 BWF:  catalog match exists → annotation.json (corners+net_poles) → matches-ingest enqueue
 User: original.mp4 + annotation.json → matches-ingest creates match+job
         ↓
-pgmq → jobs/dispatch → vast normalize → callback → stage=detect
+pgmq → jobs/dispatch → vast /preprocess/sync (encode+detect) → callback
         ↓
-dispatch → vast detect → detections.json → callback → job complete, match ready
+complete_job p_complete_stage=detect → job complete, match ready
 ```
 
-- **Workers:** `workers/vast/video-preprocess`, `workers/vast/video-det` on **vast.ai serverless**.
+- **Workers:** `workers/vast/video-preprocess` on **vast.ai serverless** (one endpoint).
 - **Terminal stage today:** `detect`. Green E2E does **not** require `analysis.json`.
+- Ops retry: `ops_set_stage detect` → `/detect/sync`.
 
 ## Verification contract (exact)
 
@@ -175,7 +179,7 @@ Loadable copy: `references/stage-contract.json` in this skill. Repo golden: `con
 | Regress purge | Deleting *to* stage S removes S outputs **and all later** stages |
 | Never purge | `keep_on_regress` basenames |
 | Callback wire | Worker posts `status: "success" \| "failed"`; after detect settle DB is `jobs.status=complete` |
-| After normalize success | Job advanced to `detect` (queued); match still `processing` |
+| After fused preprocess success | Job `complete` at `detect`; match `ready` |
 | Match after detect settle | `matches.status == ready` |
 | Job after detect settle | `jobs.status == complete` and `jobs.stage == detect` |
 
@@ -235,7 +239,7 @@ Report a per-check table (pass / fail / skip / warn). Do not claim ready if any 
 2. **Supabase REST** — `GET …/rest/v1/matches?select=id&limit=1` with service role → **200**.
 3. **Edge functions** — `POST …/jobs/dispatch` with wrong token → **401**.
 4. **CDN presign** — 2xx or structured 4xx (not Cloudflare HTML block); non-empty `User-Agent`.
-5. **Project edge secrets** — digests for `PIPELINE_SERVICE_TOKEN`, `JOB_TOKEN_SECRET`, `PRESIGN_SERVICE_TOKEN`, `CDN_PRESIGN_URL`, `VAST_API_KEY`, `VAST_PREPROCESS_ENDPOINT_NAME` (or legacy `VAST_NORMALIZE_ENDPOINT_NAME` / `VAST_ENDPOINT_NAME` with **warn**), `VAST_DETECT_ENDPOINT_NAME` (warn if missing).
+5. **Project edge secrets** — digests for `PIPELINE_SERVICE_TOKEN`, `JOB_TOKEN_SECRET`, `PRESIGN_SERVICE_TOKEN`, `CDN_PRESIGN_URL`, `VAST_API_KEY`, `VAST_PREPROCESS_ENDPOINT_NAME`. **Fail closed** (`not_ready`) if `VAST_PREPROCESS_ENDPOINT_NAME` is missing even when a legacy `VAST_DETECT_*` / `VAST_NORMALIZE_*` / `VAST_ENDPOINT_NAME` secret exists.
 6. **Migrations aligned** — `supabase migration list --linked` consistent with local migrations for the branch.
 
 ### Warning-only
@@ -344,10 +348,6 @@ After set-stage with enqueue, optional `POST /jobs/dispatch` (or wait for pg_cro
 python3 scripts/test_stage_outputs.py
 deno test supabase/functions/ops/stage_outputs_test.ts
 
-cd workers/vast/video-det && python3 -m unittest \
-  test_contract.py test_io_util.py test_server_contract.py test_detect_pipeline.py \
-  test_segments.py -v
-
 cd workers/vast/video-preprocess && python3 -m unittest discover -v -s . -p 'test_*.py'
 ```
 
@@ -361,8 +361,7 @@ When the user runs the test suite on a **branch/PR**, or asks about CI / Actions
 |---|---|
 | `supabase.yml` | migrations + edge functions + stage_outputs unit |
 | `contracts.yml` | `contracts/stage_artifacts.json` + callback fixtures match maps |
-| `video-preprocess.yml` | preprocess Docker image + unit tests |
-| `video-det.yml` | detect Docker image + unit tests |
+| `video-preprocess.yml` | fused preprocess+detect Docker image + unit tests |
 | `cloudflare-cdn.yml` | CDN worker deploy |
 | `match-data.yml` | catalog scrape/load (**does not** enqueue GPU) |
 
@@ -421,7 +420,7 @@ When the user asks whether detect “really worked,” not only that keys exist:
 - **Pose + shuttle** coverage (shuttle top-K UV `[0,1]`).
 - Optional ReID / non-null `player_id` is **not** required for MVP.
 - Prefer sampling a few frames / schema keys over loading huge files.
-- Schema: `workers/vast/video-det` + its ARCHITECTURE.md.
+- Schema: `workers/vast/video-preprocess/detect/ARCHITECTURE.md`.
 
 ## Doc map
 
@@ -431,7 +430,7 @@ When the user asks whether detect “really worked,” not only that keys exist:
 | Supabase functions / schema | `supabase/README.md` |
 | Worker index | `workers/README.md` |
 | Normalize / preprocess | `workers/vast/video-preprocess/README.md` |
-| Detect | `workers/vast/video-det/README.md` (+ `ARCHITECTURE.md`) |
+| Detect | `workers/vast/video-preprocess/detect/ARCHITECTURE.md` |
 | CDN | `workers/cloudflare/cdn/README.md` |
 | Match-data (catalog only) | `workers/github/match-data/README.md` |
 | Harness | `scripts/annotate_and_ingest.py` |

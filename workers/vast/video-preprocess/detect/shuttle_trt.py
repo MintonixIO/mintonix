@@ -12,7 +12,7 @@ import numpy as np
 
 from trt_io import acquire_device_context, gpu_execute, host_dtype, nbytes
 
-log = logging.getLogger("video-det.shuttle_trt")
+log = logging.getLogger("video-preprocess.shuttle_trt")
 
 _INPUT_H = 288
 _INPUT_W = 512

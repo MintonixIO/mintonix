@@ -147,6 +147,9 @@ def run_detect_job(body: dict, detector) -> dict:
         return {
             "frame_count": result["frame_count"],
             "elapsed_sec": round(elapsed, 3),
+            "width": result.get("width"),
+            "height": result.get("height"),
+            "fps": result.get("fps"),
         }
     finally:
         video_tmp.unlink(missing_ok=True)

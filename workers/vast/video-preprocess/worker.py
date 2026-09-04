@@ -15,7 +15,7 @@ from vastai.serverless.server.worker import (
     WorkerConfig,
 )
 
-# Same patch as the video-preprocess worker: SDK AppRunner(handler_cancellation=True)
+# SDK AppRunner(handler_cancellation=True)
 # turns a dispatcher disconnect into a cancel, which zeroes reported load and
 # lets the autoscaler stop the instance mid-job. Jobs report via callback; keep
 # the request (and load accounting) alive until the job finishes.
@@ -55,9 +55,8 @@ def request_parser(request: dict) -> dict:
 
 
 def ping_benchmark_generator() -> dict:
-    # PyWorker treats only HTTP 200 as a successful benchmark. /detect/sync
-    # returns 202, which marked the worker errored and Vast recycled it ~15s
-    # after docker start. Ping is 200 and does not start GPU work.
+    # PyWorker treats only HTTP 200 as a successful benchmark. GPU routes
+    # return 202. Ping is 200 and does not start GPU work.
     return {"ping": True}
 
 
