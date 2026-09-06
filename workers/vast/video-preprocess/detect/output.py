@@ -24,7 +24,7 @@ from .segments import (
 )
 from .types import FrameResult, json_float
 
-log = logging.getLogger("video-det.output")
+log = logging.getLogger("video-preprocess.output")
 
 
 def probe_video(path: Path) -> dict[str, Any]:

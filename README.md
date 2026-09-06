@@ -50,7 +50,6 @@ four user-clicked court corners.
 Condensed reference; full detail in [ARCHITECTURE.md](ARCHITECTURE.md),
 [supabase/README.md](supabase/README.md), and per-worker docs under
 [`workers/`](workers/) (e.g.
-[video-det](workers/vast/video-det/README.md),
 [video-preprocess](workers/vast/video-preprocess/README.md),
 [cdn](workers/cloudflare/cdn/README.md),
 [match-data](workers/github/match-data/README.md)).
@@ -61,8 +60,8 @@ Status legend: ✅ built · 🚧 partially built · 📐 designed, not built.
 
 ```
 INGESTION            PIPELINE (queue-driven)          DELIVERY
-BWF scraper ─┐       1. normalize (vast GPU) ✅       Cloudflare CDN worker ✅
-User upload ─┼──▶    2. detect    (vast GPU) 🚧  ──▶  (token-gated, cached)
+BWF scraper ─┐       1. normalize+detect (one vast GPU) ✅  Cloudflare CDN worker ✅
+User upload ─┼──▶    2. detect retry (/detect/sync)    ✅  (token-gated, cached)
 BWF backlog ─┘       3. analyze   (CPU)      📐         │
      │                    │                             ▼
 matches/jobs rows    assets in B2, state in        Web (Next.js) 🚧
@@ -89,11 +88,11 @@ callback token. Clients hold only the anon key + user session.
 
 ### Job contract
 
-Every stage speaks the same envelope: presigned `source`/`outputs` URLs,
-stage `params`, `callback_url` + single-use `callback_token`. The `jobs` edge
-function both dispatches (queue → vast) and settles callbacks, and on settle
-enqueues the next stage — the pipeline is a chain of queue messages, not a
-long-lived orchestrator.
+Every stage speaks the same envelope: presigned URLs, `callback_url` +
+single-use `callback_token`. The `jobs` edge function both dispatches
+(queue → one vast preprocess endpoint) and settles callbacks. Fused
+normalize success completes the job at `detect` (`p_complete_stage`) with
+no second GPU hop.
 
 ### CI/CD
 
@@ -126,7 +125,8 @@ Move fixed items to the module's *Resolved* list with the fixing commit.
 **Resolved:**
 - Dispatch auto-drain — `20260726020000_jobs_dispatch_cron.sql` schedules
   `jobs-dispatch` (every minute) → `invoke_jobs_dispatch` → `/jobs/dispatch`.
-  Enqueue stays intentional (ingest / ops / stage-advance only). Requires
+  Enqueue stays intentional (ingest / ops / warming retry). Fused success
+  does not re-queue detect. Requires
   Vault secrets `jobs_dispatch_url` + `pipeline_service_token` per project
   (supabase/README.md § Cron).
 
@@ -148,30 +148,18 @@ Move fixed items to the module's *Resolved* list with the fixing commit.
 
 **Resolved:** —
 
-### workers/vast/video-preprocess — normalize stage ✅
+### workers/vast/video-preprocess — fused normalize + detect ✅
 
 - [x] **P0** Upload retries on single PUT and multipart parts/complete.
 - [x] **P1** Fail fast without NVENC before download (GPU required for encode + BWF NVDEC).
 - [x] **P1** Span-trim select encode for BWF court ranges (single best multi-range path).
 - [x] **P2** Score-timeline / scoreboard OCR — detect emits `segments[]` (island + `score.t1/t2`) in `detections.json` for Engine rallies.
-
-**Resolved:** —
-
-### workers/vast/video-det — detect stage 🚧
-
-- [ ] **P0** Default mode is broken — default detection path expects tooling the
-      Docker image doesn't install, so stock jobs fail. Default to the serial
-      path in code and image; keep the research pipeline non-product.
-- [ ] **P0** Memory blow-up on large outputs — `detections.json` is buffered
-      fully in memory before upload. Stream the upload from disk.
-- [ ] **P1** Health endpoint reports healthy with models missing, then fails
-      real jobs.
 - [ ] **P2** Player identity / ReID (not in product detect path; `player_id` always null)
-      yet — `player_id` stays null; don't let it block detect.
+      — `player_id` stays null; don't let it block detect.
 - [ ] **P2** Research pose pipeline (`pose/research_pipeline.py`) — high ops
       risk; keep out of the product default.
 
-**Resolved:** —
+**Resolved:** fused settle (`p_complete_stage=detect`); `/detect/sync` is ops retry. `workers/vast/video-det` deleted.
 
 ### workers/vast/analysis — analyze stage 📐
 

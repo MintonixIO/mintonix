@@ -10,7 +10,7 @@ Owns multi-K `RingGpuConsumer` + zero-copy `feed` (`ring_consumer.py`); product
 pose uses `pose.trt_runtime._TrtRunner.infer` only.
 
 ```bash
-# from workers/vast/video-det with PYTHONPATH=.
+# from workers/vast/video-preprocess with PYTHONPATH=.
 python -c "from tools.ffmpeg_pose_bench.ffmpeg_feed import run_ffmpeg_pose"
 ```
 
@@ -37,7 +37,7 @@ Coords are **normalized [0,1]** of the source frame for both pose and shuttle pe
 ### Quick start
 
 ```bash
-# from workers/vast/video-det
+# from workers/vast/video-preprocess
 python3 tools/visualize_detections.py \
   --video /path/to/normalized.mp4 \
   --detections /path/to/detections.json \

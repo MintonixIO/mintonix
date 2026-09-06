@@ -183,15 +183,28 @@ def run_debug(
         # No input_url → user path (full encode)
         path_mode = "user"
 
+    detector = None
+    try:
+        from detect import DetectConfig, VideoDetector
+
+        cfg = DetectConfig.from_env()
+        if cfg.pose_engine.is_file() and cfg.shuttle_engine.is_file():
+            detector = VideoDetector.from_config(cfg)
+        else:
+            log.info("debug: engines missing — encode-only")
+    except Exception as e:
+        log.info("debug: detector not loaded (%s) — encode-only", e)
+
     log.info(
-        "pipeline: start path_mode=%s (sample every %.2fs)",
+        "pipeline: start path_mode=%s detect=%s (sample every %.2fs)",
         path_mode,
+        detector is not None,
         sample_interval,
     )
     mon = ResourceMonitor(interval_sec=sample_interval)
     mon.start()
     try:
-        result = run_preprocess_job(body)
+        result = run_preprocess_job(body, detector=detector)
     finally:
         resources = mon.stop()
 

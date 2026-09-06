@@ -9,8 +9,10 @@ Postgres.
 Status: **implemented** — squashed init
 `supabase/migrations/20260712000000_init_match_pipeline.sql` (tables + core
 RPCs) plus additive `20260726000000_ops_set_stage.sql` /
-`20260726010000_ops_set_stage_v2.sql` (`ops_set_stage`) and
-`20260726020000_jobs_dispatch_cron.sql` (auto-drain cron); edge functions
+`20260726010000_ops_set_stage_v2.sql` (`ops_set_stage`),
+`20260726020000_jobs_dispatch_cron.sql` (auto-drain cron),
+`20260825120000_jobs_warming.sql` (warming requeue), and
+`20260903120000_jobs_complete_stage.sql` (fused `p_complete_stage`); edge functions
 `matches-ingest`, `jobs`, `cdn-access`, `ops`. Supersedes the multi-table video
 pipeline and normalized match-data migrations (deleted). Dev reshape drops
 legacy objects in the init migration; **prod** needs a planned cutover — see
@@ -348,7 +350,7 @@ via pg_net. Nothing in this path enqueues work.
 |-------------|------------------------|
 | `matches-ingest` (user confirm / intentional system ingest) | Catalog load (`load_to_supabase.py`) |
 | `ops` set-stage with `enqueue=true` | Scraper / weekly match-data alone |
-| `complete_job` next-stage / retry re-queue | Any “process all matches” cron |
+| `complete_job` warming/503/`429` retry re-queue (same stage) | Any “process all matches” cron |
 
 Migration: `20260726020000_jobs_dispatch_cron.sql`.
 
@@ -411,14 +413,21 @@ envelope; or `NULL` if nothing to do / at capacity.
 
 ### `complete_job(...)`
 
-Settle a stage from the callback:
+Settle a stage from the callback (CAS on `attempt`+`stage`):
 
 - Archive (or re-send) pgmq message.
-- On success: advance `jobs.stage` and re-queue, **or** mark job `complete` and
-  set `matches.status = 'ready'` (+ probe fields).
+- `p_next_stage` **and** `p_complete_stage` together → raise (ambiguous).
+- On success with `p_complete_stage`: set `jobs.stage = p_complete_stage`,
+  `status = complete`, **no** pgmq send; apply `p_match` (fused normalize
+  success completes at `detect` and marks the match ready).
+- On success with `p_next_stage`: advance `jobs.stage` and re-queue
+  (unused by fused normalize; still available).
+- Detect-only success: `p_status=complete`, both stage args null (already
+  at `detect`) → mark job `complete` and `matches.status = 'ready'`.
 - On failure: set `error`; retry (re-queue, `status = 'queued'`) or terminal
   `failed` and roll up `matches.status`.
 - First terminal write wins (idempotent callback).
+- Smoke: `scripts/smoke_complete_job.sql` (local Supabase).
 
 Stage-specific config is **not** passed as a jobs.params blob long-term:
 dispatcher loads `annotation.json` (presign GET) or uses match columns when
@@ -550,10 +559,12 @@ pgmq and RPCs: `EXECUTE` only for `service_role` (security definer + fixed
    POST jobs/callback with HMAC job token
 
 4. Callback → complete_job
-   success + more stages → stage = next, re-queue (pgmq.send)
-   success + done      → jobs.complete, matches.ready + probe
-   failure + retries   → jobs.queued, error set
-   failure + exhausted → jobs.failed, matches.failed
+   fused normalize success → stage=detect, status=complete, match ready
+                             (p_complete_stage; no pgmq)
+   detect-only success     → jobs.complete at detect, matches.ready + probe
+   success + p_next_stage  → stage = next, re-queue (unused on fused path)
+   failure + retries       → jobs.queued, error set
+   failure + exhausted     → jobs.failed, matches.failed
 ```
 
 Trust model unchanged: B2 keys only in Cloudflare CDN worker; workers get
@@ -565,8 +576,8 @@ presigned URLs + single-use callback token bound to `(job_id, attempt)`.
 
 | Stage | Worker | Inputs (B2 / URL) | Outputs (B2) |
 |-------|--------|-------------------|--------------|
-| `normalize` | vast video-preprocess (`/preprocess/sync`) | `source_url` or `original.*`; always `annotation.json` (corners + net poles) | `normalized.mp4`, `thumbnail.jpg`, `preprocess-log.json` |
-| `detect` | vast video-det | `normalized.mp4` (always; BWF cut already written there) | `detections.json` |
+| `normalize` | vast video-preprocess (`/preprocess/sync`, fused) | `source_url` or `original.*`; always `annotation.json` (corners + net poles) | `normalized.mp4`, `thumbnail.jpg`, `preprocess-log.json`, `detections.json` |
+| `detect` | same image (`/detect/sync`, ops retry) | `normalized.mp4` (always; BWF cut already written there) + annotation + preprocess-log | `detections.json` |
 | `analyze` | CPU/worker TBD | detections + `annotation.json` | `analysis.json` |
 
 Same chain for BWF and user; BWF simply has richer `annotation.json` / valid-frames.
@@ -644,18 +655,17 @@ Keys must be flat under `models/<filename>` (bucket is `mintonix-dev` or
 | `cancel_live` | Default true — if false and a job is `processing`, reject without mutate |
 | `purge` | Default false — stage with enqueue=false, LIST+DELETE stage+later basenames, then enqueue if requested |
 
-MVP notes: **normalize → detect** are wired in `jobs` STAGES. Dispatch always
-loads `annotation.json` (corners + net poles) and presigns multipart
-`normalized.mp4`, `thumbnail.jpg`, and `preprocess-log.json`. Path mode is
-URL-driven on the worker (YouTube → BWF court cut; B2/CDN → full encode).
-Detect always GETs `normalized.mp4`. Analyze is not wired yet (detect is
-terminal → match `ready`). Env: `VAST_PREPROCESS_ENDPOINT_NAME` /
-`VAST_DETECT_ENDPOINT_NAME` (detect falls back to preprocess;
-`VAST_NORMALIZE_ENDPOINT_NAME` / `VAST_ENDPOINT_NAME` still work). Worker
-route: `POST /preprocess/sync`. User confirm does not HEAD-check B2 before
-enqueue (empty keys fail at normalize). Worker callback wire status is
-`success`|`failed` (see [`ARCHITECTURE.md`](../ARCHITECTURE.md) § One job
-contract); DB stores `complete`|`failed`.
+MVP notes: fused **normalize+detect** is the product path in `jobs` STAGES.
+Dispatch always loads `annotation.json` (corners + net poles) and presigns
+multipart `normalized.mp4`, `thumbnail.jpg`, `preprocess-log.json`, and
+`detections.json`. Path mode is URL-driven on the worker (YouTube → BWF court
+cut; B2/CDN → full encode). One callback completes the job at `detect`
+(`p_complete_stage`) and marks the match `ready`. `/detect/sync` is ops retry
+only (same image, same `VAST_PREPROCESS_ENDPOINT_NAME`). Analyze is not wired.
+User confirm does not HEAD-check B2 before enqueue (empty keys fail at
+normalize). Worker callback wire status is `success`|`failed` (see
+[`ARCHITECTURE.md`](../ARCHITECTURE.md) § One job contract); DB stores
+`complete`|`failed`.
 
 ---
 
@@ -688,9 +698,9 @@ pipeline enqueue stay separate. Web BWF reads are service-role private
    `schema.md`). Pin test vectors if a second producer invents ids. Edge
    functions accept a client/system-supplied `id`; they do not invent a second
    hash algorithm.
-2. **Stage advance vs re-queue** — after normalize, re-enter pgmq with same
-   `job_id` and `stage = detect` (implemented in `complete_job`), or auto-dispatch
-   next stage inside callback without a new queue hop (callback path must stay short).
+2. ~~**Stage advance vs re-queue**~~ — **resolved:** fused normalize success
+   uses `p_complete_stage=detect` (no pgmq). Warming/503/`429` retry still
+   re-queues the same stage. `/detect/sync` is ops retry only.
 3. **Wire analyze** in `jobs` STAGES once its worker contract is pinned; detect
    is already wired and currently terminal.
 4. ~~**Load `annotation.json` at dispatch** for BWF `valid_frames_config`.~~ done (system matches).

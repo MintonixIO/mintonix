@@ -49,8 +49,10 @@
         "scripts/test_stage_outputs.py",
         "supabase/functions/ops/**",
         "supabase/functions/jobs/**",
-        "workers/vast/video-preprocess/server.py",
-        "workers/vast/video-det/server.py"
+        "workers/vast/video-preprocess/server.py"
+      ],
+      "notes": [
+        "One GPU worker image: video-preprocess (fused encode+detect). video-det is deleted."
       ]
     },
     {
@@ -64,17 +66,7 @@
         }
       ]
     },
-    {
-      "file": ".github/workflows/video-det.yml",
-      "name": "Video Detection Worker",
-      "jobs": [
-        {
-          "id": "image",
-          "check_names": ["image / build-test-push", "image / promote"],
-          "does": "Build/test/push detect GPU image (free_disk_space for TensorRT base)"
-        }
-      ]
-    },
+
     {
       "file": ".github/workflows/cloudflare-cdn.yml",
       "name": "Cloudflare CDN Worker",
@@ -101,7 +93,7 @@
       "file": ".github/workflows/vast-worker.yml",
       "name": "Vast worker image (reusable)",
       "top_level_check": false,
-      "does": "workflow_call only — shared by video-preprocess and video-det"
+      "does": "workflow_call only — used by video-preprocess.yml"
     }
   ],
   "gh_commands": {
@@ -122,6 +114,6 @@
     "vast runtime job success for a real match",
     "detections.json content quality",
     "B2 dual-truth for a specific match_id",
-    "setting VAST_NORMALIZE_ENDPOINT_NAME / VAST_DETECT_ENDPOINT_NAME secrets"
+    "setting VAST_PREPROCESS_ENDPOINT_NAME secret"
   ]
 }

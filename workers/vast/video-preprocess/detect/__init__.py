@@ -23,7 +23,7 @@ from .pose import to_pose_result
 from .shuttle import SHUTTLE_WIN
 from .types import FrameResult, PoseResult, ShuttleCandidate
 
-log = logging.getLogger("video-det.detect")
+log = logging.getLogger("video-preprocess.detect")
 
 __all__ = [
     "DetectConfig",

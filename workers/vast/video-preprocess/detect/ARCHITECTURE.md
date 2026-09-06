@@ -1,11 +1,14 @@
-# Video Detection Worker — Architecture
+# Video Detection — Architecture
 
 ## Overview
 
-A vast.ai serverless GPU worker for the pipeline **detect** stage. It downloads
-a normalized match video via a presigned URL, runs pose + shuttle, uploads
-`detections.json` to B2, and reports completion to the Supabase `jobs/callback`
-route.
+Detect lives in the **video-preprocess** image. The product path is fused
+`POST /preprocess/sync` (encode then pose/shuttle in one vast job). This
+document is the SSOT for `detections.json`.
+
+`POST /detect/sync` is **ops retry only** (`ops_set_stage detect`): download
+`normalized.mp4` via a presigned URL, run pose + shuttle, PUT `detections.json`,
+callback. Same TensorRT engines (TRT 10.8 / CUDA 12.8 / sm_120).
 
 Workers hold **no** B2 or Supabase service credentials — only presigned URLs
 and a single-use `callback_token` (HMAC JWT).
@@ -17,18 +20,24 @@ MVP: **no Realtime progress streaming**. Re-add later if the UI needs it.
 ## Pipeline role
 
 ```
-normalize  →  detect (this worker)  →  analyze (not wired yet)
-                  ↓
-            detections.json
+jobs/dispatch POST /preprocess/sync
+        │
+        ▼
+video-preprocess (encode + detect)
+        │  one callback
+        ▼
+complete_job p_complete_stage=detect → match ready
+
+ops retry: POST /detect/sync (same image)
 ```
 
 | | |
 |---|---|
-| **In** | `normalized.mp4` (presigned GET) |
+| **In** (retry) | `normalized.mp4` (presigned GET) |
 | **Out** | `detections.json` (presigned PUT) |
-| **Route** | `POST /detect/sync` |
-| **Dispatcher** | `supabase/functions/jobs` → `STAGES.detect` |
-| **HTTP** | **202** `{ "request_id" }` once the job thread is running (connection held until GPU + callback). **422** bad envelope, **503** models not loaded (sync, no thread). **200** `POST /benchmark/ping` for PyWorker (SDK counts only 200). Callback is the settle path. |
+| **Route** | `POST /detect/sync` (retry); fused path is `/preprocess/sync` |
+| **Dispatcher** | `supabase/functions/jobs` → `STAGES.normalize` (fused) / `STAGES.detect` (retry) |
+| **HTTP** | **202** `{ "request_id" }` once the job thread is running (connection held until GPU + callback). **422** bad envelope, **503** models not loaded, **429** GPU busy (sync, no thread). **200** `POST /benchmark/ping` for PyWorker. Callback is the settle path. |
 
 Always feeds `normalized.mp4`. For BWF, preprocess already writes the cleaned
 court cut to that key. `player_id` in poses is always `null`
@@ -43,7 +52,7 @@ court cut to that key. `player_id` in poses is always `null`
 | **jobs edge function** | Presigns URLs, mints callback token, routes to vast, settles callback |
 | **Backblaze B2** | Input video + output JSON (via CDN `/presign`) |
 | **vast.ai Worker** | GPU container: PyWorker + FastAPI model server |
-| **Supabase `jobs` / `matches`** | Stage state; advance normalize → detect |
+| **Supabase `jobs` / `matches`** | Fused settle completes at detect; retry completes in place |
 
 ---
 
@@ -104,6 +113,7 @@ Auth: `Authorization: Bearer <callback_token>` (not a body field).
 |--------|------|------|
 | **202** | Envelope valid, models loaded, job thread running | `{ "request_id" }` (connection held until `run_and_report` returns) |
 | **422** | Missing URLs or callback URL not allowed | `{ "request_id", "error" }` (sync, no thread) |
+| **429** | Another GPU job is running | `{ "request_id", "error" }` (sync, no thread) |
 | **503** | Detector not loaded | `{ "request_id", "error" }` (sync, no thread) |
 
 A job that later fails still ends the stream as **202** — settlement is the callback (`success` / `failed`), not the HTTP status the dispatcher already left.
@@ -249,20 +259,18 @@ after load. Host buffers are sized from `engine.get_tensor_dtype`.
 
 ## Runtime layout (vast.ai)
 
-Matches the proven **normalize** pattern:
-
 | Piece | Role |
 |---|---|
 | `entrypoint.sh` | Start `server.py`, `exec python -m worker` (no `/health` wait, no `sign_cert`; `USE_SSL=false` required — `true` exits 1) |
 | `/opt/worker-env` | Prebuilt venv (no uv/pip at boot) |
 | `worker.py` | PyWorker: load reporting, proxy to model server |
-| `server.py` | FastAPI `/detect/sync` (202) + `/health` + `/benchmark/ping` (200) |
+| `server.py` | FastAPI `/preprocess/sync` + `/detect/sync` (202) + `/health` + `/benchmark/ping` (200) |
 | `io_util.py` | stream download / upload / callback (`file://` + HTTP) |
 | `detect/` | VideoDetector, shuttle, types, Engine output |
 | `trt_io.py` | Shared CUDA context + TRT binding dtype helpers |
 | `pose/` | PoseEngine + TRT runner + export helpers |
 | `tools/` | visualize + non-product `ffmpeg_pose_bench/` |
-| `/app/sample.mp4` | Local benchmark input (`BENCHMARK_INPUT_URL`) |
+| `/app/sample.mp4` | Optional local `file://` debug (`ALLOW_FILE_URLS=1`) |
 
 | Constraint | Value |
 |---|---|
@@ -277,26 +285,17 @@ Matches the proven **normalize** pattern:
 ## File structure
 
 ```
-workers/vast/video-det/
-├── server.py           # FastAPI job boundary (lifespan startup)
-├── worker.py           # PyWorker config
-├── io_util.py          # file:// + HTTP transport (stream GET/PUT)
-├── trt_io.py           # CUDA context push/pop + FLOAT/HALF bindings
-├── entrypoint.sh          # preprocess-style: baked venv + health gate
+workers/vast/video-preprocess/
+├── server.py           # /preprocess/sync + /detect/sync
+├── detect_job.py       # detect-only retry body
+├── job.py              # fused encode + detect
 ├── detect/             # VideoDetector, shuttle, types, Engine output
-│   ├── segments.py     # islands from frame_shifts → segments[] + rallies[]
-│   ├── scoreboard.py   # annotation crop + lightweight digit OCR
-│   ├── output.py       # write detections.json (meta + segments + rallies + frames)
-│   └── tracknet.py     # TrackNetV5 topology (export tools only; not product)
+│   ├── ARCHITECTURE.md # this file (detections.json SSOT)
+│   ├── segments.py
+│   ├── scoreboard.py
+│   └── output.py
 ├── pose/               # PoseEngine + TRT runner + export
-├── tools/
-│   ├── visualize_detections.py
-│   └── ffmpeg_pose_bench/   # non-product multi-ffmpeg research
-├── sample.mp4          # generated in Docker image
-├── Dockerfile
-├── requirements.txt
-├── test_*.py           # contract / unit suite (CPU-safe)
-└── ARCHITECTURE.md
+└── …
 ```
 
 ---
@@ -317,8 +316,9 @@ workers/vast/video-det/
 
 - TensorRT engines are GPU-arch + TRT-version specific; build via
   `pose/export_trt.py` / `tools/export_tracknet_trt.py` on a host matching the
-  product image (TRT 10 / CUDA 12.4 — NGC `tensorrt:24.04-py3` builder,
-  CUDA runtime final stage) and target GPU arch.
+  product image (TRT 10.8 / CUDA 12.8 — NGC `tensorrt:25.01-py3` builder,
+  `nvidia/cuda:12.8.0-runtime-ubuntu24.04` final stage, sm_120 engines)
+  and target GPU arch.
 - **Model cache (baked into image):** CI mints CDN delivery URLs via Supabase
   `ops/model-urls` using GitHub Environment naming
   (`vars.SUPABASE_PROJECT_REF` + `secrets.SUPABASE_SERVICE_KEY`; edge
@@ -335,18 +335,15 @@ workers/vast/video-det/
   `PARALLEL_DETECT` defaults to **0** (one GPU). Startup **fails** if
   engines are missing or fail to load unless `ALLOW_MISSING_MODELS=1`
   (CI unit tests). `/health` returns **503** when models are not loaded.
-- `ALLOW_FILE_URLS=1` required for `file://` benchmark I/O (set in Dockerfile for
-  `sample.mp4`). **Reads** allowlisted under `/app`, `/tmp`, or
-  `tempfile.gettempdir()`. **Writes** allowlisted under `/tmp` /
-  `tempfile.gettempdir()` only (not `/app`). Production jobs use https
-  presigned URLs. Downloads capped by `MAX_DOWNLOAD_BYTES`. HTTP clients use
-  `follow_redirects=False`; **3xx is a hard error**.
+- Image default `ALLOW_FILE_URLS=0`. Pass `-e ALLOW_FILE_URLS=1` for local
+  `file://`. **Reads** allowlisted under `/app`, `/tmp`, `/data`, `/out`.
+  **Writes** under `/tmp` / `/out` / tempfile only (not `/app`). Production
+  jobs use https presigned URLs. Downloads capped by `MAX_DOWNLOAD_BYTES`.
+  HTTP clients use `follow_redirects=False`; **3xx is a hard error**.
 - CI smoke: fetch models via CDN delivery → bake → assert files present →
   `import server, worker, detect` + `test_*.py` with CUDA stub and
   `ALLOW_MISSING_MODELS=1` (tests that exercise missing-model 503).
-- Env for jobs function: `VAST_DETECT_ENDPOINT_NAME` (optional fallback to
-  `VAST_PREPROCESS_ENDPOINT_NAME`, then legacy `VAST_NORMALIZE_ENDPOINT_NAME` /
-  `VAST_ENDPOINT_NAME`).
+- Env for jobs function: `VAST_PREPROCESS_ENDPOINT_NAME` only (fused + retry).
 - Upload streams from disk (no full-file `read_bytes` into RAM). Exception
   text for callbacks/API is redacted (presigned query strings stripped).
 

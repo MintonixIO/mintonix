@@ -20,6 +20,14 @@ log = logging.getLogger("video-preprocess.job")
 PREPROCESS_LOG_VERSION = 1
 
 
+class JobFailed(RuntimeError):
+    """Job failed after some work; extra fields go on the failed callback."""
+
+    def __init__(self, message: str, extra: dict | None = None):
+        super().__init__(message)
+        self.extra = extra or {}
+
+
 def _require_str(body: dict, key: str) -> str:
     val = body.get(key)
     if not isinstance(val, str) or not val:
@@ -49,7 +57,7 @@ def _write_json(path: str, payload: dict) -> int:
 
 
 def _local_output_dir(body: dict) -> str | None:
-    """Optional abs dir for debug/benchmark (no file:// URLs)."""
+    """Optional abs dir for local debug (no file:// URLs)."""
     d = body.get("local_output_dir")
     if d is None or d == "":
         return None
@@ -69,8 +77,8 @@ def _local_source(body: dict) -> str | None:
     return p
 
 
-def run_preprocess_job(body: dict) -> dict:
-    """Returns delivery metadata. Uploads normalized.mp4 + thumb + preprocess-log."""
+def run_preprocess_job(body: dict, detector=None) -> dict:
+    """Download → encode → optional local detect. Uploads stage artifacts."""
     t0 = time.time()
     timings: dict[str, float] = {}
 
@@ -92,6 +100,11 @@ def run_preprocess_job(body: dict) -> dict:
         raise RuntimeError(
             "local_source/local_output_dir cannot be used with callback_url"
         )
+    if not (
+        (isinstance(raw_local_src, str) and raw_local_src)
+        or (isinstance(raw_local_out, str) and raw_local_out)
+    ) and not body.get("detections_upload_url"):
+        raise RuntimeError("detections_upload_url is required")
 
     local_src = _local_source(body)
     local_out = _local_output_dir(body)
@@ -219,7 +232,8 @@ def run_preprocess_job(body: dict) -> dict:
                 "audio_kept": bool(out.get("audio_codec")),
             }
 
-        # --- emit: video + thumb first, then write log once, then log emit
+        # Video + thumb first so a later detect failure still leaves B2
+        # artifacts for ops set-stage detect.
         t = time.time()
         emit(
             dst, "normalized.mp4",
@@ -240,39 +254,38 @@ def run_preprocess_job(body: dict) -> dict:
         )
         mark("thumbnail_sec", t)
 
-        # Finalize process timings before writing the log (log upload timed after).
-        timings["total_sec"] = round(time.time() - t0, 2)
-
         source_fields = _probe_fields(info)
         delivery_fields = _probe_fields(out)
-        # delivery probe has no is_vfr meaning; drop noise
         delivery_fields.pop("is_vfr", None)
 
-        preprocess_log = {
-            "version": PREPROCESS_LOG_VERSION,
-            "request_id": body.get("request_id"),
-            "path": path_mode,
-            "frame_shifts": frame_shifts,
-            "timings": dict(timings),
-            "worker": worker,
-            "annotation": {
-                "court_corners": vf_cfg["court_corners"],
-                "net_poles": vf_cfg["net_poles"],
-            },
-            "source": source_fields,
-            "output": {
-                **delivery_fields,
-                "basename": "normalized.mp4",
-                "encode": encode_meta,
-                "thumbnail": thumb_info,
-            },
-        }
-        if bwf_summary is not None:
-            preprocess_log["bwf"] = bwf_summary
+        def build_preprocess_log() -> dict:
+            payload = {
+                "version": PREPROCESS_LOG_VERSION,
+                "request_id": body.get("request_id"),
+                "path": path_mode,
+                "frame_shifts": frame_shifts,
+                "timings": dict(timings),
+                "worker": worker,
+                "annotation": {
+                    "court_corners": vf_cfg["court_corners"],
+                    "net_poles": vf_cfg["net_poles"],
+                },
+                "source": source_fields,
+                "output": {
+                    **delivery_fields,
+                    "basename": "normalized.mp4",
+                    "encode": encode_meta,
+                    "thumbnail": thumb_info,
+                },
+            }
+            if bwf_summary is not None:
+                payload["bwf"] = bwf_summary
+            return payload
 
+        timings["total_sec"] = round(time.time() - t0, 2)
+        preprocess_log = build_preprocess_log()
         log_path = os.path.join(tmp, "preprocess-log.json")
         log_size = _write_json(log_path, preprocess_log)
-
         t = time.time()
         emit(
             log_path, "preprocess-log.json",
@@ -281,8 +294,70 @@ def run_preprocess_job(body: dict) -> dict:
         )
         mark("upload_preprocess_log_sec", t)
 
-        # Result timings include log upload; B2 log intentionally omits that
-        # self-timing so the artifact is a single consistent write.
+        det_result: dict | None = None
+        detect_error: BaseException | None = None
+        det_path: str | None = None
+        det_url = body.get("detections_upload_url")
+        want_detect = bool(det_url) or (bool(local_out) and detector is not None)
+        try:
+            if want_detect:
+                if detector is None:
+                    raise RuntimeError("models not loaded")
+                if not local_out:
+                    if not isinstance(det_url, str) or not det_url:
+                        raise RuntimeError("detections_upload_url is required")
+                    io_util.reject_file_url(det_url, "detections_upload_url")
+                t = time.time()
+                import detect_job
+                det_path = os.path.join(tmp, "detections.json")
+                try:
+                    det_result = detect_job.run_detect_on_local_video(
+                        detector,
+                        dst,
+                        det_path,
+                        request_id=body.get("request_id"),
+                        annotation=annotation,
+                        preprocess_log=preprocess_log,
+                    )
+                    mark("gpu_detect_sec", t)
+                    timings["total_sec"] = round(time.time() - t0, 2)
+                    preprocess_log = build_preprocess_log()
+                    log_size = _write_json(log_path, preprocess_log)
+                    emit(
+                        log_path, "preprocess-log.json",
+                        (lambda p: io_util.upload(p, preprocess_log_upload_url))
+                        if preprocess_log_upload_url is not None else None,
+                    )
+                except Exception as e:
+                    detect_error = e
+                    log.error(
+                        "job(detect failed): request_id=%s error=%s",
+                        body.get("request_id"),
+                        io_util.safe_error_message(e),
+                    )
+            if detect_error is None and det_result is not None and det_path is not None:
+                emit(
+                    det_path,
+                    "detections.json",
+                    (
+                        (lambda p: io_util.upload_file(
+                            p, det_url, content_type="application/json",
+                        ))
+                        if isinstance(det_url, str) and det_url else None
+                    ),
+                )
+        finally:
+            if detect_error is not None:
+                raise JobFailed(
+                    io_util.safe_error_message(detect_error),
+                    extra={
+                        "duration": out.get("duration"),
+                        "width": out.get("width"),
+                        "height": out.get("height"),
+                        "fps": out.get("fps"),
+                    },
+                ) from detect_error
+
         timings["total_sec"] = round(time.time() - t0, 2)
 
         result = {
@@ -306,6 +381,8 @@ def run_preprocess_job(body: dict) -> dict:
                 "file_size": log_size,
             },
         }
+        if det_result is not None:
+            result["frame_count"] = det_result["frame_count"]
         # Thin settle payload — full frame_shifts live only in preprocess-log.
         if bwf_summary is not None:
             result["bwf"] = {

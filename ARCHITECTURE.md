@@ -19,10 +19,10 @@ Status legend: ✅ built · 🚧 partially built · 📐 designed, not built.
   User upload ──▶│  cdn-access presigned PUT ✅             │──▶ B2  users/<uid>/…
                  └──────────────────┬──────────────────────┘
                                     ▼  enqueue
-                 ┌─────────────── PIPELINE (job queue 📐) ──┐
-                 │ 1. normalize   (vast worker ✅)          │  BWF: + valid-frame cut,
-                 │ 2. detect      (vast worker 🚧)          │       score OCR timeline
-                 │ 3. analyze     (worker 📐)               │  3D shuttle/player, metrics
+                 ┌─────────────── PIPELINE (job queue ✅) ──┐
+                 │ 1. normalize+detect (one vast worker ✅) │  BWF: + valid-frame cut,
+                 │ 2. detect retry     (/detect/sync)       │       score OCR in detections
+                 │ 3. analyze          (worker 📐)          │  3D shuttle/player, metrics
                  └──────────────────┬──────────────────────┘
                                     ▼  assets in B2, state in Postgres
                  ┌─────────────── DELIVERY ─────────────────┐
@@ -152,11 +152,12 @@ the CDN cache.
 
 A Postgres-backed queue in Supabase (**pgmq via Supabase Queues**) plus a
 `jobs` state table. **Enqueue is intentional only** (upload confirm /
-`matches-ingest`, ops set-stage with `enqueue=true`, stage-advance/`retry`
-in `complete_job`). Catalog scrape never enqueues GPU work. A dispatcher edge
+`matches-ingest`, ops set-stage with `enqueue=true`, warming/503/`429` retry
+re-queue in `complete_job`). Fused normalize success does **not** enqueue
+(`p_complete_stage=detect`, no pgmq). Catalog scrape never enqueues GPU work. A dispatcher edge
 function (**pg_cron every minute** → `invoke_jobs_dispatch` → pg_net POST
-`/jobs/dispatch`) pops messages, presigns URLs, and POSTs to the appropriate
-vast serverless endpoint.
+`/jobs/dispatch`) pops messages, presigns URLs, and POSTs to the sole GPU
+vast serverless endpoint (`VAST_PREPROCESS_ENDPOINT_NAME`).
 
 Why a queue *in front of* vast's own autoscaler queue: priority (user uploads
 preempt backlog), retries with visibility timeout, rate/cost caps on GPU
@@ -188,16 +189,18 @@ PyWorker may wrap as `{ input: env }`.
   "output_upload": { "part_urls": […], "complete_url": "…", "abort_url": "…", "part_size": 67108864 },
   "thumbnail_upload_url": "<presigned PUT>",
   "preprocess_log_upload_url": "<presigned PUT preprocess-log.json>",
+  "detections_upload_url": "<presigned PUT detections.json>",
   "annotation": { /* court.corners[4] + court.net_poles[2] required */ },
   "callback_url": "https://<ref>.supabase.co/functions/v1/jobs/callback",
   "callback_token": "<HS256 JWT: job_id, match_id, stage, attempt; aud=jobs-callback; 12h>"
 }
-// Worker route: POST /preprocess/sync (video-preprocess)
+// Worker route: POST /preprocess/sync (video-preprocess, fused encode+detect)
 // Path mode: YouTube → BWF court cut; B2/CDN → full encode
 // file:// not supported; frame_shifts live only in preprocess-log.json
+// Success callback: complete_job p_complete_stage=detect (no detect requeue)
 ```
 
-#### Dispatcher → worker (detect)
+#### Dispatcher → worker (detect retry — ops `set-stage detect` only)
 
 ```jsonc
 {
@@ -209,14 +212,17 @@ PyWorker may wrap as `{ input: env }`.
   "callback_url": "https://<ref>.supabase.co/functions/v1/jobs/callback",
   "callback_token": "<HS256 JWT>"
 }
-// Worker route: POST /detect/sync (video-det)
+// Worker route: POST /detect/sync (same video-preprocess image)
 // detections.json: fps/width/height + segments[] + rallies[] + frames[]
 ```
 
 #### Worker → `jobs/callback` (Bearer `callback_token`)
 
 Wire status is **`success` | `failed`**. The jobs function maps `success` → DB
-`jobs.status = complete` (and advances/requeues); `failed` → DB `failed`.
+`jobs.status = complete`. Fused normalize success sets `p_complete_stage=detect`
+(job complete at detect, match `ready`, **no** pgmq). Detect-only retry
+completes in place. `p_next_stage` requeue remains in the RPC but is unused
+on the product path. `failed` → DB `failed`.
 
 **Success** (optional stage probe fields allowed on success):
 
@@ -270,18 +276,18 @@ Regression *to* stage S deletes S outputs **and** every later stage's outputs.
   jti store.
 - Progress Realtime is optional UX; **MVP detect/normalize omit mid-job
   streaming** and report only via `jobs/callback`.
-- The jobs function's `/callback` route settles via `complete_job`, then
-  **advances or requeues** (normalize → detect; analyze not wired). Dispatch
-  and callback live in ONE function (`jobs`) because they share what must never
-  drift: the stage routing table, the token mint/verify pair, the queue
-  semantics.
+- The jobs function's `/callback` route settles via `complete_job`. Fused
+  normalize success **completes at detect** (`p_complete_stage`); `/detect/sync`
+  is ops retry only. Analyze is not wired. Dispatch and callback live in ONE
+  function (`jobs`) because they share what must never drift: the stage routing
+  table, the token mint/verify pair, the queue semantics.
 
 ### Stages
 
 | Stage | Worker | Status | In | Out |
 |---|---|---|---|---|
-| `normalize` | `workers/vast/video-preprocess` (`POST /preprocess/sync`) | ✅ | original / YouTube URL (worker yt-dlp ✅); always annotation.json (corners + net poles for later stages). Path: YouTube→BWF court cut, B2/CDN→full encode; `file://` not supported | normalized.mp4, thumbnail.jpg, preprocess-log.json |
-| `detect` | `workers/vast/video-det` | 🚧 worker + `STAGES.detect` wired; Engine envelope live | normalized.mp4 + annotation.json + preprocess-log.json | detections.json (`fps`/`width`/`height`, `segments[]` islands + scoreboard OCR, `rallies[]` same-score islands with at most one island between them, `frames[]` pose + TrackNetV5 **top-K shuttle** UV [0,1]; `player_id` always null). TRT-only pose + shuttle. `server.py` + `detect/` + `pose/` |
+| `normalize` | `workers/vast/video-preprocess` (`POST /preprocess/sync`, fused) | ✅ | original / YouTube URL (worker yt-dlp ✅); always annotation.json (corners + net poles). Path: YouTube→BWF court cut, B2/CDN→full encode; `file://` not supported in production | normalized.mp4, thumbnail.jpg, preprocess-log.json, detections.json. Success callback completes the job at `detect` (`p_complete_stage`) |
+| `detect` | same image (`POST /detect/sync`) | ✅ ops retry | normalized.mp4 + annotation.json + preprocess-log.json | detections.json (`fps`/`width`/`height`, `segments[]` islands + scoreboard OCR, `rallies[]` same-score islands with at most one island between them, `frames[]` pose + TrackNetV5 **top-K shuttle** UV [0,1]; `player_id` always null). TRT-only pose + shuttle |
 | `analyze` | `workers/…/analysis` | 📐 | detections.json + annotation.json | analysis.json: 3D shuttle trajectory (physics fit), player ground-plane positions (homography), metrics (TBD) |
 
 `analyze` is CPU-dominant (geometry + curve fitting, no NN inference) — it can
@@ -390,8 +396,7 @@ mintonix/
 │   ├── cloudflare/cdn/        ✅ B2 delivery + /presign (README + DATAFLOWS)
 │   ├── github/match-data/     ✅ weekly scrape → Supabase (README + schema.md)
 │   └── vast/
-│       ├── video-preprocess/     ✅ README (normalize + BWF court detect)
-│       ├── video-det/            🚧 README + ARCHITECTURE (detect)
+│       ├── video-preprocess/     ✅ fused encode+detect (detect/ARCHITECTURE.md)
 │       └── analysis/             📐 3D + metrics
 └── .github/workflows/
 ```
@@ -399,7 +404,8 @@ mintonix/
 Pipeline RPCs (`ingest_match`, `dispatch_next_job`, `complete_job`,
 `ops_set_stage`) live in the match-pipeline migrations: edge functions decide
 policy, RPCs make the writes atomic (a match that needs processing never
-exists without its queue message; stage advance re-queues the same job row).
+exists without its queue message; fused settle completes in place; retry
+re-queues the same job row).
 Ops is service-token only (same `PIPELINE_SERVICE_TOKEN` as ingest/dispatch)
 for operator stage control — see supabase/README.md.
 
@@ -445,10 +451,9 @@ in `wrangler.toml`).
 |---|---|---|---|---|
 | `match-data.yml` | `workers/github/match-data/**` | scrape + apply to dev DB | apply to prod (+ weekly cron) | ✅ |
 | `vast-worker.yml` | (reusable, `workflow_call`) | build + test + push SHA-tagged image to GHCR | promote the tested digest | ✅ |
-| `video-preprocess.yml` | `workers/vast/video-preprocess/**` | → `vast-worker.yml` (unit/contract in image; encode + BWF NVDEC are GPU-only and run on vast — a bad host fails the job and the queue retries) | 〃 | ✅ |
-| `video-det.yml` | `workers/vast/video-det/**` | → `vast-worker.yml` (CPU-safe tests; TensorRT engine build stays a documented manual step) | 〃 | ✅ |
+| `video-preprocess.yml` | `workers/vast/video-preprocess/**` | → `vast-worker.yml` (unit/contract in image; TRT engines baked via CDN; encode + detect are GPU-only on vast) | 〃 | ✅ |
 | `cloudflare-cdn.yml` | `workers/cloudflare/cdn/**` | tests + `wrangler deploy --env dev` | `wrangler deploy --env prod` | ✅ |
-| `supabase.yml` | `supabase/**`, `packages/shared/**` | `db push` → `functions deploy` to dev project | same, to prod | ✅ |
+| `supabase.yml` | `supabase/**`, `contracts/**` | `db push` → `functions deploy` to dev project | same, to prod | ✅ |
 
 ### Conventions (from `match-data.yml`, applied repo-wide)
 

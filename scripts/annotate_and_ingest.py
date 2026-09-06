@@ -2,7 +2,7 @@
 """Annotate a video, enqueue pipeline work, and (by default) run as a DEV test suite.
 
 Simulates the website flow (ARCHITECTURE.md §2b/§2c), then **monitors Supabase + B2**
-until normalize → detect complete (or until failure / timeout).
+until fused preprocess completes at detect (or until failure / timeout).
 
 Two source modes
 ────────────────
@@ -1302,8 +1302,8 @@ def evaluate_success(
         ))
 
     if until == "normalize":
-        # Normalize settle: artifact present AND job left normalize stage
-        # (callback advances to detect) OR match is processing/ready.
+        # Fused settle: artifact present AND job complete at detect
+        # (or still processing/ready while encode artifacts land).
         advanced = bool(
             job
             and (

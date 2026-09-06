@@ -5,22 +5,42 @@ from __future__ import annotations
 import logging
 import os
 import time
-
-import requests
+from urllib.parse import urlparse
 
 from io_util import retriable_http, sanitize_error
+
+
+def _requests():
+    import requests
+    return requests
 
 log = logging.getLogger("video-preprocess.callback")
 
 
+_CALLBACK_PATH_SUFFIX = "/functions/v1/jobs/callback"
+
+
 def callback_allowed(url: str | None) -> bool:
-    """Fail-closed: callback_url must start with CALLBACK_URL_PREFIX."""
+    """Fail-closed: prefix + jobs/callback path. Empty URL is allowed (local)."""
     if not url:
         return True
-    prefix = (os.environ.get("CALLBACK_URL_PREFIX") or "").rstrip("/")
+    if os.environ.get("ALLOW_UNSAFE_CALLBACK", "0").lower() in (
+        "1",
+        "true",
+        "yes",
+    ):
+        return True
+    prefix = (
+        os.environ.get("CALLBACK_URL_PREFIX")
+        or os.environ.get("SUPABASE_URL")
+        or ""
+    ).rstrip("/")
     if not prefix:
         return False
-    return url.startswith(prefix + "/") or url == prefix
+    path = urlparse(url).path or ""
+    if not path.endswith(_CALLBACK_PATH_SUFFIX):
+        return False
+    return url.startswith(prefix + "/") or url.startswith(prefix + "?") or url == prefix
 
 
 def post_callback(url: str, token: str | None, payload: dict) -> None:
@@ -36,7 +56,7 @@ def post_callback(url: str, token: str | None, payload: dict) -> None:
     last_err: Exception | None = None
     for i in range(3):
         try:
-            r = requests.post(url, json=payload, headers=headers, timeout=30)
+            r = _requests().post(url, json=payload, headers=headers, timeout=30)
             if 200 <= r.status_code < 300:
                 log.info("callback: HTTP %d", r.status_code)
                 return
@@ -46,7 +66,7 @@ def post_callback(url: str, token: str | None, payload: dict) -> None:
                 )
             last_err = RuntimeError(f"callback HTTP {r.status_code}")
             log.warning("callback retry %d: HTTP %d", i + 1, r.status_code)
-        except requests.RequestException as e:
+        except _requests().RequestException as e:
             last_err = e
             log.warning("callback retry %d: %s", i + 1, sanitize_error(e))
         time.sleep(2 ** i)

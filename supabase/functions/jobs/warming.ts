@@ -43,14 +43,15 @@ export class WorkerHttpError extends Error {
     super(`vast worker ${route} failed: ${status} ${body}`);
     this.name = "WorkerHttpError";
     this.status = status;
-    // 503 (models not loaded) is retryable and burns an attempt — not warming.
+    // 429 (gpu busy) retries without burning an attempt (warming restore).
+    // 503 (models not loaded) is retryable and burns an attempt.
     // Other 4xx are terminal. Other 5xx stay retryable.
-    this.retry = status === 503 || status >= 500;
+    this.retry = status === 429 || status === 503 || status >= 500;
   }
 }
 
 export function isWorkerStarted(status: number): boolean {
-  return status === 202 || status === 200;
+  return status === 202;
 }
 
 /**
@@ -58,7 +59,8 @@ export function isWorkerStarted(status: number): boolean {
  *
  * Worker-reported failures are terminal. After HTTP 202 the GPU already
  * ran; TRT / clamp / empty-segments fail the same way on requeue.
- * Warming and 503 retries stay on the invoke path (`invokeFailurePolicy`).
+ * Warming, 429 (gpu busy), and 503 retries stay on the invoke path
+ * (`invokeFailurePolicy`).
  */
 export function callbackRetry(
   _ok: boolean,
@@ -83,6 +85,13 @@ export function invokeFailurePolicy(
     };
   }
   if (err instanceof WorkerHttpError) {
+    if (err.status === 429) {
+      return {
+        retry: true,
+        warming: true,
+        error: `invoke: ${err}`,
+      };
+    }
     return {
       retry: err.retry && attempt < maxAttempts,
       warming: false,

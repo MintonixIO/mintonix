@@ -1,6 +1,7 @@
 /**
- * Vast /route/ + worker invoke. Resolves once /detect/sync (or preprocess)
- * returns 202/200 headers. Does not drain a held response body.
+ * Vast /route/ + worker invoke. Resolves once /preprocess/sync or
+ * /detect/sync returns 202 headers. Does not drain a held response body.
+ * Both GPU routes use VAST_PREPROCESS_ENDPOINT_NAME.
  */
 import {
   isWorkerStarted,
@@ -77,50 +78,14 @@ async function resolveEndpointKey(
   return match.api_key;
 }
 
-/**
- * Resolve the vast serverless endpoint name for a stage.
- *
- * Prefer the stage-specific env (e.g. VAST_DETECT_ENDPOINT_NAME), then
- * VAST_PREPROCESS_ENDPOINT_NAME, then deprecated
- * VAST_NORMALIZE_ENDPOINT_NAME / VAST_ENDPOINT_NAME.
- */
-export function resolveVastEndpointName(
-  endpointEnv: string | undefined,
-  env: InvokeEnv,
-): {
+/** Sole vast serverless GPU endpoint. No detect/normalize/legacy aliases. */
+export function resolveVastEndpointName(env: InvokeEnv): {
   name: string | undefined;
   usedEnv: string;
 } {
-  if (endpointEnv) {
-    const staged = env.get(endpointEnv);
-    if (staged) return { name: staged, usedEnv: endpointEnv };
-  }
-
-  const preprocess = env.get("VAST_PREPROCESS_ENDPOINT_NAME");
-  if (preprocess) {
-    return { name: preprocess, usedEnv: "VAST_PREPROCESS_ENDPOINT_NAME" };
-  }
-
-  const normalize = env.get("VAST_NORMALIZE_ENDPOINT_NAME");
-  if (normalize) {
-    console.warn(
-      "VAST_NORMALIZE_ENDPOINT_NAME is deprecated; set VAST_PREPROCESS_ENDPOINT_NAME",
-    );
-    return { name: normalize, usedEnv: "VAST_NORMALIZE_ENDPOINT_NAME" };
-  }
-
-  const legacy = env.get("VAST_ENDPOINT_NAME");
-  if (legacy) {
-    console.warn(
-      "VAST_ENDPOINT_NAME is deprecated; set VAST_PREPROCESS_ENDPOINT_NAME " +
-        "(and VAST_DETECT_ENDPOINT_NAME for detect)",
-    );
-    return { name: legacy, usedEnv: "VAST_ENDPOINT_NAME" };
-  }
-
   return {
-    name: undefined,
-    usedEnv: endpointEnv ?? "VAST_PREPROCESS_ENDPOINT_NAME",
+    name: env.get("VAST_PREPROCESS_ENDPOINT_NAME"),
+    usedEnv: "VAST_PREPROCESS_ENDPOINT_NAME",
   };
 }
 
@@ -128,7 +93,6 @@ export async function invokeVast(
   route: string,
   envelope: Record<string, unknown>,
   jobId: string,
-  endpointEnv?: string,
   opts: InvokeVastOpts = {},
 ): Promise<void> {
   const env = opts.env ?? defaultEnv;
@@ -138,7 +102,7 @@ export async function invokeVast(
     ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const doFetch = opts.fetch ?? (globalThis.fetch as InvokeFetch);
 
-  const { name: endpoint, usedEnv } = resolveVastEndpointName(endpointEnv, env);
+  const { name: endpoint, usedEnv } = resolveVastEndpointName(env);
   const accountKey = env.get("VAST_API_KEY");
   if (!endpoint || !accountKey) {
     throw new Error(`${usedEnv} / VAST_API_KEY not configured`);

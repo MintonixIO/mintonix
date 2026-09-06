@@ -1,12 +1,13 @@
-"""Vast PyWorker: proxy /preprocess/sync → local model server."""
-
-from __future__ import annotations
+"""Vast.ai PyWorker for video-preprocess (normalize + detect)."""
 
 import os
-import uuid
 
 import aiohttp.web
-from vastai import (
+
+# Import the serverless classes from the submodule. `from vastai import
+# BenchmarkConfig` can bind None: vastai/__init__.py swallows any ImportError
+# in that try-block (missing distutils, aiohttp, …) and sets the names to None.
+from vastai.serverless.server.worker import (
     BenchmarkConfig,
     HandlerConfig,
     LogActionConfig,
@@ -14,10 +15,13 @@ from vastai import (
     WorkerConfig,
 )
 
+# SDK AppRunner(handler_cancellation=True)
+# turns a dispatcher disconnect into a cancel, which zeroes reported load and
+# lets the autoscaler stop the instance mid-job. Jobs report via callback; keep
+# the request (and load accounting) alive until the job finishes.
+
 
 class _DetachedAppRunner(aiohttp.web.AppRunner):
-    """Do not cancel long jobs when the client disconnects."""
-
     def __init__(self, app, **kwargs):
         kwargs["handler_cancellation"] = False
         super().__init__(app, **kwargs)
@@ -25,53 +29,74 @@ class _DetachedAppRunner(aiohttp.web.AppRunner):
 
 aiohttp.web.AppRunner = _DetachedAppRunner
 
-PORT = int(os.environ.get("MODEL_SERVER_PORT", "18000"))
-LOG = os.environ.get("MODEL_LOG", "/var/log/portal/video-preprocess.log")
+MODEL_SERVER_URL = os.environ.get("MODEL_SERVER_URL", "http://127.0.0.1")
+MODEL_SERVER_PORT = int(os.environ.get("MODEL_SERVER_PORT", "18000"))
+MODEL_LOG_FILE = os.environ.get("MODEL_LOG", "/var/log/portal/video-preprocess.log")
+MODEL_HEALTHCHECK_ENDPOINT = "/health"
+
+# Gate on TRT load, not uvicorn's "Application startup complete." (that can
+# fire before engines are ready). PyWorker then benchmarks — see ping below.
+MODEL_LOAD_LOG_MSG = ["VideoDetector loaded"]
+MODEL_ERROR_LOG_MSGS = [
+    "Traceback (most recent call last):",
+    "ERROR:    Application startup failed.",
+]
+
+# One video per GPU (pose TRT + TrackNet share the device).
+ALLOW_PARALLEL = False
+DETECT_WORKLOAD = 10000.0
 
 
 def request_parser(request: dict) -> dict:
-    return request["input"] if request.get("input") is not None else request
+    """Unwrap the {"input": {...}} envelope the autoscaler delivers."""
+    if request.get("input") is not None:
+        return request["input"]
+    return request
 
 
-def benchmark_generator() -> dict:
-    # Local paths only (no file://, no callback). Sample at /app/sample.mp4.
-    # Path mode is user when input_url is omitted.
-    out = f"/tmp/benchmark_{uuid.uuid4().hex}"
-    os.makedirs(out, exist_ok=True)
-    sample = os.environ.get("BENCHMARK_LOCAL_SOURCE", "/app/sample.mp4")
-    return {
-        "request_id": "benchmark",
-        "local_source": sample,
-        "local_output_dir": out,
-        "annotation": {
-            "court": {
-                "corners": [[0, 0], [100, 0], [100, 100], [0, 100]],
-                "net_poles": [[40, 40], [60, 40]],
-            },
-        },
-    }
+def ping_benchmark_generator() -> dict:
+    # PyWorker treats only HTTP 200 as a successful benchmark. GPU routes
+    # return 202. Ping is 200 and does not start GPU work.
+    return {"ping": True}
 
 
 worker_config = WorkerConfig(
-    model_server_url="http://127.0.0.1",
-    model_server_port=PORT,
-    model_log_file=LOG,
-    model_healthcheck_url="/health",
+    model_server_url=MODEL_SERVER_URL,
+    model_server_port=MODEL_SERVER_PORT,
+    model_log_file=MODEL_LOG_FILE,
+    model_healthcheck_url=MODEL_HEALTHCHECK_ENDPOINT,
     handlers=[
         HandlerConfig(
             route="/preprocess/sync",
-            workload_calculator=lambda _: 100.0,
-            allow_parallel_requests=False,
+            workload_calculator=lambda _data: DETECT_WORKLOAD,
+            allow_parallel_requests=ALLOW_PARALLEL,
             request_parser=request_parser,
             max_queue_time=900.0,
+        ),
+        HandlerConfig(
+            route="/detect/sync",
+            workload_calculator=lambda _data: DETECT_WORKLOAD,
+            allow_parallel_requests=ALLOW_PARALLEL,
+            request_parser=request_parser,
+            max_queue_time=900.0,
+        ),
+        HandlerConfig(
+            route="/benchmark/ping",
+            workload_calculator=lambda _data: 1.0,
+            allow_parallel_requests=True,
+            request_parser=request_parser,
+            max_queue_time=0.0,
             benchmark_config=BenchmarkConfig(
-                generator=benchmark_generator, concurrency=1, runs=1,
+                generator=ping_benchmark_generator,
+                concurrency=1,
+                runs=1,
+                do_warmup=False,
             ),
         ),
     ],
     log_action_config=LogActionConfig(
-        on_load=["Application startup complete."],
-        on_error=["Traceback (most recent call last):"],
+        on_load=MODEL_LOAD_LOG_MSG,
+        on_error=MODEL_ERROR_LOG_MSGS,
     ),
 )
 

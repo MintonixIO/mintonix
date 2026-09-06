@@ -1,4 +1,4 @@
-"""Pose engine package for the video-det product worker.
+"""Pose engine package for the video-preprocess product worker.
 
 Owns YOLO26x-pose TensorRT inference, letterbox geometry, CUDA-graph runner,
 and engine export helpers. Job I/O and shuttle live in `detect/` + `server.py`
